@@ -65,10 +65,11 @@ o3de = "o3de_cli.__main__:main"
 o3de-mcp = "o3de_cli.mcp_server:serve"
 
 [project.urls]
-Homepage = "https://github.com/o3de/o3de-cli"
-Documentation = "https://github.com/o3de/o3de-cli#readme"
-Repository = "https://github.com/o3de/o3de-cli.git"
-Issues = "https://github.com/o3de/o3de-cli/issues"
+Homepage = "https://github.com/byrcolin/o3de-cli"
+Documentation = "https://github.com/byrcolin/o3de-cli#readme"
+Repository = "https://github.com/byrcolin/o3de-cli.git"
+Issues = "https://github.com/byrcolin/o3de-cli/issues"
+Changelog = "https://github.com/byrcolin/o3de-cli/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
