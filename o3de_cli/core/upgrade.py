@@ -1099,6 +1099,19 @@ def _upgrade_gem_1_to_2(data: dict, output: dict, reversed_domain: str, is_o3de:
     return output
 
 
+def _infer_template_type(data: dict, name: str) -> str:
+    """Return the template type, inferring from the name if not set explicitly."""
+    explicit = data.get("template_type", data.get("type", "")).lower().strip()
+    if explicit:
+        return explicit
+    # Infer from the template name
+    name_lower = name.lower()
+    for keyword in ("project", "gem", "engine", "repo"):
+        if keyword in name_lower:
+            return keyword
+    return ""
+
+
 def _upgrade_template_1_to_2(data: dict, output: dict, reversed_domain: str, is_o3de: bool, *, file_path: Optional[Path] = None) -> dict:
     """Upgrade template from 1.0.0 to 2.0.0."""
     old_name = data.get("template_name", "")
@@ -1110,7 +1123,7 @@ def _upgrade_template_1_to_2(data: dict, output: dict, reversed_domain: str, is_
         "display_name": data.get("display_name", data.get("name", old_name)),
         "description": data.get("description", data.get("summary",
             data.get("display_name", data.get("name", old_name)))),
-        "type": data.get("template_type", data.get("type", "")).lower(),
+        "type": _infer_template_type(data, old_name),
         "id": data.get("template_id", ""),
         "copyright_text": data.get("copyright_text", data.get("copyright", ""))
     }

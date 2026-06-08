@@ -231,15 +231,21 @@ class Workspace:
         progress_callback: Optional[Callable] = None,
     ) -> int:
         """Mirror *source_root* into *dest_root*: real dirs, symlinked files."""
-        for source_file in source_root.rglob("*"):
-            if not source_file.is_file():
-                continue
-            relative = source_file.relative_to(source_root)
+        for entry in source_root.rglob("*"):
+            relative = entry.relative_to(source_root)
             if self.should_exclude(relative):
                 continue
 
+            if entry.is_dir():
+                # Create empty dirs so workspace mirrors full structure
+                (dest_root / relative).mkdir(parents=True, exist_ok=True)
+                continue
+
+            if not entry.is_file():
+                continue
+
             target = dest_root / relative
-            self._create_link(source_file, target)
+            self._create_link(entry, target)
 
             ws_rel = target.relative_to(self.root_path).as_posix()
             self.file_owners[ws_rel] = owner_name

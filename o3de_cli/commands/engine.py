@@ -63,7 +63,8 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
     """
     import json
 
-    engine_path = Path(path) if path else Path.cwd() / name
+    from o3de_cli.core.paths import get_default_engines_path
+    engine_path = Path(path) if path else get_default_engines_path() / name
 
     if not as_json:
         console.print(f"[bold]Creating engine:[/bold] {name}")

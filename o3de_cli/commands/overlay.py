@@ -65,7 +65,8 @@ def create_overlay(name: str, path: str | None, template_name: str | None) -> No
     """
     import json
 
-    overlay_path = Path(path) if path else Path.cwd() / name
+    from o3de_cli.core.paths import get_default_overlays_path
+    overlay_path = Path(path) if path else get_default_overlays_path() / name
 
     console.print(f"[bold]Creating overlay:[/bold] {name}")
 

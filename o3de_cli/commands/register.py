@@ -21,11 +21,12 @@ from o3de_cli.core.upgrade import (
     get_schema_version,
     upgrade_file,
 )
+from o3de_cli.core.paths import find_object_json
 
 console = Console()
 
 
-# Object type to JSON file name mapping
+# Object type to JSON file name mapping (legacy filenames for reference)
 OBJECT_JSON_FILES = {
     "engine": "engine.json",
     "project": "project.json",
@@ -39,9 +40,12 @@ OBJECT_JSON_FILES = {
 
 def detect_object_type(path: Path) -> str | None:
     """Detect object type from directory contents."""
-    for obj_type, json_file in OBJECT_JSON_FILES.items():
-        if (path / json_file).exists():
+    for obj_type in OBJECT_JSON_FILES:
+        try:
+            find_object_json(path, obj_type)
             return obj_type
+        except FileNotFoundError:
+            continue
     return None
 
 
@@ -49,7 +53,7 @@ def resolve_to_json(path: Path, obj_type: str | None = None) -> tuple[Path, str]
     """Resolve *path* to an explicit JSON file path and its type.
 
     *path* may be:
-    - A JSON file (e.g. ``gem.json``) — returned as-is with inferred type.
+    - A JSON file (e.g. ``gem.json`` or ``gem.2-0-0.json``) — returned as-is with inferred type.
     - A directory containing an O3DE JSON file — resolved to that file.
 
     Returns ``(json_path, obj_type)`` or ``None`` if nothing was found.
@@ -59,8 +63,8 @@ def resolve_to_json(path: Path, obj_type: str | None = None) -> tuple[Path, str]
     if path.is_file() and path.suffix == ".json":
         # Already a JSON file — infer type from filename
         if not obj_type:
-            for otype, jfile in OBJECT_JSON_FILES.items():
-                if path.name == jfile:
+            for otype in OBJECT_JSON_FILES:
+                if otype in path.name:
                     obj_type = otype
                     break
         return (path, obj_type) if obj_type else None
@@ -68,15 +72,18 @@ def resolve_to_json(path: Path, obj_type: str | None = None) -> tuple[Path, str]
     if path.is_dir():
         # If a specific type was requested, look for that file only
         if obj_type:
-            candidate = path / OBJECT_JSON_FILES[obj_type]
-            if candidate.exists():
-                return (candidate, obj_type)
-            return None
-        # Auto-detect: try each known JSON filename
-        for otype, jfile in OBJECT_JSON_FILES.items():
-            candidate = path / jfile
-            if candidate.exists():
-                return (candidate, otype)
+            try:
+                json_path, _ = find_object_json(path, obj_type)
+                return (json_path, obj_type)
+            except FileNotFoundError:
+                return None
+        # Auto-detect: try each known type
+        for otype in OBJECT_JSON_FILES:
+            try:
+                json_path, _ = find_object_json(path, otype)
+                return (json_path, otype)
+            except FileNotFoundError:
+                continue
     return None
 
 

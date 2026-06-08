@@ -73,7 +73,8 @@ def init_project(name: str, path: str | None, template_name: str | None, as_json
     """Initialize a new O3DE project."""
     import json
     
-    project_path = Path(path) if path else Path.cwd() / name
+    from o3de_cli.core.paths import get_default_projects_path
+    project_path = Path(path) if path else get_default_projects_path() / name
     
     if not as_json:
         console.print(f"[bold]Creating project:[/bold] {name}")

@@ -65,7 +65,8 @@ def create_repo(name: str, path: str | None, template_name: str | None) -> None:
     """
     import json
 
-    repo_path = Path(path) if path else Path.cwd() / name
+    from o3de_cli.core.paths import get_default_repos_path
+    repo_path = Path(path) if path else get_default_repos_path() / name
 
     console.print(f"[bold]Creating repo:[/bold] {name}")
 

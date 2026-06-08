@@ -811,6 +811,18 @@ class Resolver:
         name = get_object_name(data)
         version = get_object_version(data)
         
+        # Enrich empty template type by inferring from name
+        if expected_type == ObjectType.TEMPLATE:
+            tpl_header = data.get("template", {})
+            if isinstance(tpl_header, dict) and not tpl_header.get("type"):
+                inferred = ""
+                name_lower = (name or "").lower()
+                for kw in ("project", "gem", "engine", "repo"):
+                    if kw in name_lower:
+                        inferred = kw
+                        break
+                tpl_header["type"] = inferred
+        
         if not name:
             logger.warning(f"No name in {json_path}")
             return None
