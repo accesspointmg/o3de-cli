@@ -7,7 +7,7 @@ import click
 from rich.console import Console
 
 from o3de_cli import __version__
-from o3de_cli.commands import project, gem, template, engine, registry, ai, config
+from o3de_cli.commands import project, gem, template, engine, registry, config
 from o3de_cli.commands import manifest as manifest_cmd
 from o3de_cli.commands import workspace as workspace_cmd
 from o3de_cli.commands import gui as gui_cmd
@@ -63,7 +63,6 @@ cli.add_command(engine.engine)
 cli.add_command(registry.registry)
 cli.add_command(manifest_cmd.manifest)
 cli.add_command(workspace_cmd.workspace)
-cli.add_command(ai.ai)
 cli.add_command(config.config)
 cli.add_command(gui_cmd.gui)
 cli.add_command(register_cmd.register)

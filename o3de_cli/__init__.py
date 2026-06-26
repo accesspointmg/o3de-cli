@@ -4,7 +4,7 @@
 """
 O3DE CLI - Package manager for the O3DE ecosystem.
 
-Provides npm-style package management with integrated AI assistance.
+Provides npm-style package management for the O3DE ecosystem.
 Installable independently: ``pip install o3de-cli``
 """
 

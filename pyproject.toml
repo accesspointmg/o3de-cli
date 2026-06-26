@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [
     {name = "O3DE Foundation", email = "info@o3de.org"}
 ]
-keywords = ["o3de", "game-engine", "cli", "ai", "package-manager"]
+keywords = ["o3de", "game-engine", "cli", "package-manager"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: Console",
@@ -40,16 +40,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ai = [
-    "anthropic>=0.18",
-    "openai>=2.0",
-]
-voice = [
-    "faster-whisper>=0.10",
-    "pyaudio>=0.2.14",
-    "pyttsx3>=2.90",
-    "SpeechRecognition>=3.10",
-]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -58,7 +48,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.0",
 ]
-all = ["o3de-cli[ai,voice,dev]"]
+all = ["o3de-cli[dev]"]
 
 [project.scripts]
 o3de = "o3de_cli.__main__:main"
