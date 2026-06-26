@@ -1030,25 +1030,49 @@ def _upgrade_project_1_to_2(data: dict, output: dict, reversed_domain: str, is_o
     if "executable_name" in data:
         output["executable_name"] = data["executable_name"]
     
-    # Handle engine reference
+    # Handle engine reference — goes into dependent.engines
+    engine_dep = None
     if "engine" in data:
         engine = data["engine"]
         if ">=" in engine or "<=" in engine or "==" in engine:
-            output["engine"] = engine
+            engine_dep = engine
         elif is_reverse_domain_format(engine):
-            output["engine"] = engine
+            engine_dep = f"{engine}>=0.0.0"
         elif engine == "o3de":
-            output["engine"] = "org.o3de.engine.o3de>=1.0.0"
+            engine_dep = "org.o3de.engine.o3de>=1.0.0"
         elif engine == "o3de-sdk":
-            output["engine"] = "org.o3de.engine.o3de-sdk>=1.0.0"
+            engine_dep = "org.o3de.engine.o3de-sdk>=1.0.0"
         else:
-            output["engine"] = f"org.o3de.engine.{engine}>=0.0.0".lower()
+            engine_dep = f"org.o3de.engine.{engine}>=0.0.0".lower()
     
     output = _add_origin_and_licenses(output, data, is_o3de)
     output = _add_tags(output, data, "project", new_name)
     output = _add_icon_and_docs(output, data)
     output = _add_children_and_remote(output, data)
     output = _add_dependent_gems(output, data)
+    
+    # Add engine to dependent.engines
+    if engine_dep:
+        if "dependent" not in output:
+            output["dependent"] = {"gems": []}
+        output["dependent"]["engines"] = [engine_dep]
+    
+    # Also handle compatible_engines
+    if "compatible_engines" in data:
+        engines_list = output.get("dependent", {}).get("engines", [])
+        for ce in data["compatible_engines"]:
+            if ">=" in ce or "<=" in ce or "==" in ce:
+                dep = ce
+            elif is_reverse_domain_format(ce):
+                dep = f"{ce}>=0.0.0"
+            else:
+                dep = f"org.o3de.engine.{ce}>=0.0.0".lower()
+            if dep not in engines_list:
+                engines_list.append(dep)
+        if "dependent" not in output:
+            output["dependent"] = {"gems": []}
+        output["dependent"]["engines"] = engines_list
+    
     output = _add_source_control(output, data)
     output = _add_download(output, data)
     output = _add_releases(output, data, file_path=file_path)

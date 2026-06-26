@@ -256,6 +256,7 @@ class TestWorkspaceGetStats:
 # TestCreateWorkspaceConvenience
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("mock_manifest")
 class TestCreateWorkspaceConvenience:
     """Test create_workspace() convenience function."""
 
@@ -516,7 +517,7 @@ class TestOverlayMerge:
         assert (tmp_path / "ws" / "Engines" / "root" / "added.txt").exists()
         assert (tmp_path / "ws" / "Overlays" / "overlay" / "added.txt").exists()
 
-    def test_create_workspace_convenience_with_extends(self, tmp_path):
+    def test_create_workspace_convenience_with_extends(self, tmp_path, mock_manifest):
         """create_workspace() passes extends through 3-tuples."""
         engine = tmp_path / "engine"
         engine.mkdir()

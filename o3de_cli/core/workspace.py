@@ -37,6 +37,7 @@ Process:
 
 from pathlib import Path
 from typing import Optional, Callable
+import json
 import os
 import shutil
 import logging
@@ -416,6 +417,33 @@ class Workspace:
             "overlays": len(self.overlays),
         }
 
+    def get_file_links(self) -> dict[str, str]:
+        """Return ``{source_abs_posix: dest_rel_posix}`` from linked_files."""
+        result: dict[str, str] = {}
+        for dest_abs, src_abs in self.linked_files.items():
+            src_posix = src_abs.as_posix()
+            dest_rel = dest_abs.relative_to(self.root_path).as_posix()
+            result[src_posix] = dest_rel
+        return result
+
+    def get_sources_dict(self) -> dict[str, dict[str, str]]:
+        """Return categorised ``{type: {name: path}}`` from resolved_objects + overlays."""
+        from o3de_cli.core.models import ObjectType as OT
+        _type_key = {
+            OT.ENGINE: "engines", OT.PROJECT: "projects",
+            OT.GEM: "gems", OT.TEMPLATE: "templates",
+        }
+        cats: dict[str, dict[str, str]] = {
+            "engines": {}, "projects": {}, "gems": {},
+            "templates": {}, "overlays": {},
+        }
+        for name, (path, obj_type) in self.resolved_objects.items():
+            key = _type_key.get(obj_type, "gems")
+            cats[key][name] = str(path)
+        for ov_path, _prec, _ext in self.overlays:
+            cats["overlays"][ov_path.name] = str(ov_path)
+        return cats
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -498,7 +526,30 @@ def create_workspace(
                 extends = None
             ws.add_overlay(overlay_path, precedence, extends=extends)
 
-    return ws.create(clean=clean, progress_callback=progress_callback)
+    ws = ws.create(clean=clean, progress_callback=progress_callback)
+
+    # Register the workspace in the global manifest so the GUI
+    # Workspaces tab (and any other consumer) can discover it.
+    _register_in_manifest(target_path)
+
+    return ws
+
+
+def _register_in_manifest(ws_path: Path) -> None:
+    """Append *ws_path* to the manifest's ``workspaces`` list (idempotent)."""
+    try:
+        from .paths import get_manifest_path
+        manifest_path = get_manifest_path()
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        workspaces = manifest.setdefault("workspaces", [])
+        path_str = ws_path.resolve().as_posix()
+        if path_str not in workspaces:
+            workspaces.append(path_str)
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+    except Exception:
+        logger.warning("Failed to register workspace in manifest", exc_info=True)
 
 
 # Backward-compatible aliases

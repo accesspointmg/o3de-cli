@@ -18,6 +18,16 @@ from click.testing import CliRunner
 from tests.conftest import _write_json
 
 
+# Ensure _register_in_manifest (lazy-imports core.paths.get_manifest_path)
+# writes to the test's temp manifest, not the real user manifest.
+@pytest.fixture(autouse=True)
+def _isolate_workspace_registration(tmp_path, monkeypatch):
+    mp = tmp_path / "o3de_manifest.2-0-0.json"
+    monkeypatch.setattr(
+        "o3de_cli.core.paths.get_manifest_path", lambda: mp,
+    )
+
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 def _extract_json(output):

@@ -761,7 +761,7 @@ COMMAND_SPECS: dict[str, dict] = {
             _field("path", "Object JSON File", "file", required=True,
                    placeholder="Select engine.json, gem.json, project.json, etc.",
                    from_selected="path", positional=True,
-                   file_filter="O3DE Object Files (engine.json gem.json project.json template.json repo.json overlay.json);;All JSON (*.json);;All Files (*)"),
+                   file_filter="O3DE Object Files (engine.json gem.json project.json template.json repo.json overlay.json workspace.json);;All JSON (*.json);;All Files (*)"),
         ],
         "state_changing": True,
         "object_types": [],

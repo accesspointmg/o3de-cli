@@ -4,6 +4,8 @@
 """Template management commands."""
 
 import click
+import os
+import shutil
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -11,6 +13,160 @@ from rich.table import Table
 from o3de_cli.core.json_output import emit_response, emit_error
 
 console = Console()
+
+
+# Binary extensions that should be copied without content replacement
+_BINARY_EXTENSIONS = frozenset({
+    ".pak", ".bin", ".png", ".tga", ".bmp", ".dat", ".trp", ".fbx", ".mb",
+    ".tif", ".tiff", ".dds", ".dds0", ".dds1", ".dds2", ".dds3", ".dds4",
+    ".dds5", ".dds6", ".dds7", ".dds8", ".dds9", ".ctc", ".bnk", ".wav",
+    ".akd", ".cgf", ".wem", ".assetinfo", ".animgraph", ".motionset",
+    ".jpg", ".jpeg", ".gif", ".ico", ".hdr", ".exr", ".psd",
+    ".mp3", ".ogg", ".flac",
+    ".glb", ".gltf", ".obj", ".stl",
+    ".zip", ".7z", ".tar", ".gz",
+    ".dll", ".so", ".dylib", ".exe",
+    ".ttf", ".otf", ".woff", ".woff2",
+})
+
+
+def _build_replacements(name: str, *, version: str = "1.0.0", project_path: str = "", engine_path: str = "") -> dict[str, str]:
+    """Build the token → value map for template instantiation."""
+    import uuid
+
+    # Sanitize for C++ identifiers
+    sanitized = "".join(c if c.isalnum() or c == "_" else "_" for c in name)
+    return {
+        "${Name}": name,
+        "${NameLower}": name.lower(),
+        "${NameUpper}": name.upper(),
+        "${SanitizedCppName}": sanitized,
+        "${ModuleClassId}": "{" + str(uuid.uuid4()).upper() + "}",
+        "${SysCompClassId}": "{" + str(uuid.uuid4()).upper() + "}",
+        "${EditorSysCompClassId}": "{" + str(uuid.uuid4()).upper() + "}",
+        "${Version}": version,
+        "${ProjectId}": "{" + str(uuid.uuid4()).upper() + "}",
+        "${ProjectPath}": project_path,
+        "${EnginePath}": engine_path,
+    }
+
+
+def _replace_tokens(text: str, replacements: dict[str, str]) -> str:
+    """Replace all template tokens in a string.
+
+    Handles ${Random_Uuid} specially — each occurrence gets a unique UUID.
+    """
+    import uuid
+
+    for token, value in replacements.items():
+        text = text.replace(token, value)
+    # Each ${Random_Uuid} gets a fresh UUID
+    while "${Random_Uuid}" in text:
+        text = text.replace("${Random_Uuid}", str(uuid.uuid4()).upper(), 1)
+    return text
+
+
+def _load_template_manifest(template_path: Path) -> dict | None:
+    """Load the template manifest (2.0.0 preferred, fallback to legacy).
+
+    Returns the parsed JSON dict with copyFiles/createDirectories, or None
+    if no manifest exists.
+    """
+    import json
+
+    # Prefer 2.0.0
+    manifest_20 = template_path / "template.2-0-0.json"
+    if manifest_20.exists():
+        with open(manifest_20, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # Fallback to legacy template.json (schema 0 or 1.0 — same copyFiles structure)
+    manifest_legacy = template_path / "template.json"
+    if manifest_legacy.exists():
+        with open(manifest_legacy, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    return None
+
+
+def instantiate_template(
+    template_path: Path,
+    dest_path: Path,
+    name: str,
+) -> list[str]:
+    """Instantiate a schema 2.0 template into dest_path.
+
+    Reads the template manifest (template.2-0-0.json or template.json),
+    creates directories, and copies files with token replacement according
+    to the manifest's copyFiles/createDirectories.
+
+    Source files are read from template_path/Template/<file>.
+
+    Args:
+        template_path: Root of the template (contains template.json and Template/).
+        dest_path: Where to create the instance.
+        name: Instance name used for token replacement.
+
+    Returns:
+        List of created file paths (relative to dest_path).
+    """
+    manifest = _load_template_manifest(template_path)
+    if manifest is None:
+        raise FileNotFoundError(
+            f"No template manifest (template.2-0-0.json or template.json) found in {template_path}"
+        )
+
+    replacements = _build_replacements(name)
+    created: list[str] = []
+    source_root = template_path / "Template"
+
+    if not source_root.is_dir():
+        raise FileNotFoundError(
+            f"Template source directory not found: {source_root}"
+        )
+
+    # 1. Create directories (with token replacement in names)
+    for entry in manifest.get("createDirectories", []):
+        dir_rel = entry["dir"] if isinstance(entry, dict) else entry
+        dir_rel = _replace_tokens(dir_rel, replacements)
+        (dest_path / dir_rel).mkdir(parents=True, exist_ok=True)
+
+    # 2. Copy files according to manifest
+    for entry in manifest.get("copyFiles", []):
+        file_rel = entry["file"]
+        is_templated = entry.get("isTemplated", True)
+
+        src_file = source_root / file_rel
+        # Replace tokens in the destination path
+        dest_rel = _replace_tokens(file_rel, replacements)
+        dst_file = dest_path / dest_rel
+
+        # Ensure parent directory exists
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if not src_file.exists():
+            # Skip missing files (may be platform-specific)
+            continue
+
+        if not is_templated:
+            # Plain copy — no content transformation
+            shutil.copy2(src_file, dst_file)
+        else:
+            # Token replacement in content (binary files just get copied)
+            ext = src_file.suffix.lower()
+            if ext in _BINARY_EXTENSIONS:
+                shutil.copy2(src_file, dst_file)
+            else:
+                try:
+                    content = src_file.read_text(encoding="utf-8")
+                    content = _replace_tokens(content, replacements)
+                    dst_file.write_text(content, encoding="utf-8")
+                except (UnicodeDecodeError, ValueError):
+                    shutil.copy2(src_file, dst_file)
+
+        created.append(dest_rel)
+
+    return created
 
 
 @click.group()
@@ -183,8 +339,6 @@ def instance_template(template_name: str, name: str, path: str | None, as_json: 
     Copies the template contents to a new directory, replacing
     placeholder tokens with the instance NAME.
     """
-    import shutil
-
     inst_path = Path(path) if path else Path.cwd() / name
 
     if not as_json:
@@ -216,11 +370,21 @@ def instance_template(template_name: str, name: str, path: str | None, as_json: 
         console.print(f"[red]Template not found:[/red] {template_name}")
         raise SystemExit(1)
 
-    # Collect files that would be copied
-    files = [str(item.relative_to(tpl_obj.path)) for item in tpl_obj.path.iterdir()
-             if not item.name.startswith("template")]
-
     if dry_run:
+        # Preview: list files with tokens replaced in names from manifest
+        manifest = _load_template_manifest(tpl_obj.path)
+        if manifest is None:
+            msg = f"No template manifest found in {tpl_obj.path}"
+            if as_json:
+                emit_error(msg, code="NO_MANIFEST")
+            else:
+                console.print(f"[red]{msg}[/red]")
+            raise SystemExit(1)
+        replacements = _build_replacements(name)
+        files = [
+            _replace_tokens(entry["file"], replacements)
+            for entry in manifest.get("copyFiles", [])
+        ]
         plan = {"template": template_name, "instance": name, "path": str(inst_path), "files": files}
         if as_json:
             emit_response(data=plan)
@@ -231,21 +395,13 @@ def instance_template(template_name: str, name: str, path: str | None, as_json: 
                 console.print(f"  [dim]  {f}[/dim]")
         return
 
-    # Copy template contents
-    inst_path.mkdir(parents=True)
-    for item in tpl_obj.path.iterdir():
-        if item.name.startswith("template"):
-            continue  # Skip template metadata
-        dest = inst_path / item.name
-        if item.is_dir():
-            shutil.copytree(item, dest, dirs_exist_ok=True)
-        else:
-            shutil.copy2(item, dest)
+    # Instantiate with token replacement
+    created = instantiate_template(tpl_obj.path, inst_path, name)
 
     if as_json:
-        emit_response(data={"template": template_name, "instance": name, "path": str(inst_path)})
+        emit_response(data={"template": template_name, "instance": name, "path": str(inst_path), "files_created": len(created)})
     else:
-        console.print(f"[green]Created instance:[/green] {inst_path}")
+        console.print(f"[green]Created instance:[/green] {inst_path} ({len(created)} files)")
         console.print("[dim]Register it with: o3de-pilot register <path>[/dim]")
 
 

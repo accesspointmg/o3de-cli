@@ -35,6 +35,7 @@ OBJECT_JSON_FILES = {
     "repo": "repo.json",
     "overlay": "overlay.json",
     "restricted": "restricted.json",  # Legacy type with no upgrade path
+    "workspace": "workspace.json",
 }
 
 
@@ -319,7 +320,7 @@ def register_object_path(
 @click.command()
 @click.argument("path_or_url")
 @click.option("--type", "-t", "obj_type",
-              type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay"]),
+              type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay", "workspace"]),
               help="Object type (auto-detected if not specified)")
 @click.option("--remote", is_flag=True, help="Register a remote URL instead of a local path")
 @click.option("--force", "-f", is_flag=True, help="Force re-upgrade even if at target version")
@@ -373,6 +374,23 @@ def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, 
         console.print(f"[red]Path does not exist:[/red] {path_or_url}")
         raise SystemExit(1)
 
+    # Workspace registration uses a separate manifest section
+    _is_workspace = (
+        obj_type == "workspace"
+        or (not obj_type and raw_path.is_dir() and (raw_path / "workspace.json").exists())
+        or (not obj_type and raw_path.is_file() and raw_path.name in ("workspace.json", ".workspace.json"))
+    )
+    if _is_workspace:
+        from o3de_cli.commands.workspace import _register_workspace, _get_registered_workspaces
+        ws_path = raw_path if raw_path.is_dir() else raw_path.parent
+        already = [str(p.resolve()) for p in _get_registered_workspaces()]
+        if str(ws_path.resolve()) in already:
+            console.print(f"[yellow]Already registered:[/yellow] {ws_path.name}")
+            return
+        _register_workspace(ws_path)
+        console.print(f"[green]Registered workspace:[/green] {ws_path.name}")
+        return
+
     result = resolve_to_json(raw_path, obj_type)
     if result is None:
         console.print("[red]Could not find an O3DE JSON file.[/red]")
@@ -423,7 +441,7 @@ def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, 
 @click.command()
 @click.argument("path_or_name")
 @click.option("--type", "-t", "obj_type",
-              type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay"]),
+              type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay", "workspace"]),
               help="Object type (auto-detected if not specified)")
 @click.option("--remote", is_flag=True, help="Remove from remote section instead of local")
 def unregister(path_or_name: str, obj_type: str | None, remote: bool) -> None:
@@ -462,6 +480,22 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool) -> None:
 
     # Resolve to directory for guard checks (handles both JSON file and dir args)
     obj_dir = raw_path.parent if raw_path.suffix == ".json" else raw_path
+
+    # Workspace unregistration uses a separate manifest section
+    _is_workspace = (
+        obj_type == "workspace"
+        or (not obj_type and (obj_dir / "workspace.json").exists())
+        or (not obj_type and raw_path.is_file() and raw_path.name in ("workspace.json", ".workspace.json"))
+    )
+    if _is_workspace:
+        from o3de_cli.commands.workspace import _unregister_workspace, _get_registered_workspaces
+        already = [str(p.resolve()) for p in _get_registered_workspaces()]
+        if str(obj_dir.resolve()) not in already:
+            console.print(f"[yellow]Not registered:[/yellow] {path_or_name}")
+            return
+        _unregister_workspace(obj_dir)
+        console.print(f"[green]Unregistered workspace:[/green] {obj_dir.name}")
+        return
 
     # Auto-detect type if possible
     if not obj_type and obj_dir.exists():

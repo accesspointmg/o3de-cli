@@ -126,18 +126,20 @@ def _read_workspace_meta(ws_path: Path) -> WorkspaceMeta | None:
 def _write_workspace_meta(ws_path: Path, meta: WorkspaceMeta) -> None:
     """Write workspace metadata as workspace.json."""
     meta_path = ws_path / WORKSPACE_META
+    data = meta.model_dump(by_alias=True, exclude_none=True)
+    # Remove legacy fields that may linger from backward-compat loading
+    for key in ("overlays", "file_owners", "resolved_candidates"):
+        data.pop(key, None)
     with open(meta_path, "w") as f:
-        json.dump(meta.model_dump(by_alias=True, exclude_none=True), f, indent=2)
+        json.dump(data, f, indent=2)
 
 
 def _build_workspace_meta(
     name: str,
     root_path: Path,
     root_type: str,
-    sources: list[str],
-    overlays: list[str],
-    file_owners: dict[str, str] | None = None,
-    resolved_candidates: list[dict] | None = None,
+    sources: dict[str, dict[str, str]],
+    file_links: dict[str, str] | None = None,
 ) -> WorkspaceMeta:
     """Build a WorkspaceMeta model for a new workspace."""
     return WorkspaceMeta.model_validate({
@@ -148,9 +150,7 @@ def _build_workspace_meta(
         "root_object": str(root_path),
         "root_type": root_type,
         "sources": sources,
-        "overlays": overlays,
-        "file_owners": file_owners or {},
-        "resolved_candidates": resolved_candidates or [],
+        "file_links": file_links or {},
     })
 
 
@@ -450,36 +450,16 @@ def create_command(
         )
         
         # Save workspace metadata via Pydantic model
-        sources = [str(root_path)]
-        sources += [str(p) for p, _t in resolved_objects.values()]
-
-        # Build resolved_candidates from solve result
-        candidates_data: list[dict] = []
-        if solve_result:
-            all_cands = {**solve_result.candidates, **solve_result.children}
-            for cand_name, cand in all_cands.items():
-                candidates_data.append({
-                    "name": cand_name,
-                    "version": cand.version,
-                    "object_type": cand.object_type.value if hasattr(cand.object_type, "value") else str(cand.object_type),
-                    "status": cand.status.value if hasattr(cand.status, "value") else str(cand.status),
-                    "path": str(cand.path) if cand.path else None,
-                })
-
         meta = _build_workspace_meta(
             name=name,
             root_path=root_path,
             root_type=root_type_str,
-            sources=sources,
-            overlays=[str(o[0]) for o in overlay_tuples],
-            file_owners=workspace_obj.file_owners,
-            resolved_candidates=candidates_data,
+            sources=workspace_obj.get_sources_dict(),
+            file_links=workspace_obj.get_file_links(),
         )
         _write_workspace_meta(output_path, meta)
         
         progress.update(task2, description="Done")
-    
-    _register_workspace(output_path)
 
     if as_json:
         from o3de_cli.core.json_output import emit_response
@@ -540,8 +520,13 @@ def update_command(name_or_path: str, overlay: tuple[str, ...], as_json: bool) -
         raise SystemExit(1)
     
     # Reconstruct workspace from metadata
-    sources = [Path(p) for p in meta.sources]
-    existing_overlays = [Path(p) for p in meta.overlays]
+    sources: list[Path] = []
+    for type_dict in [meta.sources.engines, meta.sources.projects,
+                      meta.sources.gems, meta.sources.templates]:
+        for _name, path in type_dict.items():
+            if path:
+                sources.append(Path(path))
+    existing_overlays = [Path(p) for p in meta.sources.overlays.values()]
     new_overlays = [Path(o).resolve() for o in overlay]
     all_overlays = existing_overlays + new_overlays
     
@@ -623,11 +608,15 @@ def list_command(as_json: bool) -> None:
     for ws_dir in ws_dirs:
         meta = _read_workspace_meta(ws_dir)
         if meta is not None:
+            src = meta.sources
+            n_sources = (len(src.engines) + len(src.projects)
+                         + len(src.gems) + len(src.templates))
+            n_overlays = len(src.overlays)
             workspaces.append({
                 "name": meta.workspace.name or ws_dir.name,
                 "path": str(ws_dir),
-                "sources": meta.sources,
-                "overlays": meta.overlays,
+                "sources": n_sources,
+                "overlays": n_overlays,
                 "created": meta.created,
             })
     
@@ -647,8 +636,8 @@ def list_command(as_json: bool) -> None:
         for ws in workspaces:
             table.add_row(
                 ws["name"],
-                str(len(ws["sources"])),
-                str(len(ws["overlays"])),
+                str(ws["sources"]),
+                str(ws["overlays"]),
                 ws["path"],
             )
         
@@ -684,13 +673,18 @@ def show_command(name_or_path: str, as_json: bool) -> None:
         console.print(f"[dim]Created:[/dim] {meta.created}")
         
         console.print("\n[bold]Sources:[/bold]")
-        for source in meta.sources:
-            console.print(f"  • {source}")
+        src = meta.sources
+        for type_label, items in [
+            ("Engines", src.engines), ("Projects", src.projects),
+            ("Gems", src.gems), ("Templates", src.templates),
+        ]:
+            for name, path in items.items():
+                console.print(f"  • [cyan]{type_label[:-1]}[/cyan] {name}  [dim]{path}[/dim]")
         
-        if meta.overlays:
+        if src.overlays:
             console.print("\n[bold]Overlays:[/bold]")
-            for ov in meta.overlays:
-                console.print(f"  • {ov}")
+            for name, path in src.overlays.items():
+                console.print(f"  • {name}  [dim]{path}[/dim]")
 
 
 @workspace.command("delete")
@@ -1012,10 +1006,9 @@ def _find_third_party_path(
 
 def _find_engine_path(meta: WorkspaceMeta) -> Path | None:
     """Find the engine path from workspace metadata."""
-    # Check resolved_candidates for an engine
-    for cand in meta.resolved_candidates:
-        if cand.object_type == "engine" and cand.path:
-            return Path(cand.path)
+    for _name, path in meta.sources.engines.items():
+        if path:
+            return Path(path)
     # Fallback: if root_type is engine, use root_object
     if meta.root_type == "engine" and meta.root_object:
         return Path(meta.root_object)
@@ -1024,10 +1017,9 @@ def _find_engine_path(meta: WorkspaceMeta) -> Path | None:
 
 def _find_project_path(meta: WorkspaceMeta) -> Path | None:
     """Find the project path from workspace metadata."""
-    # Check resolved_candidates for a project
-    for cand in meta.resolved_candidates:
-        if cand.object_type == "project" and cand.path:
-            return Path(cand.path)
+    for _name, path in meta.sources.projects.items():
+        if path:
+            return Path(path)
     # Fallback: if root_type is project, use root_object
     if meta.root_type == "project" and meta.root_object:
         return Path(meta.root_object)
@@ -1533,7 +1525,14 @@ def lock_command(name_or_path: str, as_json: bool) -> None:
         meta = json.load(f)
 
     # Extract resolved candidates from workspace metadata
-    candidates = meta.get("resolved_candidates", meta.get("sources", {}))
+    # New format: sources is categorised {type: {name: path}}
+    # Flatten into {name: {path: ..., type: ...}} for lockfile
+    raw_sources = meta.get("sources", {})
+    if isinstance(raw_sources, dict) and "engines" in raw_sources:
+        candidates = _flatten_sources_for_lockfile(raw_sources)
+    else:
+        # Legacy format fallback
+        candidates = meta.get("resolved_candidates", meta.get("sources", {}))
     root_name = meta.get("root", meta.get("name", name_or_path))
     root_version = meta.get("rootVersion", meta.get("version", "0.0.0"))
 
@@ -1587,6 +1586,8 @@ def verify_lock_command(name_or_path: str, as_json: bool) -> None:
         meta = json.load(f)
 
     candidates = meta.get("resolved_candidates", meta.get("sources", {}))
+    if isinstance(meta.get("sources"), dict) and "engines" in meta.get("sources", {}):
+        candidates = _flatten_sources_for_lockfile(meta["sources"])
     matches, mismatches = verify_lockfile(ws_path, candidates)
 
     if as_json:
@@ -1616,3 +1617,18 @@ def _resolve_workspace_path(name_or_path: str) -> Path | None:
     if ws_path.is_dir():
         return ws_path
     return None
+
+
+def _flatten_sources_for_lockfile(sources: dict) -> dict:
+    """Flatten categorised sources into {name: {path, type}} for lockfile."""
+    _type_map = {
+        "engines": "engine", "projects": "project",
+        "gems": "gem", "templates": "template", "overlays": "overlay",
+    }
+    result: dict[str, dict] = {}
+    for type_key, items in sources.items():
+        if isinstance(items, dict):
+            obj_type = _type_map.get(type_key, type_key)
+            for name, path in items.items():
+                result[name] = {"path": path, "object_type": obj_type, "version": "0.0.0"}
+    return result

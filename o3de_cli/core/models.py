@@ -23,7 +23,7 @@ Objects can have dependencies on other objects with version constraints.
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Literal, Any
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
 import re
 
@@ -405,12 +405,31 @@ class WorkspaceHeader(BaseModel):
 
 
 class ResolvedCandidate(BaseModel):
-    """A resolved dependency candidate stored in workspace metadata."""
+    """A resolved dependency candidate stored in workspace metadata.
+
+    .. deprecated:: 2.1.0
+        Replaced by categorised ``WorkspaceSources``.  Kept for backward-compat
+        reading of old workspace.json files.
+    """
     name: str = Field(description="Object name (reverse domain)")
     version: str = Field(default="0.0.0", description="Resolved version")
     object_type: str = Field(description="Object type (engine, project, gem, etc.)")
     status: str = Field(default="local", description="local, remote, or unknown")
     path: Optional[str] = Field(default=None, description="Local path if available")
+
+
+class WorkspaceSources(BaseModel):
+    """Categorised source objects in a workspace.
+
+    Each key maps an object name to its absolute local path.
+    Names are scoped by type, so a gem and a project may share a name
+    without collision.
+    """
+    engines: dict[str, str] = Field(default_factory=dict, description="engine name → path")
+    projects: dict[str, str] = Field(default_factory=dict, description="project name → path")
+    gems: dict[str, str] = Field(default_factory=dict, description="gem name → path")
+    templates: dict[str, str] = Field(default_factory=dict, description="template name → path")
+    overlays: dict[str, str] = Field(default_factory=dict, description="overlay name → path")
 
 
 class WorkspaceMeta(BaseO3DEObject):
@@ -424,16 +443,81 @@ class WorkspaceMeta(BaseO3DEObject):
     created: str = Field(description="ISO 8601 creation timestamp")
     root_object: Optional[str] = Field(default=None, description="Root object path")
     root_type: Optional[str] = Field(default=None, description="Root object type")
-    sources: list[str] = Field(default_factory=list, description="Source object paths")
-    overlays: list[str] = Field(default_factory=list, description="Overlay paths applied")
-    file_owners: dict[str, str] = Field(
+    sources: WorkspaceSources = Field(
+        default_factory=WorkspaceSources,
+        description="Categorised source objects (type → name → path)",
+    )
+    file_links: dict[str, str] = Field(
         default_factory=dict,
-        description="Relative POSIX path -> owning object name",
+        description="Source absolute POSIX path → workspace-relative POSIX path",
     )
-    resolved_candidates: list[ResolvedCandidate] = Field(
-        default_factory=list,
-        description="Full dependency solve result for reproducible rebuilds",
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_format(cls, data: dict) -> dict:  # type: ignore[override]
+        """Convert legacy workspace.json (sources as list) to new format."""
+        if not isinstance(data, dict):
+            return data
+        raw_sources = data.get("sources")
+        if not isinstance(raw_sources, list):
+            return data  # already new format or missing
+
+        # Build categorised sources from resolved_candidates + overlays
+        cats: dict[str, dict[str, str]] = {
+            "engines": {}, "projects": {}, "gems": {},
+            "templates": {}, "overlays": {},
+        }
+        for cand in data.get("resolved_candidates", []):
+            if isinstance(cand, dict):
+                obj_type = cand.get("object_type", "")
+                name = cand.get("name", "")
+                path = cand.get("path", "")
+                key = obj_type + "s" if obj_type and not obj_type.endswith("s") else obj_type
+                if key in cats and name:
+                    cats[key][name] = path or ""
+
+        for ov_path in data.get("overlays", []):
+            ov_name = Path(ov_path).name if ov_path else ""
+            if ov_name:
+                cats["overlays"][ov_name] = str(ov_path)
+
+        data["sources"] = cats
+
+        # Convert file_owners → file_links (source_abs → dest_rel)
+        old_owners = data.get("file_owners", {})
+        if old_owners and not data.get("file_links"):
+            # Build name → path lookup from categorised sources
+            name_to_path: dict[str, str] = {}
+            for type_dict in cats.values():
+                name_to_path.update(type_dict)
+
+            file_links: dict[str, str] = {}
+            for rel_path, owner in old_owners.items():
+                owner_path = name_to_path.get(owner, "")
+                if owner_path:
+                    src = cls._compute_source_abs(owner_path, rel_path)
+                    file_links[src] = rel_path
+                else:
+                    file_links[rel_path] = rel_path  # best-effort
+            data["file_links"] = file_links
+
+        # Remove legacy fields (BaseO3DEObject has extra="allow" so they
+        # won't fail, but let's keep them so old code can still access)
+        return data
+
+    @staticmethod
+    def _compute_source_abs(owner_path: str, rel_path: str) -> str:
+        """Compute absolute source path from owner root and workspace-relative path."""
+        owner = Path(owner_path)
+        owner_parts = owner.parts
+        rel_parts = Path(rel_path).parts
+        best = 0
+        for length in range(1, min(len(owner_parts), len(rel_parts)) + 1):
+            if owner_parts[-length:] == rel_parts[:length]:
+                best = length
+        if best < len(rel_parts):
+            return (owner / Path(*rel_parts[best:])).as_posix()
+        return owner.as_posix()
 
 
 class ManifestHeader(BaseModel):
