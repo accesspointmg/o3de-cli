@@ -97,7 +97,7 @@ class ClaudeProvider(AIProvider):
         budget = _CLAUDE_BUDGET.get(self.thinking_effort, 0)
         if budget > 0:
             return {
-                "thinking": {"type": "enabled", "budget_tokens": budget},
+                "thinking": {"type": "adaptive", "budget_tokens": budget},
                 "max_tokens": max(16384, budget + 4096),
             }
         return {"max_tokens": 4096}
