@@ -438,13 +438,48 @@ def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, 
         console.print(f"[yellow]Already registered:[/yellow] {obj_dir.name}")
 
 
+def _workspaces_using_path(obj_dir: Path) -> list[str]:
+    """Return names of registered workspaces that reference *obj_dir*.
+
+    Checks each workspace's sources (engines, projects, gems, templates,
+    overlays) and root_object for a path matching *obj_dir*.
+    """
+    from o3de_cli.commands.workspace import (
+        _get_registered_workspaces,
+        _read_workspace_meta,
+    )
+    resolved = obj_dir.resolve()
+    using: list[str] = []
+    for ws_path in _get_registered_workspaces():
+        meta = _read_workspace_meta(ws_path)
+        if meta is None:
+            continue
+        # Check root_object
+        if meta.root_object and Path(meta.root_object).resolve() == resolved:
+            using.append(meta.workspace.name)
+            continue
+        # Check all source categories
+        for type_dict in [
+            meta.sources.engines,
+            meta.sources.projects,
+            meta.sources.gems,
+            meta.sources.templates,
+            meta.sources.overlays,
+        ]:
+            if any(Path(p).resolve() == resolved for p in type_dict.values()):
+                using.append(meta.workspace.name)
+                break
+    return using
+
+
 @click.command()
 @click.argument("path_or_name")
 @click.option("--type", "-t", "obj_type",
               type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay", "workspace"]),
               help="Object type (auto-detected if not specified)")
 @click.option("--remote", is_flag=True, help="Remove from remote section instead of local")
-def unregister(path_or_name: str, obj_type: str | None, remote: bool) -> None:
+@click.option("--force", "-f", is_flag=True, help="Force unregister even if used by a workspace")
+def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: bool) -> None:
     """Unregister an O3DE object from the manifest.
     
     Removes the object at PATH_OR_NAME from the manifest.
@@ -514,6 +549,18 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool) -> None:
     if not is_directly_registered(obj_dir, manifest_data):
         console.print(f"[yellow]Not registered:[/yellow] {path_or_name}")
         return
+
+    # Guard: used by a registered workspace
+    if not force:
+        using_workspaces = _workspaces_using_path(obj_dir)
+        if using_workspaces:
+            names = ", ".join(using_workspaces)
+            console.print(
+                f"[yellow]Cannot unregister:[/yellow] {obj_dir.name} is used by "
+                f"workspace{'s' if len(using_workspaces) > 1 else ''}: {names}"
+            )
+            console.print("Use --force to override.")
+            raise SystemExit(1)
 
     # Remove — match by resolved parent directory so it works regardless
     # of whether the user passed a JSON file or a directory.
