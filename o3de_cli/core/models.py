@@ -12,8 +12,10 @@ Object types:
 - Repo: A registry of available objects
 - Overlay: File-level overlay on another object
 
-Note: Legacy "Restricted" objects have no upgrade path to 2.0.0.
-Overlay is a new concept in 2.0.0, not a replacement for Restricted.
+Note: Legacy "Restricted" objects are retired with no upgrade path to 2.0.0.
+Overlays supersede restricted's role: platform code (including NDA/console
+platforms) and local patches are delivered as overlay objects composed into
+the base object tree at workspace compose time.
 
 Each object has a JSON file in its root (e.g. gem.json, engine.json).
 Objects can have children (sub-objects) referenced by relative path.

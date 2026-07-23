@@ -155,7 +155,7 @@ def init_project(name: str, path: str | None, template_name: str | None, as_json
 cmake_minimum_required(VERSION 3.22)
 project({short_name} LANGUAGES CXX)
 find_package(o3de REQUIRED)
-o3de_pal_dir(pal_dir ${{CMAKE_CURRENT_LIST_DIR}}/cmake ${{O3DE_ENGINE_RESTRICTED_PATH}} ${{gem_restricted_path}} ${{gem_name}} ${{gem_path}})
+o3de_pal_dir(pal_dir ${{CMAKE_CURRENT_LIST_DIR}}/cmake)
 """
         with open(project_path / "CMakeLists.txt", "w") as f:
             f.write(cmake_content)

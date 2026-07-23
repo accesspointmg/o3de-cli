@@ -39,7 +39,7 @@ _FOLDER_TO_TYPE = {
     "Projects": "project",
     "Gems": "gem",
     "Templates": "template",
-    "Overlays": "restricted",  # placeholder — overlays supersede restricteds
+    "Overlays": "overlay",
 }
 
 # type → object json filenames, versioned preferred
@@ -48,6 +48,7 @@ _TYPE_JSON = {
     "project": ("project.2-0-0.json", "project.json"),
     "gem": ("gem.2-0-0.json", "gem.json"),
     "template": ("template.2-0-0.json", "template.json"),
+    "overlay": ("overlay.2-0-0.json", "overlay.json"),
 }
 
 
@@ -116,7 +117,7 @@ def _dependent_lists(data: dict, type_key: str) -> dict[str, list[str]]:
         "gems": list(dep.get("gems", [])),
         "templates": list(dep.get("templates", [])),
         "repos": list(dep.get("repos", [])),
-        "restricteds": list(dep.get("restricteds", [])),
+        "overlays": list(dep.get("overlays", [])),
     }
 
 
@@ -152,16 +153,11 @@ def _object_entry(
         "user_tags": user_tags,
         "platforms": data.get("platforms", []),
 
-        # Restricted objects are superseded by overlays; overlays are
-        # applied at compose time, so nothing remains for CMake here.
-        "restricteds": [],
-
         "child_engine_json_paths": children.get("engines", []),
         "child_project_json_paths": children.get("projects", []),
         "child_gem_json_paths": children.get("gems", []),
         "child_template_json_paths": children.get("templates", []),
         "child_repo_json_paths": [],
-        "child_restricted_json_paths": [],
 
         "parent_json_paths": [],
 
@@ -170,7 +166,6 @@ def _object_entry(
         "dependent_gems": dep["gems"],
         "dependent_templates": dep["templates"],
         "dependent_repos": dep["repos"],
-        "dependent_restricteds": [],
 
         # Artifact form chosen for this object (workspace override):
         # "source" (default) - build from the linked source tree
@@ -199,6 +194,13 @@ def _object_entry(
             "executable_name": data.get("executable_name", ""),
             "engine": data.get("engine", ""),
         })
+    if type_key == "overlay":
+        entry.update({
+            "extends": data.get("extends", ""),
+            "precedence": data.get("precedence", 0),
+            "platform_maps": data.get("platform_maps", []),
+            "platform_wart_maps": data.get("platform_wart_maps", []),
+        })
     return entry
 
 
@@ -223,10 +225,10 @@ def generate_cmake_manifest(
     ws_path = Path(ws_path)
 
     paths: dict[str, list[str]] = {
-        "engine": [], "project": [], "gem": [], "template": [],
+        "engine": [], "project": [], "gem": [], "template": [], "overlay": [],
     }
     names: dict[str, list[str]] = {
-        "engine": [], "project": [], "gem": [], "template": [],
+        "engine": [], "project": [], "gem": [], "template": [], "overlay": [],
     }
     entries: dict[str, dict] = {}
 
@@ -235,6 +237,7 @@ def generate_cmake_manifest(
         ("Projects", "project"),
         ("Gems", "gem"),
         ("Templates", "template"),
+        ("Overlays", "overlay"),
     ):
         type_dir = ws_path / folder
         if not type_dir.is_dir():
@@ -297,7 +300,7 @@ def generate_cmake_manifest(
         "default_gems_path": (ws_path / "Gems").as_posix(),
         "default_templates_path": (ws_path / "Templates").as_posix(),
         "default_repos_path": "",
-        "default_restricteds_path": "",
+        "default_overlays_path": (ws_path / "Overlays").as_posix(),
         "default_third_party_path": third_party_path,
 
         "all_engine_paths": paths["engine"],
@@ -305,14 +308,14 @@ def generate_cmake_manifest(
         "all_gem_paths": paths["gem"],
         "all_template_paths": paths["template"],
         "all_repo_paths": [],
-        "all_restricted_paths": [],
+        "all_overlay_paths": paths["overlay"],
 
         "all_engine_names": names["engine"],
         "all_project_names": names["project"],
         "all_gem_names": names["gem"],
         "all_template_names": names["template"],
         "all_repo_names": [],
-        "all_restricted_names": [],
+        "all_overlay_names": names["overlay"],
     }
     resolved.update(entries)
 
