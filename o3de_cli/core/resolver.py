@@ -210,6 +210,12 @@ class Resolver:
         # All resolved objects by name
         self.objects: dict[str, ResolvedObject] = {}
         
+        # ALL versions of every object encountered on disk:
+        # name -> {version -> ResolvedObject}. Unlike `objects` (which keeps
+        # only the newest version per name), this retains alternates so the
+        # solver/UI can offer them as override candidates.
+        self.objects_all: dict[str, dict[str, ResolvedObject]] = {}
+        
         # Objects by type
         self.engines: dict[str, ResolvedObject] = {}
         self.projects: dict[str, ResolvedObject] = {}
@@ -722,6 +728,67 @@ class Resolver:
                 _json.dump(manifest_data, f, indent=2)
             logger.info(f"Registered {obj_type.value}: {obj_path.name}")
     
+    def _parse_object_dependencies(
+        self,
+        resolved: "ResolvedObject",
+        data: dict,
+        expected_type: ObjectType,
+    ) -> None:
+        """Parse dependent/optional/peer dependency specifiers into *resolved*.
+
+        Schema 2.0.0: type_dict.dependent with type keys: {"gems": ["org.o3de.gem.a>=1.0.0"]}
+        Legacy: root-level "dependencies" flat list: ["GemA", "GemB"]
+        """
+        # Schema 2.0.0: dependent can be inside the type dict (e.g., data["gem"]["dependent"])
+        type_key = expected_type.value
+        type_data = data.get(type_key, {})
+        dependent = type_data.get("dependent", {}) if isinstance(type_data, dict) else {}
+
+        # Also check root level (some formats put it there)
+        if not dependent:
+            dependent = data.get("dependent", {})
+
+        if isinstance(dependent, dict):
+            for dep_list in dependent.values():
+                if isinstance(dep_list, list):
+                    for dep in dep_list:
+                        resolved.dependencies.append(ObjectNameVersion(dep))
+
+        # Also check inside type dict for "dependencies" (Schema 2.0.0 alt)
+        type_deps = type_data.get("dependencies", {}) if isinstance(type_data, dict) else {}
+        if isinstance(type_deps, dict):
+            for dep_list in type_deps.values():
+                if isinstance(dep_list, list):
+                    for dep in dep_list:
+                        resolved.dependencies.append(ObjectNameVersion(dep))
+
+        # Also check legacy format (flat list at root)
+        legacy_deps = data.get("dependencies", [])
+        if isinstance(legacy_deps, list):
+            for dep in legacy_deps:
+                if isinstance(dep, str):
+                    resolved.dependencies.append(ObjectNameVersion(dep))
+
+        # Parse optional_dependent (nice-to-have deps, not required)
+        optional_dep = type_data.get("optional_dependent", {}) if isinstance(type_data, dict) else {}
+        if not optional_dep:
+            optional_dep = data.get("optional_dependent", {})
+        if isinstance(optional_dep, dict):
+            for dep_list in optional_dep.values():
+                if isinstance(dep_list, list):
+                    for dep in dep_list:
+                        resolved.optional_dependencies.append(ObjectNameVersion(dep))
+
+        # Parse peer_dependent (must be provided by consumer)
+        peer_dep = type_data.get("peer_dependent", {}) if isinstance(type_data, dict) else {}
+        if not peer_dep:
+            peer_dep = data.get("peer_dependent", {})
+        if isinstance(peer_dep, dict):
+            for dep_list in peer_dep.values():
+                if isinstance(dep_list, list):
+                    for dep in dep_list:
+                        resolved.peer_dependencies.append(ObjectNameVersion(dep))
+
     def _resolve_object(self, path: Path, expected_type: ObjectType) -> Optional[ResolvedObject]:
         """Resolve a single object and its children."""
         if not path.exists():
@@ -793,7 +860,13 @@ class Resolver:
         # If legacy file, check if upgrade is needed
         if not is_versioned and needs_upgrade(data):
             logger.info(f"Upgrading legacy schema in {json_path}")
-            upgraded_data = upgrade_to_latest(data)
+            try:
+                upgraded_data = upgrade_to_latest(data)
+            except Exception as e:
+                # A malformed object must not kill the whole resolve —
+                # skip it and keep going (e.g. an empty/invalid json)
+                logger.warning(f"Skipping unupgradeable object {json_path}: {e}")
+                return None
             
             # Write to versioned file (legacy file remains untouched)
             versioned_filename = get_versioned_object_json_filename(expected_type.value, "2.0.0")
@@ -828,9 +901,45 @@ class Resolver:
             return None
         
         # Check if already resolved (can happen when object is both a root path
-        # and a child of another object). Return existing to preserve parent chain.
+        # and a child of another object, or when multiple versions of the
+        # same object exist on disk, e.g. PhysX 4.x and 5.x directories).
         if name in self.objects:
-            return self.objects[name]
+            existing = self.objects[name]
+            if existing.path and existing.path.resolve() == path.resolve():
+                # Same object encountered again — preserve parent chain
+                return existing
+            # Different path with the same name: keep the newest version
+            # (latest-compatible strategy, consistent with the solver)
+            try:
+                from packaging.version import Version
+                is_newer = Version(version) > Version(existing.version)
+            except Exception:
+                is_newer = False
+            if not is_newer:
+                logger.debug(
+                    f"Skipping older/duplicate {name}@{version} at {path} "
+                    f"(keeping {existing.version} at {existing.path})"
+                )
+                # Retain the alternate version for override candidates
+                if version not in self.objects_all.get(name, {}):
+                    alternate = ResolvedObject(
+                        path=path,
+                        object_type=expected_type,
+                        name=name,
+                        version=version,
+                        data=data,
+                    )
+                    self._parse_object_dependencies(alternate, data, expected_type)
+                    self.objects_all.setdefault(name, {})[version] = alternate
+                return existing
+            logger.debug(
+                f"Replacing {name}@{existing.version} with newer "
+                f"{version} at {path}"
+            )
+            # fall through to create the newer object, which will
+            # overwrite the registry entries below
+            # (the existing object stays available in objects_all)
+            self.objects_all.setdefault(name, {})[existing.version] = existing
         
         # Create resolved object
         resolved = ResolvedObject(
@@ -842,61 +951,11 @@ class Resolver:
         )
         
         # Parse dependencies
-        # Schema 2.0.0: type_dict.dependent with type keys: {"gems": ["org.o3de.gem.a>=1.0.0"]}
-        # Legacy: root-level "dependencies" flat list: ["GemA", "GemB"]
-        
-        # Schema 2.0.0: dependent can be inside the type dict (e.g., data["gem"]["dependent"])
-        type_key = expected_type.value
-        type_data = data.get(type_key, {})
-        dependent = type_data.get("dependent", {}) if isinstance(type_data, dict) else {}
-        
-        # Also check root level (some formats put it there)
-        if not dependent:
-            dependent = data.get("dependent", {})
-        
-        if isinstance(dependent, dict):
-            for dep_list in dependent.values():
-                if isinstance(dep_list, list):
-                    for dep in dep_list:
-                        resolved.dependencies.append(ObjectNameVersion(dep))
-        
-        # Also check inside type dict for "dependencies" (Schema 2.0.0 alt)
-        type_deps = type_data.get("dependencies", {}) if isinstance(type_data, dict) else {}
-        if isinstance(type_deps, dict):
-            for dep_list in type_deps.values():
-                if isinstance(dep_list, list):
-                    for dep in dep_list:
-                        resolved.dependencies.append(ObjectNameVersion(dep))
-        
-        # Also check legacy format (flat list at root)
-        legacy_deps = data.get("dependencies", [])
-        if isinstance(legacy_deps, list):
-            for dep in legacy_deps:
-                if isinstance(dep, str):
-                    resolved.dependencies.append(ObjectNameVersion(dep))
-        
-        # Parse optional_dependent (nice-to-have deps, not required)
-        optional_dep = type_data.get("optional_dependent", {}) if isinstance(type_data, dict) else {}
-        if not optional_dep:
-            optional_dep = data.get("optional_dependent", {})
-        if isinstance(optional_dep, dict):
-            for dep_list in optional_dep.values():
-                if isinstance(dep_list, list):
-                    for dep in dep_list:
-                        resolved.optional_dependencies.append(ObjectNameVersion(dep))
-        
-        # Parse peer_dependent (must be provided by consumer)
-        peer_dep = type_data.get("peer_dependent", {}) if isinstance(type_data, dict) else {}
-        if not peer_dep:
-            peer_dep = data.get("peer_dependent", {})
-        if isinstance(peer_dep, dict):
-            for dep_list in peer_dep.values():
-                if isinstance(dep_list, list):
-                    for dep in dep_list:
-                        resolved.peer_dependencies.append(ObjectNameVersion(dep))
+        self._parse_object_dependencies(resolved, data, expected_type)
         
         # Store in appropriate collection
         self.objects[name] = resolved
+        self.objects_all.setdefault(name, {})[version] = resolved
         
         type_dict = {
             ObjectType.ENGINE: self.engines,

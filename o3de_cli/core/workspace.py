@@ -56,6 +56,14 @@ _TYPE_FOLDERS: dict[ObjectType, str] = {
     ObjectType.OVERLAY: "Overlays",
 }
 
+# TEMPORARY (hard-coded cheat): when linking an ENGINE into a workspace,
+# skip these top-level subtrees.  They are engine-internal copies of
+# objects that the solver composes into the workspace separately
+# (Gems/ → workspace Gems/, Templates/ → workspace Templates/,
+# AutomatedTesting/ → workspace Projects/).  Remove once the engine
+# repo is reworked into a proper hierarchy without embedded objects.
+_ENGINE_SKIP_TOPDIRS: set[str] = {"Gems", "Templates", "AutomatedTesting"}
+
 
 class WorkspaceError(Exception):
     """Error during workspace creation."""
@@ -184,6 +192,10 @@ class Workspace:
                 current=current,
                 total=total_files,
                 progress_callback=progress_callback,
+                skip_topdirs=(
+                    _ENGINE_SKIP_TOPDIRS
+                    if obj_type == ObjectType.ENGINE else None
+                ),
             )
 
         # Apply overlays in precedence order
@@ -230,11 +242,45 @@ class Workspace:
         current: int = 0,
         total: int = 0,
         progress_callback: Optional[Callable] = None,
+        skip_topdirs: Optional[set[str]] = None,
     ) -> int:
-        """Mirror *source_root* into *dest_root*: real dirs, symlinked files."""
+        """Mirror *source_root* into *dest_root*: real dirs, symlinked files.
+
+        An object's subtree stops at any NESTED OBJECT boundary: a
+        subdirectory that is itself the root of another resolved object
+        (has its own object json) is composed separately at workspace
+        level and must not be duplicated inside its parent's tree.
+
+        Args:
+            skip_topdirs: Top-level directory names under *source_root* to
+                skip entirely (used for engine-internal Gems/Templates/etc.
+                that are composed into the workspace as separate objects).
+        """
+        # Roots of all OTHER resolved objects that live inside this
+        # object's source tree — linking stops at these boundaries.
+        nested_roots: set[Path] = set()
+        source_resolved = source_root.resolve()
+        for _other_name, (other_path, _t) in self.resolved_objects.items():
+            other_resolved = Path(other_path).resolve()
+            if other_resolved != source_resolved and source_resolved in other_resolved.parents:
+                nested_roots.add(other_resolved)
+
+        def _in_nested_root(path: Path) -> bool:
+            if not nested_roots:
+                return False
+            resolved = path.resolve()
+            return any(
+                resolved == root or root in resolved.parents
+                for root in nested_roots
+            )
+
         for entry in source_root.rglob("*"):
             relative = entry.relative_to(source_root)
+            if skip_topdirs and relative.parts and relative.parts[0] in skip_topdirs:
+                continue
             if self.should_exclude(relative):
+                continue
+            if _in_nested_root(entry):
                 continue
 
             if entry.is_dir():

@@ -17,6 +17,7 @@ resolvelib integration follows pip's pattern:
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -31,6 +32,7 @@ from resolvelib import (
     Resolver as RLResolver,
     RequirementsConflicted,
 )
+from resolvelib.resolvers import ResolutionImpossible
 
 from .models import ObjectType
 from .resolver import ObjectNameVersion, ResolvedObject, Resolver
@@ -67,6 +69,12 @@ class Candidate:
 
     # Populated for remote candidates
     remote_object: Optional[RemoteObject] = None
+
+    # Artifact availability (populated by annotate_artifacts / list_candidates)
+    # Path to a locally built + installed binary layout (contains *Config.cmake)
+    local_binary_path: Optional[Path] = None
+    # True when a release advertises a prebuilt binary for the current platform
+    remote_binary: bool = False
 
     # Dependencies declared by this candidate (raw specifier strings)
     dependencies: list[str] = field(default_factory=list)
@@ -184,11 +192,19 @@ class O3DEProvider(AbstractProvider):
         self._resolver = resolver
         self._store = store
 
-        # Build an index of all local objects by name -> list[ResolvedObject]
-        # (typically one version per name, but we support multiple)
+        # Build an index of all local objects by name -> list[ResolvedObject].
+        # Prefer the resolver's multi-version registry (objects_all) so that
+        # alternate versions on disk remain selectable; fall back to the
+        # newest-wins map for older Resolver instances.
         self._local_objects: dict[str, list[ResolvedObject]] = {}
-        for name, obj in resolver.objects.items():
-            self._local_objects.setdefault(name, []).append(obj)
+        objects_all = getattr(resolver, "objects_all", None)
+        if objects_all:
+            for name, versions in objects_all.items():
+                for obj in versions.values():
+                    self._local_objects.setdefault(name, []).append(obj)
+        else:
+            for name, obj in resolver.objects.items():
+                self._local_objects.setdefault(name, []).append(obj)
 
     # -- resolvelib API -------------------------------------------------------
 
@@ -383,6 +399,7 @@ def solve_for_workspace(
     resolver: Resolver,
     store: Optional[Store] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
+    overrides: Optional[dict[str, str]] = None,
 ) -> SolveResult:
     """
     Solve the dependency graph for a workspace rooted at *root_name*.
@@ -392,6 +409,9 @@ def solve_for_workspace(
         resolver: Already-resolved manifest (resolver.resolve() called)
         store: Optional remote store for discovering remote candidates
         progress_callback: Optional callback receiving status messages
+        overrides: Optional user pins {object name -> exact version}; each is
+            injected as an ``==`` root requirement so transitive dependencies
+            re-resolve consistently around the pinned choice
 
     Returns:
         SolveResult with all resolved candidates and matched overlays
@@ -414,6 +434,22 @@ def solve_for_workspace(
             Requirement(name=dep_spec.name, specifier=dep_spec.specifier)
         )
 
+    # Inject user override pins as == root requirements
+    pinned_names: set[str] = set()
+    if overrides:
+        for pin_name, pin_version in overrides.items():
+            if pin_name == root_name:
+                continue  # cannot pin the root itself
+            try:
+                pin_spec = SpecifierSet(f"=={pin_version}")
+            except Exception:
+                logger.warning(f"Invalid override version for {pin_name}: {pin_version}")
+                continue
+            pinned_names.add(pin_name)
+            # Replace any existing root requirement for the same name
+            root_requirements = [r for r in root_requirements if r.name != pin_name]
+            root_requirements.append(Requirement(name=pin_name, specifier=pin_spec))
+
     # Run resolvelib
     rl_resolver = RLResolver(provider, reporter)
     try:
@@ -423,6 +459,18 @@ def solve_for_workspace(
             root_name=root_name,
             root_version=root.version,
             conflict_message=str(e),
+        )
+    except ResolutionImpossible as e:
+        lines = []
+        for info in e.causes:
+            req = info.requirement
+            parent = info.parent.name if info.parent else root_name
+            origin = "override pin" if req.name in pinned_names and info.parent is None else parent
+            lines.append(f"{origin} requires {req.name}{req.specifier} — no candidate found")
+        return SolveResult(
+            root_name=root_name,
+            root_version=root.version,
+            conflict_message="; ".join(lines) or str(e),
         )
 
     # Build SolveResult from resolvelib's output
@@ -508,10 +556,20 @@ def _add_children_recursive(
     obj: ResolvedObject,
     candidates: dict[str, Candidate],
 ) -> None:
-    """Add all children of an object to the candidate map."""
+    """Add all children of an object to the candidate map.
+
+    On name collisions (e.g. PhysX4 and PhysX5 both advertised as
+    engine children under the same canonical name) the newest version
+    wins, consistent with the resolver's latest-compatible strategy.
+    """
     for child in obj.children:
-        if child.name in candidates:
-            continue
+        existing = candidates.get(child.name)
+        if existing is not None:
+            try:
+                if Version(child.version) <= Version(existing.version):
+                    continue
+            except Exception:
+                continue
         candidates[child.name] = Candidate(
             name=child.name,
             version=child.version,
@@ -522,3 +580,194 @@ def _add_children_recursive(
             dependencies=[str(d) for d in child.dependencies],
         )
         _add_children_recursive(child, candidates)
+
+
+# ---------------------------------------------------------------------------
+# Candidate enumeration + artifact detection (override support)
+# ---------------------------------------------------------------------------
+
+
+def current_arch() -> str:
+    """Canonical architecture token for this host (AMD64, ARM64, ...)."""
+    import platform as _platform
+
+    machine = _platform.machine().lower()
+    if machine in ("amd64", "x86_64", "x64"):
+        return "AMD64"
+    if machine in ("arm64", "aarch64"):
+        return "ARM64"
+    return machine.upper() or "UNKNOWN"
+
+
+def current_platform() -> str:
+    """O3DE platform token for this host: ``<OS>.<ARCH>``.
+
+    E.g. ``Windows.AMD64``, ``Linux.ARM64``, ``Mac.ARM64`` — matches
+    ``Release.binaries[].platform``.
+    """
+    if sys.platform.startswith("win"):
+        os_name = "Windows"
+    elif sys.platform == "darwin":
+        os_name = "Mac"
+    else:
+        os_name = "Linux"
+    return f"{os_name}.{current_arch()}"
+
+
+def host_glibc() -> Optional[tuple[int, int]]:
+    """The host's glibc (major, minor) on Linux, else None."""
+    if not sys.platform.startswith("linux"):
+        return None
+    import platform as _platform
+
+    libc, ver = _platform.libc_ver()
+    if libc != "glibc" or not ver:
+        return None
+    try:
+        major, minor = ver.split(".")[:2]
+        return int(major), int(minor)
+    except (ValueError, IndexError):
+        return None
+
+
+def platform_matches(advertised: str, host: Optional[str] = None) -> bool:
+    """Case-insensitive platform token match with legacy support.
+
+    An advertised ``<OS>.<ARCH>`` must equal the host token exactly;
+    a legacy bare-OS entry (``Windows``) matches any arch of that OS.
+    """
+    host = (host or current_platform()).lower()
+    adv = (advertised or "").strip().lower()
+    if not adv:
+        return False
+    if adv == host:
+        return True
+    return adv == host.split(".", 1)[0]  # legacy bare-OS entry
+
+
+def abi_compatible(binary) -> bool:
+    """True if a binary entry's ABI constraints are satisfied by this host.
+
+    Understands ``{"abi": {"glibc": "2.28"}}``: compatible when the host
+    glibc is >= the floor the binary was built against.  Absent or
+    unknown constraints pass (assume compatible).
+    """
+    abi = (
+        binary.get("abi") if isinstance(binary, dict)
+        else getattr(binary, "abi", None)
+    )
+    if not isinstance(abi, dict):
+        return True
+    floor = abi.get("glibc")
+    if floor:
+        host = host_glibc()
+        if host is not None:
+            try:
+                major, minor = str(floor).split(".")[:2]
+                return host >= (int(major), int(minor))
+            except (ValueError, IndexError):
+                return True
+    return True
+
+
+def find_local_binary_install(
+    name: str,
+    version: str,
+    source_path: Optional[Path] = None,
+) -> Optional[Path]:
+    """Locate a locally built + installed binary layout for an object.
+
+    A local binary is an *install layout* containing a CMake package config
+    (``*Config.cmake``).  Searched locations:
+    - ``~/.o3de/BuiltPackages/<name>-<version>/`` and ``.../<name>/``
+    - ``<source_path>/install/``
+    """
+    roots: list[Path] = []
+    built_packages = Path.home() / ".o3de" / "BuiltPackages"
+    roots.append(built_packages / f"{name}-{version}")
+    roots.append(built_packages / name)
+    if source_path:
+        roots.append(Path(source_path) / "install")
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            next(root.rglob("*Config.cmake"))
+        except StopIteration:
+            continue
+        return root
+    return None
+
+
+def has_remote_binary(candidate: Candidate, platform: Optional[str] = None) -> bool:
+    """True if a release advertises a prebuilt binary for *platform*.
+
+    Prefers the release whose name matches the candidate version; falls back
+    to any release carrying a platform-matching binary.
+    """
+    platform = platform or current_platform()
+
+    releases: list = []
+    if candidate.resolved_object is not None:
+        releases = candidate.resolved_object.data.get("releases", []) or []
+    elif candidate.remote_object is not None:
+        releases = getattr(candidate.remote_object, "releases", None) or []
+
+    def _release_has_binary(release) -> bool:
+        binaries = (
+            release.get("binaries", []) if isinstance(release, dict)
+            else getattr(release, "binaries", []) or []
+        )
+        for binary in binaries:
+            bin_platform = (
+                binary.get("platform", "") if isinstance(binary, dict)
+                else getattr(binary, "platform", "")
+            )
+            if platform_matches(bin_platform, platform) and abi_compatible(binary):
+                return True
+        return False
+
+    # Exact version-named release first
+    for release in releases:
+        rel_name = (
+            release.get("name", "") if isinstance(release, dict)
+            else getattr(release, "name", "")
+        )
+        if rel_name == candidate.version and _release_has_binary(release):
+            return True
+    # Fallback: any release with a platform binary
+    return any(_release_has_binary(r) for r in releases)
+
+
+def annotate_artifacts(candidate: Candidate) -> Candidate:
+    """Populate artifact availability fields on *candidate* (in place)."""
+    candidate.local_binary_path = find_local_binary_install(
+        candidate.name, candidate.version, candidate.path,
+    )
+    candidate.remote_binary = has_remote_binary(candidate)
+    return candidate
+
+
+def list_candidates(
+    name: str,
+    resolver: Resolver,
+    store: Optional[Store] = None,
+    specifier: str = "",
+) -> list[Candidate]:
+    """Enumerate ALL candidates for *name* that satisfy *specifier*.
+
+    Returns local (every registered version, via resolver.objects_all) and
+    remote (store-advertised) candidates, newest-first, each annotated with
+    artifact availability (source path, local binary install, remote binary).
+    """
+    provider = O3DEProvider(resolver, store)
+    try:
+        spec = SpecifierSet(specifier)
+    except Exception:
+        spec = SpecifierSet()
+    requirement = Requirement(name=name, specifier=spec)
+    candidates = provider.find_matches(name, {name: [requirement]}, {})
+    for candidate in candidates:
+        annotate_artifacts(candidate)
+    return candidates

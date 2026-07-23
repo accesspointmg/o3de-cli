@@ -380,11 +380,13 @@ class TestBuildCommandCMake:
         from o3de_cli.commands.workspace import workspace
         ws, engine_dir, project_dir = self._ws_with_engine_and_project(tmp_path)
 
-        # Pre-create the build dir with CMakeCache.txt
+        # Pre-create the build dir with CMakeCache.txt.
+        # The build dir lives at the WORKSPACE root (not inside the project
+        # tree) to keep autogen paths under Windows MAX_PATH.
         import sys
         platform_dir = {"win32": "windows", "linux": "linux", "darwin": "mac"}.get(
             sys.platform, sys.platform)
-        build_dir = project_dir / "build" / platform_dir
+        build_dir = ws / "build" / platform_dir
         build_dir.mkdir(parents=True)
         (build_dir / "CMakeCache.txt").write_text("# fake cache")
 

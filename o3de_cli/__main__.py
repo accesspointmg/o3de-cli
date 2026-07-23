@@ -17,6 +17,7 @@ from o3de_cli.commands import audit as audit_cmd
 from o3de_cli.commands import deps as deps_cmd
 from o3de_cli.commands import repo as repo_cmd
 from o3de_cli.commands import overlay as overlay_cmd
+from o3de_cli.commands import object as object_cmd
 
 console = Console()
 
@@ -72,6 +73,7 @@ cli.add_command(audit_cmd.audit)
 cli.add_command(deps_cmd.deps)
 cli.add_command(repo_cmd.repo)
 cli.add_command(overlay_cmd.overlay)
+cli.add_command(object_cmd.object_group)
 
 
 # MCP server command

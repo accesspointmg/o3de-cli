@@ -126,9 +126,10 @@ class Download(BaseModel):
 
 class Binary(BaseModel):
     """Pre-built binary download option."""
-    platform: str = Field(description="Target platform (e.g., 'Windows 11 AMD64')")
+    platform: str = Field(description="Target platform token <OS>.<ARCH> (e.g. 'Windows.AMD64'); legacy bare-OS tokens accepted")
     binary: str = Field(description="Binary archive URL")
     sha256: Optional[str] = Field(default=None, description="SHA-256 hash of binary archive")
+    abi: Optional[dict[str, str]] = Field(default=None, description="ABI constraints, e.g. {'glibc': '2.28'} = built against glibc 2.28, runs on >= 2.28")
 
 
 class Release(BaseModel):
@@ -432,6 +433,26 @@ class WorkspaceSources(BaseModel):
     overlays: dict[str, str] = Field(default_factory=dict, description="overlay name → path")
 
 
+class ObjectOverride(BaseModel):
+    """A user-chosen override for one resolved object.
+
+    The override pins the object to an exact version (fed to the solver as
+    an ``==`` constraint) and selects the artifact form to consume:
+    - ``source``        — link the source tree into the workspace (default)
+    - ``local-binary``  — use a locally built install layout (*Config.cmake)
+    - ``remote-binary`` — download the prebuilt release binary
+    """
+    version: str = Field(description="Exact pinned version")
+    artifact: str = Field(
+        default="source",
+        description="Artifact form: source, local-binary, or remote-binary",
+    )
+    path: Optional[str] = Field(
+        default=None,
+        description="Explicit path to the chosen candidate (source tree or binary install)",
+    )
+
+
 class WorkspaceMeta(BaseO3DEObject):
     """O3DE Workspace metadata.
 
@@ -446,6 +467,10 @@ class WorkspaceMeta(BaseO3DEObject):
     sources: WorkspaceSources = Field(
         default_factory=WorkspaceSources,
         description="Categorised source objects (type → name → path)",
+    )
+    overrides: dict[str, ObjectOverride] = Field(
+        default_factory=dict,
+        description="User overrides: object name → pinned version + artifact form",
     )
     file_links: dict[str, str] = Field(
         default_factory=dict,

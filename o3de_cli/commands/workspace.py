@@ -18,6 +18,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -458,7 +459,18 @@ def create_command(
             file_links=workspace_obj.get_file_links(),
         )
         _write_workspace_meta(output_path, meta)
-        
+
+        # Write the workspace-scoped CMake resolved manifest — the
+        # compose-time solve realized on disk; CMake consumes this
+        # instead of re-resolving against the user manifest.
+        progress.update(task2, description="Writing CMake manifest...")
+        from o3de_cli.core.cmake_manifest import generate_cmake_manifest
+        tp = _find_third_party_path(meta=meta)
+        generate_cmake_manifest(
+            output_path,
+            third_party_path=str(tp) if tp else "",
+        )
+
         progress.update(task2, description="Done")
 
     if as_json:
@@ -483,6 +495,426 @@ def create_command(
             if solve_result.remote_count:
                 console.print(f"  Remote (not installed): {solve_result.remote_count}")
         console.print(f"  Overlays: {len(overlay_tuples)}")
+
+
+def _resolve_workspace_path(name_or_path: str) -> Path | None:
+    """Locate a workspace directory by path or registered name."""
+    ws_path = Path(name_or_path)
+    if not ws_path.exists():
+        ws_path = get_default_workspaces_path() / name_or_path
+    return ws_path if ws_path.exists() else None
+
+
+def _workspace_root_name(meta: WorkspaceMeta, resolver: Resolver) -> str | None:
+    """Map the workspace's root_object path back to a manifest object name."""
+    if not meta.root_object:
+        return None
+    root_path = Path(meta.root_object).resolve()
+    for obj_name, obj in resolver.objects.items():
+        if obj.path and obj.path.resolve() == root_path:
+            return obj_name
+    return root_path.name
+
+
+def _relink_object(
+    ws_path: Path,
+    meta: WorkspaceMeta,
+    name: str,
+    new_path: Path,
+    obj_type: ObjectType,
+    all_objects: dict[str, tuple[Path, ObjectType]],
+) -> None:
+    """Replace one object's linked tree in the workspace with *new_path*.
+
+    Removes the old destination directory, relinks from the new source,
+    and updates meta.sources + meta.file_links in place.
+    """
+    import shutil
+    from o3de_cli.core.workspace import (
+        _TYPE_FOLDERS, _short_name, _ENGINE_SKIP_TOPDIRS,
+    )
+
+    folder = _TYPE_FOLDERS.get(obj_type, "Gems")
+    short = _short_name(name)
+    dest_root = ws_path / folder / short
+    dest_prefix = f"{folder}/{short}/"
+
+    # Remove the old linked tree (hard links — sources unaffected)
+    if dest_root.exists():
+        def _clear_readonly(func, path, _exc_info):
+            import os, stat
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        shutil.rmtree(dest_root, onexc=_clear_readonly)
+
+    # Drop stale file_links for this object
+    meta.file_links = {
+        src: rel for src, rel in meta.file_links.items()
+        if not rel.startswith(dest_prefix)
+    }
+
+    # Relink from the new source using the standard composer (nested-object
+    # boundary detection needs the full resolved object map)
+    ws = Workspace(
+        root_path=ws_path,
+        root_object_path=Path(meta.root_object) if meta.root_object else new_path,
+        root_object_type=obj_type,
+    )
+    ws.resolved_objects = dict(all_objects)
+    ws.resolved_objects[name] = (new_path, obj_type)
+    ws._link_object_files(
+        source_root=new_path,
+        dest_root=dest_root,
+        owner_name=name,
+        skip_topdirs=_ENGINE_SKIP_TOPDIRS if obj_type == ObjectType.ENGINE else None,
+    )
+    meta.file_links.update(ws.get_file_links())
+
+    # Update the sources bucket
+    bucket_key = {
+        ObjectType.ENGINE: "engines", ObjectType.PROJECT: "projects",
+        ObjectType.GEM: "gems", ObjectType.TEMPLATE: "templates",
+    }.get(obj_type, "gems")
+    getattr(meta.sources, bucket_key)[name] = str(new_path)
+
+
+@workspace.command("candidates")
+@click.argument("name_or_path")
+@click.option("--name", "object_name", default=None,
+              help="Limit output to one object")
+@click.option("--include-store", is_flag=True,
+              help="Include remote store candidates")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def candidates_command(
+    name_or_path: str,
+    object_name: str | None,
+    include_store: bool,
+    as_json: bool,
+) -> None:
+    """List all candidates that could satisfy each resolved object.
+
+    For every object in the workspace, enumerates every registered local
+    version and (with --include-store) remote advertised versions, annotated
+    with artifact availability: source path, locally built binary install,
+    and remote prebuilt binary for this platform.
+    """
+    from o3de_cli.core.json_output import emit_response, emit_error
+    from o3de_cli.core.solver import list_candidates
+
+    ws_path = _resolve_workspace_path(name_or_path)
+    if ws_path is None:
+        if as_json:
+            emit_error(f"Workspace not found: {name_or_path}", code="E_WS_NOT_FOUND")
+        else:
+            console.print(f"[red]Workspace not found:[/red] {name_or_path}")
+        raise SystemExit(1)
+
+    meta = _read_workspace_meta(ws_path)
+    if meta is None:
+        if as_json:
+            emit_error(f"Not a valid workspace: {ws_path}", code="E_WS_INVALID")
+        else:
+            console.print(f"[red]Not a valid workspace:[/red] {ws_path}")
+        raise SystemExit(1)
+
+    resolver = Resolver()
+    resolver.resolve()
+
+    store = None
+    if include_store:
+        from o3de_cli.core.store import Store
+        store = Store()
+        store.refresh_sync(resolver.manifest_remotes)
+
+    root_name = _workspace_root_name(meta, resolver)
+    pins = {n: o.version for n, o in meta.overrides.items()}
+    solve_result = None
+    if root_name and root_name in resolver.objects:
+        solve_result = solve_for_workspace(
+            root_name=root_name, resolver=resolver, store=store, overrides=pins,
+        )
+
+    # Collect the object set to report: solved candidates + children,
+    # falling back to workspace sources
+    chosen: dict[str, tuple[str, str, str]] = {}  # name -> (version, type, path)
+    if solve_result and solve_result.is_resolved:
+        for cand_map in (solve_result.candidates, solve_result.children):
+            for cname, cand in cand_map.items():
+                chosen[cname] = (
+                    cand.version,
+                    cand.object_type.value,
+                    str(cand.path) if cand.path else "",
+                )
+    else:
+        for bucket, type_name in (
+            (meta.sources.engines, "engine"), (meta.sources.projects, "project"),
+            (meta.sources.gems, "gem"), (meta.sources.templates, "template"),
+        ):
+            for cname, cpath in bucket.items():
+                chosen[cname] = ("", type_name, cpath)
+
+    names = [object_name] if object_name else sorted(chosen)
+    objects_out = []
+    for cname in names:
+        version, type_name, path = chosen.get(cname, ("", "", ""))
+        cands = list_candidates(cname, resolver, store)
+        override = meta.overrides.get(cname)
+        objects_out.append({
+            "name": cname,
+            "type": type_name,
+            "chosen_version": version,
+            "chosen_path": path,
+            "override": override.model_dump() if override else None,
+            "candidates": [
+                {
+                    "version": c.version,
+                    "status": c.status.value,
+                    "path": str(c.path) if c.path else None,
+                    "local_binary_path": (
+                        str(c.local_binary_path) if c.local_binary_path else None
+                    ),
+                    "remote_binary": c.remote_binary,
+                }
+                for c in cands
+            ],
+        })
+
+    if as_json:
+        emit_response(data={"workspace": str(ws_path), "objects": objects_out})
+        return
+
+    table = Table(title=f"Candidates — {meta.workspace.name}")
+    table.add_column("Object")
+    table.add_column("Chosen")
+    table.add_column("Candidates")
+    table.add_column("Override")
+    for entry in objects_out:
+        cand_strs = []
+        for c in entry["candidates"]:
+            forms = ["source"] if c["path"] else []
+            if c["local_binary_path"]:
+                forms.append("local-binary")
+            if c["remote_binary"]:
+                forms.append("remote-binary")
+            cand_strs.append(f"{c['version']} ({c['status']}; {'/'.join(forms) or '—'})")
+        ov = entry["override"]
+        ov_str = f"{ov['version']} [{ov['artifact']}]" if ov else ""
+        table.add_row(
+            entry["name"], entry["chosen_version"],
+            ", ".join(cand_strs) or "—", ov_str,
+        )
+    console.print(table)
+
+
+@workspace.command("override")
+@click.argument("name_or_path")
+@click.argument("object_name")
+@click.option("--version", "pin_version", default=None,
+              help="Exact version to pin (required unless --clear)")
+@click.option("--artifact",
+              type=click.Choice(["source", "local-binary", "remote-binary",
+                                 "remote-source"]),
+              default="source", help="Artifact form to use")
+@click.option("--clear", is_flag=True, help="Remove the override for this object")
+@click.option("--no-apply", is_flag=True,
+              help="Validate and persist only — don't relink the workspace")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def override_command(
+    name_or_path: str,
+    object_name: str,
+    pin_version: str | None,
+    artifact: str,
+    clear: bool,
+    no_apply: bool,
+    as_json: bool,
+) -> None:
+    """Override the resolved candidate for one object.
+
+    Pins OBJECT_NAME to an exact version (fed to the solver as an ``==``
+    constraint), re-solves the full graph, and relinks any objects whose
+    chosen source changed.
+
+    Example:
+        o3de workspace override my-ws org.o3de.gem.physx --version 4.0.0
+        o3de workspace override my-ws org.o3de.gem.physx --clear
+    """
+    from o3de_cli.core.json_output import emit_response, emit_error
+    from o3de_cli.core.models import ObjectOverride
+    from o3de_cli.core.solver import find_local_binary_install
+
+    def _fail(msg: str, code: str) -> None:
+        if as_json:
+            emit_error(msg, code=code)
+        else:
+            console.print(f"[red]{msg}[/red]")
+        raise SystemExit(1)
+
+    if not clear and not pin_version:
+        _fail("--version is required (or use --clear)", "E_INVALID_ARGS")
+
+    ws_path = _resolve_workspace_path(name_or_path)
+    if ws_path is None:
+        _fail(f"Workspace not found: {name_or_path}", "E_WS_NOT_FOUND")
+    meta = _read_workspace_meta(ws_path)
+    if meta is None:
+        _fail(f"Not a valid workspace: {ws_path}", "E_WS_INVALID")
+
+    # Resolve local objects up front (needed for remote-binary release
+    # metadata and for the validation re-solve below)
+    resolver = Resolver()
+    resolver.resolve()
+
+    # Compute the new override set
+    new_overrides = dict(meta.overrides)
+    if clear:
+        if object_name not in new_overrides:
+            _fail(f"No override present for {object_name}", "E_NO_OVERRIDE")
+        del new_overrides[object_name]
+    else:
+        override = ObjectOverride(version=pin_version, artifact=artifact)
+        if artifact == "local-binary":
+            binary = find_local_binary_install(object_name, pin_version)
+            if binary is None:
+                _fail(
+                    f"No local binary install found for "
+                    f"{object_name}@{pin_version} (expected an install layout "
+                    f"with *Config.cmake under ~/.o3de/BuiltPackages)",
+                    "E_NO_LOCAL_BINARY",
+                )
+            override.path = str(binary)
+        elif artifact == "remote-binary":
+            from o3de_cli.core.gem_package import download_remote_binary
+
+            versions = getattr(resolver, "objects_all", {}).get(object_name, {})
+            resolved = versions.get(pin_version) or resolver.objects.get(object_name)
+            data = resolved.data if resolved is not None else {}
+
+            def _dl_progress(msg: str) -> None:
+                if not as_json:
+                    console.print(f"[dim]{msg}[/dim]")
+
+            try:
+                pkg = download_remote_binary(
+                    object_name, pin_version, data, on_progress=_dl_progress,
+                )
+            except Exception as e:
+                _fail(f"Remote binary unavailable: {e}", "E_NO_REMOTE_BINARY")
+                return
+            override.path = str(pkg)
+        elif artifact == "remote-source":
+            from o3de_cli.core.gem_package import download_remote_source
+            from o3de_cli.core.models import ObjectType
+
+            versions = getattr(resolver, "objects_all", {}).get(object_name, {})
+            resolved = versions.get(pin_version) or resolver.objects.get(object_name)
+            data = resolved.data if resolved is not None else {}
+
+            def _src_progress(msg: str) -> None:
+                if not as_json:
+                    console.print(f"[dim]{msg}[/dim]")
+
+            try:
+                src = download_remote_source(
+                    object_name, pin_version, data, on_progress=_src_progress,
+                )
+            except Exception as e:
+                _fail(f"Remote source unavailable: {e}", "E_NO_REMOTE_SOURCE")
+                return
+            # Register the extracted source and re-resolve so the pinned
+            # version becomes a LOCAL source candidate; once materialized
+            # it is a plain source override.
+            resolver._add_to_manifest(src, ObjectType.GEM)
+            resolver = Resolver()
+            resolver.resolve()
+            override = ObjectOverride(version=pin_version, artifact="source")
+            override.path = str(src)
+        new_overrides[object_name] = override
+
+    # Re-solve with the new pins — validate before persisting anything
+    root_name = _workspace_root_name(meta, resolver)
+    if not root_name or root_name not in resolver.objects:
+        _fail("Workspace root object is not registered in the manifest", "E_NO_ROOT")
+
+    pins = {n: o.version for n, o in new_overrides.items()}
+    solve_result = solve_for_workspace(
+        root_name=root_name, resolver=resolver, overrides=pins,
+    )
+    if not solve_result.is_resolved:
+        _fail(
+            f"Override rejected — resolution failed: {solve_result.conflict_message}",
+            "E_SOLVE_CONFLICT",
+        )
+
+    # Persist the override set
+    meta.overrides = new_overrides
+
+    # Determine which linked objects changed and relink them
+    new_map: dict[str, tuple[Path, ObjectType]] = {}
+    for cand_map in (solve_result.candidates, solve_result.children):
+        for cname, cand in cand_map.items():
+            if cand.status == CandidateStatus.LOCAL and cand.path:
+                new_map[cname] = (cand.path, cand.object_type)
+
+    changed: list[str] = []
+    if not no_apply:
+        current: dict[str, str] = {}
+        for bucket in (meta.sources.engines, meta.sources.projects,
+                       meta.sources.gems, meta.sources.templates):
+            current.update(bucket)
+
+        root_resolved = Path(meta.root_object).resolve() if meta.root_object else None
+        for cname, (cpath, ctype) in new_map.items():
+            if root_resolved and cpath.resolve() == root_resolved:
+                continue  # the root object itself is never relinked here
+            old_path = current.get(cname)
+            if old_path and Path(old_path).resolve() == cpath.resolve():
+                continue
+            _relink_object(ws_path, meta, cname, cpath, ctype, new_map)
+            changed.append(cname)
+
+        _write_workspace_meta(ws_path, meta)
+
+        # Regenerate the workspace-scoped CMake manifest
+        from o3de_cli.core.cmake_manifest import generate_cmake_manifest
+        tp = _find_third_party_path(meta=meta)
+        generate_cmake_manifest(
+            ws_path,
+            third_party_path=str(tp) if tp else "",
+            overrides=meta.overrides,
+        )
+    else:
+        _write_workspace_meta(ws_path, meta)
+
+    if as_json:
+        emit_response(data={
+            "action": "cleared" if clear else "overridden",
+            "object": object_name,
+            "version": pin_version,
+            "artifact": artifact,
+            "relinked": changed,
+            "applied": not no_apply,
+        })
+    else:
+        if clear:
+            console.print(f"[green]Cleared override for[/green] {object_name}")
+        else:
+            console.print(
+                f"[green]Pinned[/green] {object_name}=={pin_version} [{artifact}]"
+            )
+        if changed:
+            console.print(f"  Relinked: {', '.join(changed)}")
+        elif not no_apply:
+            console.print("  No linked objects changed")
+        if artifact in ("local-binary", "remote-binary") and not clear:
+            console.print(
+                "[dim]Prebuilt package will be imported on the next "
+                "(re)configure instead of building the gem from source[/dim]"
+            )
+        elif artifact == "remote-source" and not clear:
+            console.print(
+                "[dim]Source release downloaded and registered — builds "
+                "from source like any local gem[/dim]"
+            )
 
 
 @workspace.command("update")
@@ -729,7 +1161,15 @@ def delete_command(name_or_path: str, force: bool, as_json: bool, dry_run: bool)
             console.print("[dim]Cancelled.[/dim]")
             return
     
-    shutil.rmtree(ws_path)
+    def _clear_readonly(func, path, _exc_info):
+        """Windows: build artifacts (e.g. FetchContent git pack files)
+        are read-only; clear the attribute and retry."""
+        import os
+        import stat
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
+    shutil.rmtree(ws_path, onexc=_clear_readonly)
     _unregister_workspace(ws_path)
     if as_json:
         emit_response(data={"action": "deleted", "workspace": str(ws_path)})
@@ -1015,6 +1455,23 @@ def _find_engine_path(meta: WorkspaceMeta) -> Path | None:
     return None
 
 
+def _workspace_local_dir(
+    ws_path: Path, folder: str, names: "Iterable[str]",
+) -> Path | None:
+    """Return the composed workspace directory for the first matching object.
+
+    Workspaces link objects into ``<ws>/<folder>/<short_name>``.  Builds
+    must run against these composed trees — not the original sources —
+    so that overlays and workspace-level composition take effect.
+    """
+    from o3de_cli.core.workspace import _short_name
+    for name in names:
+        candidate = ws_path / folder / _short_name(name)
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 def _find_project_path(meta: WorkspaceMeta) -> Path | None:
     """Find the project path from workspace metadata."""
     for _name, path in meta.sources.projects.items():
@@ -1102,7 +1559,7 @@ def _ensure_project_cmake_presets(
     if not data:
         data = dict(_CMAKE_PRESETS_TEMPLATE)
         data["include"] = [engine_include]
-        preset_path.write_text(json.dumps(data, indent=4) + "\n")
+        _write_unlinked(preset_path, json.dumps(data, indent=4) + "\n")
         return True
 
     includes = data.get("include", [])
@@ -1113,8 +1570,23 @@ def _ensure_project_cmake_presets(
 
     # Replace includes to point at current engine only
     data["include"] = [engine_include]
-    preset_path.write_text(json.dumps(data, indent=4) + "\n")
+    _write_unlinked(preset_path, json.dumps(data, indent=4) + "\n")
     return True
+
+
+def _write_unlinked(path: Path, content: str) -> None:
+    """Write *content* to *path*, breaking any hard/sym link first.
+
+    Workspace files are hard links (or symlinks) to the original
+    sources.  Writing through a hard link would modify the source
+    file, so remove the link and create an independent file.
+    """
+    if path.exists() or path.is_symlink():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    path.write_text(content)
 
 
 def _run_cmake(
@@ -1295,9 +1767,15 @@ def build_command(
             console.print(f"[red]Not a valid workspace:[/red] {ws_path}")
         raise SystemExit(1)
 
-    # Resolve paths
-    engine_path = _find_engine_path(meta)
-    project_path = _find_project_path(meta)
+    # Resolve paths — prefer the composed workspace trees over the
+    # original source paths, so builds use the workspace composition
+    # (engine without embedded gems, workspace-level Gems/, overlays).
+    engine_path = _workspace_local_dir(
+        ws_path, "Engines", meta.sources.engines.keys(),
+    ) or _find_engine_path(meta)
+    project_path = _workspace_local_dir(
+        ws_path, "Projects", meta.sources.projects.keys(),
+    ) or _find_project_path(meta)
 
     if not engine_path:
         if as_json:
@@ -1328,14 +1806,16 @@ def build_command(
     # Platform build subdirectory
     platform_dir = _PLATFORM_BUILD_DIR.get(sys.platform, sys.platform)
 
-    # Determine source and build directories
+    # Determine source and build directories.
+    # The build dir lives at the workspace root (not inside the engine or
+    # project trees) to keep paths short — deep autogen/moc output paths
+    # can otherwise exceed Windows MAX_PATH (260 chars).
     if engine_centric:
         source_dir = engine_path
-        build_dir = engine_path / "build" / platform_dir
     else:
         assert project_path is not None
         source_dir = project_path
-        build_dir = project_path / "build" / platform_dir
+    build_dir = ws_path / "build" / platform_dir
 
     mode = "engine-centric" if engine_centric else "project-centric"
 
@@ -1352,8 +1832,9 @@ def build_command(
 
     # ------------------------------------------------------------------
     # K2: Ensure project CMakePresets.json includes engine presets
+    # (skipped on --dry-run: must not mutate any files)
     # ------------------------------------------------------------------
-    if not engine_centric and project_path:
+    if not dry_run and not engine_centric and project_path:
         if _ensure_project_cmake_presets(project_path, engine_path):
             if not as_json:
                 console.print(
@@ -1387,6 +1868,19 @@ def build_command(
             configure_cmd.append(f"-DLY_3RDPARTY_PATH={tp_path}")
         if engine_centric and project_path:
             configure_cmd.append(f"-DLY_PROJECTS={project_path}")
+
+        # Workspace-scoped resolved manifest: point CMake at the
+        # compose-time solution instead of ~/.o3de's user manifest.
+        ws_cmake_manifest = ws_path / "resolved_o3de_manifest.json"
+        if ws_cmake_manifest.exists():
+            configure_cmd.append(
+                f"-DO3DE_RESOLVED_MANIFEST={ws_cmake_manifest.as_posix()}"
+            )
+        # Tell the project bootstrap where the composed engine lives
+        if engine_path and not engine_centric:
+            configure_cmd.append(
+                f"-DO3DE_ENGINE_PATH={Path(engine_path).as_posix()}"
+            )
 
     if not configure_only:
         cmake_config = {"debug": "Debug", "profile": "Profile", "release": "Release"}[config]
