@@ -47,6 +47,11 @@ REQUIRED_FIELDS = {
 
 # Required header fields inside the type dict
 REQUIRED_HEADER_FIELDS = ["name", "version"]
+# Repos are living indexes, not consumable artifacts: nothing depends on a repo
+# by version, so their header only requires a name. Snapshots use 'releases'.
+REQUIRED_HEADER_FIELDS_BY_TYPE = {
+    "repo": ["name"],
+}
 
 
 @click.group()
@@ -354,7 +359,7 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
     type_key = obj_type.value
     type_data = data.get(type_key, {})
     if isinstance(type_data, dict):
-        for field in REQUIRED_HEADER_FIELDS:
+        for field in REQUIRED_HEADER_FIELDS_BY_TYPE.get(type_key, REQUIRED_HEADER_FIELDS):
             val = type_data.get(field)
             if not val:
                 errors.append(f"Missing required header field: '{type_key}.{field}'")
