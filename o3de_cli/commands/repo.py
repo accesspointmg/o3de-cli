@@ -20,12 +20,28 @@ def repo() -> None:
 @repo.command("list")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def list_repos(as_json: bool) -> None:
-    """List all registered repos."""
+    """List all registered repos (local and remote)."""
     from o3de_cli.core.resolver import Resolver
 
     resolver = Resolver()
     resolver.resolve()
     repos = resolver.repos
+
+    # Remote repos registered in the manifest
+    remote_repos = []
+    from o3de_cli.core.models import ObjectType
+    from o3de_cli.core.store import Store, get_manifest_remote_urls
+
+    remote_urls = get_manifest_remote_urls()
+    if remote_urls:
+        store = Store()
+        try:
+            store.refresh_sync(remote_urls)
+        except Exception:
+            pass
+        for obj in store.objects.values():
+            if obj.object_type == ObjectType.REPO:
+                remote_repos.append(obj)
 
     if as_json:
         import json as json_mod
@@ -33,22 +49,28 @@ def list_repos(as_json: bool) -> None:
         items = []
         for name, obj in repos.items():
             items.append(
-                {"name": obj.name, "version": obj.version, "path": str(obj.path)}
+                {"name": obj.name, "version": obj.version, "path": str(obj.path), "source": "local"}
+            )
+        for obj in remote_repos:
+            items.append(
+                {"name": obj.name, "version": obj.version, "path": obj.url, "source": "remote"}
             )
         click.echo(json_mod.dumps(items, indent=2))
         return
 
-    if not repos:
+    if not repos and not remote_repos:
         console.print("[yellow]No repos registered.[/yellow]")
         return
 
     table = Table(title="Registered Repos")
     table.add_column("Name", style="cyan")
-    table.add_column("Version", style="green")
-    table.add_column("Path", style="dim")
+    table.add_column("Source", style="blue")
+    table.add_column("Location", style="dim")
 
     for name, obj in repos.items():
-        table.add_row(obj.name, obj.version or "unknown", str(obj.path))
+        table.add_row(obj.name, "local", str(obj.path))
+    for obj in remote_repos:
+        table.add_row(obj.name, "remote", obj.url)
 
     console.print(table)
 

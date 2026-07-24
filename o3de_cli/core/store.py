@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import hashlib
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
@@ -125,6 +126,7 @@ class RemoteObject:
         documentation_url: str = "",
         source_control_url: Optional[str] = None,
         source_control_branch: Optional[str] = None,
+        source_control_tag: Optional[str] = None,
         download_url: Optional[str] = None,
         gem_type: str = "",
         tags: Optional[list[str]] = None,
@@ -135,6 +137,8 @@ class RemoteObject:
         parent_repo_url: Optional[str] = None,
         inherited_source_control_url: Optional[str] = None,
         inherited_source_control_branch: Optional[str] = None,
+        # Path of this object within its containing repo (for subdir extraction)
+        repo_relative_path: Optional[str] = None,
         # Dependencies (specifier strings for transitive solving)
         dependencies: Optional[list[str]] = None,
     ):
@@ -154,6 +158,7 @@ class RemoteObject:
         self.documentation_url = documentation_url
         self.source_control_url = source_control_url
         self.source_control_branch = source_control_branch
+        self.source_control_tag = source_control_tag
         self.download_url = download_url
         self.gem_type = gem_type
         self.tags = tags or []
@@ -164,6 +169,7 @@ class RemoteObject:
         self.parent_repo_url = parent_repo_url
         self.inherited_source_control_url = inherited_source_control_url
         self.inherited_source_control_branch = inherited_source_control_branch
+        self.repo_relative_path = repo_relative_path
         # Dependencies (parsed from dependent field for transitive solving)
         self.dependencies: list[str] = dependencies or []
     
@@ -272,6 +278,49 @@ class Cache:
             return count
 
 
+def get_manifest_remote_urls(manifest_path: Optional[Path] = None) -> list[str]:
+    """Collect remote repo URLs from the user manifest.
+
+    Handles Schema 2.0.0 (``remote.repos``), legacy flat ``remotes``,
+    and URLs that ended up in ``local.repos`` / root ``repos``.
+    """
+    from .paths import get_manifest_path
+
+    path = manifest_path or get_manifest_path()
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r") as f:
+            manifest = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return []
+
+    urls: list[str] = []
+
+    remote = manifest.get("remote", {})
+    if isinstance(remote, dict):
+        urls.extend(u for u in remote.get("repos", []) if isinstance(u, str))
+
+    for u in manifest.get("remotes", []) or []:
+        if isinstance(u, str):
+            urls.append(u)
+
+    local = manifest.get("local", {})
+    repo_paths = (local.get("repos", []) if isinstance(local, dict) else []) or manifest.get("repos", []) or []
+    for u in repo_paths:
+        if isinstance(u, str) and u.startswith(("http://", "https://")):
+            urls.append(u)
+
+    # De-dupe, preserve order
+    seen: set[str] = set()
+    result = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            result.append(u)
+    return result
+
+
 class Store:
     """
     O3DE Store interface for browsing and downloading remote objects.
@@ -282,8 +331,7 @@ class Store:
         
         gems = store.search("physics", object_type=ObjectType.GEM)
         await store.download(gems[0], target_path)
-    """
-    
+    """    
     def __init__(
         self,
         cache: Optional[Cache] = None,
@@ -448,7 +496,7 @@ class Store:
                     self.objects[key] = remote_obj
             
             # Queue any remote links
-            new_urls = self._extract_remote_urls(data)
+            new_urls = self._extract_remote_urls(data, base_url=url)
             for new_url in new_urls:
                 if new_url not in self._visited_urls:
                     queue.append(new_url)
@@ -532,7 +580,7 @@ class Store:
                 child_sc_url = inherited_sc_url
                 child_sc_branch = inherited_sc_branch
             
-            new_urls = self._extract_remote_urls(data)
+            new_urls = self._extract_remote_urls(data, base_url=url)
             for new_url in new_urls:
                 if new_url not in self._visited_urls:
                     queue.append((new_url, child_repo_url, child_sc_url, child_sc_branch))
@@ -601,6 +649,32 @@ class Store:
                 source_control_data.get("git")
             )
             source_control_branch = source_control_data.get("branch") or ""
+            source_control_tag = source_control_data.get("tag") or ""
+            
+            # Schema 2.0.0: releases[] carry immutable acquisition pointers
+            # (git url + tag stamped at release-cut time). Prefer the latest
+            # release's source_controls entry when the object has no live
+            # source_control of its own.
+            releases = data.get("releases", [])
+            if not source_control_url and isinstance(releases, list) and releases:
+                latest = releases[-1]
+                if isinstance(latest, dict):
+                    for sc in latest.get("source_controls", []) or []:
+                        if isinstance(sc, dict) and sc.get("git"):
+                            source_control_url = sc["git"]
+                            source_control_tag = sc.get("tag") or source_control_tag
+                            source_control_branch = sc.get("branch") or source_control_branch
+                            break
+            
+            # Compute this object's directory relative to its containing
+            # repo (used to extract a contained object from a repo clone)
+            repo_relative_path: Optional[str] = None
+            if parent_repo_url:
+                repo_base = parent_repo_url.rsplit("/", 1)[0] + "/"
+                if url.startswith(repo_base):
+                    rel = url[len(repo_base):]
+                    # Strip the trailing json filename, keep the directory
+                    repo_relative_path = rel.rsplit("/", 1)[0] if "/" in rel else ""
             
             download_data = data.get("download", {}) or {}
             download_url = (
@@ -640,6 +714,7 @@ class Store:
                 documentation_url=documentation_url,
                 source_control_url=source_control_url,
                 source_control_branch=source_control_branch,
+                source_control_tag=source_control_tag,
                 download_url=download_url,
                 source_sha256=source_sha256,
                 gem_type=gem_type,
@@ -648,27 +723,50 @@ class Store:
                 parent_repo_url=parent_repo_url,
                 inherited_source_control_url=inherited_source_control_url,
                 inherited_source_control_branch=inherited_source_control_branch,
+                repo_relative_path=repo_relative_path,
                 dependencies=dep_specs,
             )
         except Exception as e:
             logger.warning(f"Failed to parse object at {url}: {e}")
             return None
     
-    def _extract_remote_urls(self, data: dict) -> list[str]:
-        """Extract all remote object URLs from JSON."""
+    def _extract_remote_urls(self, data: dict, base_url: str = "") -> list[str]:
+        """Extract all remote object URLs from JSON.
+
+        Args:
+            data: Parsed object JSON
+            base_url: URL this JSON was fetched from; used to resolve
+                Schema 2.0.0 ``children`` relative paths against the
+                repo's own location.
+        """
         urls = []
         
-        # Check for nested remote structure (manifest style)
+        # Check for nested remote structure (manifest / repo 2.0.0 style)
+        # remote.* entries are absolute URLs to OTHER objects (federation)
         remote = data.get("remote", {})
         if isinstance(remote, dict):
             for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
-                urls.extend(remote.get(key, []))
+                urls.extend(u for u in remote.get(key, []) if isinstance(u, str))
         
-        # Also check top-level arrays (repo.json style)
+        # Schema 2.0.0: children.* entries are paths relative to this
+        # object's JSON location (contained objects)
+        children = data.get("children", {})
+        if isinstance(children, dict) and base_url:
+            base_dir = base_url.rsplit("/", 1)[0] + "/"
+            for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                for rel in children.get(key, []):
+                    if not isinstance(rel, str) or not rel:
+                        continue
+                    if rel.startswith(("http://", "https://")):
+                        urls.append(rel)
+                    else:
+                        urls.append(base_dir + rel.lstrip("/"))
+        
+        # Also check top-level arrays (legacy repo.json style)
         for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
             top_level = data.get(key, [])
             if isinstance(top_level, list):
-                urls.extend(top_level)
+                urls.extend(u for u in top_level if isinstance(u, str))
         
         return urls
     
@@ -894,20 +992,71 @@ class Store:
             obj_folder = target_path
         
         # Determine download method
-        if prefer_source_control and remote_obj.source_control_url:
-            # Git clone
-            clone_url = remote_obj.source_control_url
-            clone_path = obj_folder
+        effective_sc_url = remote_obj.effective_source_control_url
+        if prefer_source_control and effective_sc_url:
+            # Git clone. Prefer an immutable release tag, then a branch.
+            clone_url = effective_sc_url
+            ref = remote_obj.source_control_tag or remote_obj.effective_source_control_branch
+            
+            # Contained objects (repo children) live in a subdirectory of
+            # the repo clone: clone to a temp dir, then copy the subdir.
+            subdir = remote_obj.repo_relative_path
             
             if progress_callback:
                 # Use -1 for indeterminate progress (git clone doesn't report size)
                 progress_callback(f"Cloning {remote_obj.display_name or remote_obj.name}", -1, 100)
             
+            clone_cmd = ["git", "clone", "--depth", "1"]
+            if ref:
+                clone_cmd += ["--branch", ref]
+            
+            if subdir:
+                import shutil
+                import stat
+                import tempfile
+                
+                tmp_dir = Path(tempfile.mkdtemp(prefix="o3de_store_"))
+                clone_path = tmp_dir / "repo"
+                result = subprocess.run(
+                    clone_cmd + [clone_url, str(clone_path)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    raise StoreError(f"Git clone failed: {result.stderr}")
+                
+                src_dir = clone_path / subdir
+                if not src_dir.is_dir():
+                    raise StoreError(
+                        f"Object path '{subdir}' not found in repo clone {clone_url}"
+                    )
+                
+                obj_folder.parent.mkdir(parents=True, exist_ok=True)
+                if obj_folder.exists():
+                    raise StoreError(f"Target already exists: {obj_folder}")
+                shutil.copytree(src_dir, obj_folder)
+                
+                # Cleanup temp clone (handle read-only .git files on Windows)
+                def _on_rm_error(func, path, exc_info):
+                    os.chmod(path, stat.S_IWRITE)
+                    func(path)
+                shutil.rmtree(tmp_dir, onerror=_on_rm_error)
+                
+                if expected_sha256:
+                    verify_integrity(obj_folder, expected_sha256)
+                
+                if progress_callback:
+                    progress_callback("Clone complete", 100, 100)
+                
+                return obj_folder
+            
+            clone_path = obj_folder
+            
             # Ensure parent directory exists
             clone_path.parent.mkdir(parents=True, exist_ok=True)
             
             result = subprocess.run(
-                ["git", "clone", "--depth", "1", clone_url, str(clone_path)],
+                clone_cmd + [clone_url, str(clone_path)],
                 capture_output=True,
                 text=True,
             )

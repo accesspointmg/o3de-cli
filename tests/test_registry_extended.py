@@ -19,7 +19,7 @@ def _manifest(tmp_path, remotes=None):
         "o3de_manifest": {"name": "test"},
         "local": {"engines": [], "projects": [], "gems": [],
                   "templates": [], "repos": [], "overlays": []},
-        "remotes": remotes or [],
+        "remote": {"repos": remotes or []},
     })
     return mp
 
@@ -34,7 +34,7 @@ class TestRegistryAddRemote:
         assert result.exit_code == 0
         assert "Added" in result.output
         data = json.loads(mp.read_text())
-        assert "https://example.com/repo.json" in data["remotes"]
+        assert "https://example.com/repo.json" in data["remote"]["repos"]
 
     def test_add_remote_duplicate(self, tmp_path):
         from o3de_cli.commands.registry import registry
@@ -63,7 +63,7 @@ class TestRegistryRemoveRemote:
             result = runner.invoke(registry, ["remove-remote", "https://example.com/repo.json"])
         assert "Removed" in result.output
         data = json.loads(mp.read_text())
-        assert len(data["remotes"]) == 0
+        assert len(data["remote"]["repos"]) == 0
 
     def test_remove_remote_not_found(self, tmp_path):
         from o3de_cli.commands.registry import registry

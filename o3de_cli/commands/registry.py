@@ -72,6 +72,7 @@ def search_registry(query: str, obj_type: str, remote: bool = False, local: bool
     
     if not local:
         # Search remote store
+        from o3de_cli.core.store import get_manifest_remote_urls
         store = Store()
         
         with Progress(
@@ -81,6 +82,11 @@ def search_registry(query: str, obj_type: str, remote: bool = False, local: bool
             transient=True,
         ) as progress:
             task = progress.add_task("Searching remotes...", total=None)
+            
+            # Populate the store from configured remotes (cache-backed)
+            remote_urls = get_manifest_remote_urls()
+            if remote_urls:
+                store.refresh_sync(remote_urls)
             
             # Search cached remote objects
             remote_results = store.search(query, object_type=type_filter)
@@ -135,6 +141,13 @@ def install_package(package: str, version: str | None, install_path: str | None 
         console.print(f"[bold]Installing:[/bold] {package}{version_str}")
     
     store = Store()
+    
+    # Populate the store from configured remotes (cache-backed, so cheap
+    # when metadata is fresh)
+    from o3de_cli.core.store import get_manifest_remote_urls
+    remote_urls = get_manifest_remote_urls()
+    if remote_urls:
+        store.refresh_sync(remote_urls)
     
     # Search for the package - first try cached/refreshed store
     results = store.search(package)
@@ -284,13 +297,16 @@ def uninstall(package: str, as_json: bool) -> None:
 @click.argument("package", required=False)
 def update(package: str | None) -> None:
     """Update package(s) to latest version by re-resolving from remotes."""
-    from o3de_cli.core.store import Store
+    from o3de_cli.core.store import Store, get_manifest_remote_urls
     from rich.progress import Progress, SpinnerColumn, TextColumn
     
     store = Store()
+    remote_urls = get_manifest_remote_urls()
     
     if package:
         console.print(f"[bold]Updating:[/bold] {package}")
+        if remote_urls:
+            store.refresh_sync(remote_urls)
         results = store.search(package)
         if not results:
             console.print(f"[yellow]Package not found:[/yellow] {package}")
@@ -307,7 +323,7 @@ def update(package: str | None) -> None:
             console=console,
         ) as progress:
             task = progress.add_task("Refreshing...", total=None)
-            store.refresh_sync()
+            store.refresh_sync(remote_urls)
             progress.update(task, description="Done")
         
         console.print("[green]Remote index updated.[/green]")
@@ -358,14 +374,12 @@ def refresh_command(force: bool) -> None:
         console.print("Run 'o3de-pilot init' to set up.")
         raise SystemExit(1)
     
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-    
-    remotes = manifest.get("remotes", [])
+    from o3de_cli.core.store import get_manifest_remote_urls
+    remotes = get_manifest_remote_urls(manifest_path)
     
     if not remotes:
         console.print("[yellow]No remote repos configured.[/yellow]")
-        console.print("Add remotes with 'o3de-pilot registry add-remote <url>'")
+        console.print("Add remotes with 'o3de-pilot repo register <url> --remote'")
         return
     
     store = Store()
@@ -409,11 +423,12 @@ def add_remote_command(url: str, name: str | None) -> None:
             "$schema": "https://canonical.o3de.org/o3de-manifest-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "local": {},
-            "remotes": [],
+            "remote": {},
             "default": {},
         }
     
-    remotes = manifest.setdefault("remotes", [])
+    remote = manifest.setdefault("remote", {})
+    remotes = remote.setdefault("repos", [])
     
     if url in remotes:
         console.print(f"[yellow]Already configured:[/yellow] {url}")
@@ -441,13 +456,18 @@ def remove_remote_command(url: str) -> None:
     with open(manifest_path) as f:
         manifest = json.load(f)
     
-    remotes = manifest.get("remotes", [])
+    remote = manifest.get("remote", {})
+    remotes = remote.get("repos", []) if isinstance(remote, dict) else []
+    legacy_remotes = manifest.get("remotes", [])
     
-    if url not in remotes:
+    if url not in remotes and url not in legacy_remotes:
         console.print(f"[yellow]Not found:[/yellow] {url}")
         return
     
-    remotes.remove(url)
+    if url in remotes:
+        remotes.remove(url)
+    if url in legacy_remotes:
+        legacy_remotes.remove(url)
     
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
@@ -471,7 +491,8 @@ def list_remotes_command(as_json: bool) -> None:
     with open(manifest_path) as f:
         manifest = json.load(f)
     
-    remotes = manifest.get("remotes", [])
+    from o3de_cli.core.store import get_manifest_remote_urls
+    remotes = get_manifest_remote_urls(manifest_path)
     
     if as_json:
         console.print_json(json.dumps(remotes))
