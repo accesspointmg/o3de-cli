@@ -423,6 +423,28 @@ def create_command(
             resolver = Resolver()
             resolver.resolve()
 
+            # Force-included overlays that aren't installed locally are
+            # acquired from registered remote repos before solving
+            missing_includes = [
+                n for n in overlay_includes if n not in resolver.overlays
+            ]
+            if missing_includes:
+                progress.update(task, description="Downloading remote overlays...")
+                installed_any = False
+                for ov_name in missing_includes:
+                    if _install_remote_overlay(ov_name) is not None:
+                        installed_any = True
+                    else:
+                        progress.stop()
+                        console.print(
+                            f"[yellow]⚠ Overlay {ov_name} not installed and "
+                            f"not found in remote repos — skipping[/yellow]"
+                        )
+                        progress.start()
+                if installed_any:
+                    resolver = Resolver()
+                    resolver.resolve()
+
             store = None
             if include_store:
                 from o3de_cli.core.store import Store
@@ -1103,6 +1125,36 @@ def override_command(
             )
 
 
+def _install_remote_overlay(name: str) -> Path | None:
+    """Install an overlay from the registered remote repos by object name.
+
+    Returns the installed path, or None if the overlay is unknown remotely.
+    """
+    from o3de_cli.core.store import Store, get_manifest_remote_urls
+    from o3de_cli.core.paths import get_default_path_for_type
+
+    urls = get_manifest_remote_urls()
+    if not urls:
+        return None
+    store = Store()
+    try:
+        store.refresh_sync(urls)
+    except Exception:
+        return None
+    remote_obj = store.objects.get(f"overlay:{name}")
+    if remote_obj is None:
+        return None
+
+    target = get_default_path_for_type(ObjectType.OVERLAY)
+    installed = store.download_sync(remote_obj, target)
+
+    # Register in the manifest so the resolver can see it
+    from o3de_cli.commands.manifest import add_command
+    ctx = click.Context(add_command)
+    ctx.invoke(add_command, path=str(installed))
+    return installed
+
+
 def _read_overlay_info(path: Path) -> dict:
     """Read overlay metadata needed for composition from an overlay dir.
 
@@ -1212,7 +1264,22 @@ def update_command(
                 continue
             ov = resolver.overlays.get(ov_name)
             if ov is None or not ov.path:
-                _fail(f"Overlay not installed locally: {ov_name}", "E_OVERLAY_NOT_FOUND")
+                # Not installed locally — try acquiring from registered
+                # remote repos before failing
+                if not as_json:
+                    console.print(f"[dim]Downloading remote overlay: {ov_name}[/dim]")
+                installed = _install_remote_overlay(ov_name)
+                if installed is None:
+                    _fail(
+                        f"Overlay not installed locally and not found in "
+                        f"remote repos: {ov_name}",
+                        "E_OVERLAY_NOT_FOUND",
+                    )
+                resolver = Resolver()
+                resolver.resolve()
+                ov = resolver.overlays.get(ov_name)
+                if ov is None or not ov.path:
+                    _fail(f"Overlay install failed: {ov_name}", "E_OVERLAY_NOT_FOUND")
             adds[ov_name] = str(ov.path)
             # Pull overlay dependencies along
             info = _read_overlay_info(ov.path)
