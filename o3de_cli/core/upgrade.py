@@ -252,6 +252,14 @@ def upgrade_0_to_1(data: dict, object_type: str) -> dict:
             output["copyright_text"] = data["copyright_text"]
         if "copyright_year" in data:
             output["copyright_year"] = data["copyright_year"]
+
+        # License fields
+        if "license" in data:
+            output["license"] = data["license"]
+        if "license_url" in data or "license_uri" in data:
+            output["license_url"] = data.get("license_url", data.get("license_uri", ""))
+        if "license_path" in data:
+            output["license_path"] = data["license_path"]
             
         # Tags
         if "canonical_tags" in data:
