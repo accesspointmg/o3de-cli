@@ -518,7 +518,11 @@ class TestOverlayMerge:
         assert (tmp_path / "ws" / "Overlays" / "overlay" / "added.txt").exists()
 
     def test_create_workspace_convenience_with_extends(self, tmp_path, mock_manifest):
-        """create_workspace() passes extends through 3-tuples."""
+        """create_workspace() passes extends through 3-tuples.
+
+        The root object is keyed by its canonical object name (read from
+        its object JSON), and ``extends`` carries the canonical name too.
+        """
         engine = tmp_path / "engine"
         engine.mkdir()
         _write(engine / "engine.json", '{"engine": {"name": "test"}}')
@@ -532,8 +536,8 @@ class TestOverlayMerge:
             target_path=tmp_path / "ws",
             root_object_path=engine,
             resolved_objects={},
-            overlays=[(overlay, 0, "engine")],
+            overlays=[(overlay, 0, "test")],
         )
 
-        base_file = tmp_path / "ws" / "Engines" / "engine" / "data.txt"
+        base_file = tmp_path / "ws" / "Engines" / "test" / "data.txt"
         assert base_file.read_text() == "patched"

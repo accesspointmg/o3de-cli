@@ -129,6 +129,10 @@ class OverlayEntry:
     precedence: int = 0
     path: Optional[Path] = None
     status: CandidateStatus = CandidateStatus.LOCAL
+    # Platforms this overlay delivers (empty = platform-agnostic)
+    platforms: list[str] = field(default_factory=list)
+    # Overlay names this overlay depends on (from dependent.overlays)
+    overlay_deps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -527,6 +531,15 @@ def solve_for_workspace(
             precedence=overlay_obj.data.get("precedence", 0),
             path=overlay_obj.path,
             status=CandidateStatus.LOCAL,
+            platforms=[
+                p for p in overlay_obj.data.get("platforms", []) or []
+                if isinstance(p, str)
+            ],
+            overlay_deps=[
+                ObjectNameVersion(d).name
+                for d in (overlay_obj.data.get("dependent", {}) or {}).get("overlays", []) or []
+                if isinstance(d, str)
+            ],
         )
         overlays.setdefault(extends_spec.name, []).append(entry)
 

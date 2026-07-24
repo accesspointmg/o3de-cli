@@ -141,9 +141,10 @@ def _build_workspace_meta(
     root_type: str,
     sources: dict[str, dict[str, str]],
     file_links: dict[str, str] | None = None,
+    platforms: list[str] | None = None,
 ) -> WorkspaceMeta:
     """Build a WorkspaceMeta model for a new workspace."""
-    return WorkspaceMeta.model_validate({
+    data = {
         "$schema": f"{SCHEMA_BASE_URL}/o3de-workspace-{SCHEMA_VERSION}.json",
         "$schemaVersion": SCHEMA_VERSION,
         "workspace": {"name": name},
@@ -152,7 +153,10 @@ def _build_workspace_meta(
         "root_type": root_type,
         "sources": sources,
         "file_links": file_links or {},
-    })
+    }
+    if platforms:
+        data["platforms"] = platforms
+    return WorkspaceMeta.model_validate(data)
 
 
 @click.group()
@@ -165,6 +169,100 @@ def workspace() -> None:
     pass
 
 
+_HOST_PLATFORM_MAP = {"Windows": "Windows", "Linux": "Linux", "Darwin": "Mac"}
+
+
+def _expand_platform_selection(platforms: tuple[str, ...]) -> list[str] | None:
+    """Expand a --platforms selection into canonical platform names.
+
+    Accepts repeated and comma-separated values.  Special tokens:
+    ``host`` expands to the host platform; ``all`` disables filtering
+    (returns None, same as omitting --platforms entirely).
+    """
+    if not platforms:
+        return None
+    import platform as platform_mod
+
+    names: list[str] = []
+    for value in platforms:
+        for token in value.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if token.lower() == "all":
+                return None
+            if token.lower() == "host":
+                token = _HOST_PLATFORM_MAP.get(platform_mod.system(), platform_mod.system())
+            names.append(token)
+    # De-dupe preserving order, case-insensitive
+    seen: set[str] = set()
+    result: list[str] = []
+    for n in names:
+        if n.lower() not in seen:
+            seen.add(n.lower())
+            result.append(n)
+    return result or None
+
+
+def _select_overlays_for_platforms(
+    overlay_groups: dict,
+    selected_platforms: list[str] | None,
+) -> dict:
+    """Filter solved overlay groups by platform selection.
+
+    Selection rules (per overlay-platform design):
+    - No selection (None) → all overlays are included (tier: all).
+    - Platform-specific overlays (non-empty ``platforms``) are included
+      iff they deliver at least one selected platform.
+    - Family/common overlays (no ``platforms``) that other overlays
+      depend on are NOT platform-matched — they are pulled transitively
+      via ``dependent.overlays`` of included overlays.
+    - Platform-agnostic overlays that nothing depends on apply
+      universally and are always included.
+    """
+    if selected_platforms is None:
+        return overlay_groups
+
+    selected = {p.lower() for p in selected_platforms}
+
+    # Index all entries by name and find dependency targets
+    all_entries: dict[str, object] = {}
+    dep_targets: set[str] = set()
+    for entries in overlay_groups.values():
+        for ov in entries:
+            all_entries[ov.name] = ov
+            dep_targets.update(ov.overlay_deps)
+
+    included: set[str] = set()
+    queue: list[str] = []
+    for name, ov in all_entries.items():
+        if ov.platforms:
+            if {p.lower() for p in ov.platforms} & selected:
+                queue.append(name)
+        elif name not in dep_targets:
+            # Platform-agnostic and not a dependency target: applies always
+            queue.append(name)
+
+    # Transitively pull overlay dependencies of included overlays
+    while queue:
+        name = queue.pop()
+        if name in included:
+            continue
+        included.add(name)
+        ov = all_entries.get(name)
+        if ov is not None:
+            for dep in ov.overlay_deps:
+                if dep not in included:
+                    queue.append(dep)
+
+    filtered: dict = {}
+    for base, entries in overlay_groups.items():
+        kept = [ov for ov in entries if ov.name in included]
+        if kept:
+            filtered[base] = kept
+    return filtered
+
+
 @workspace.command("create")
 @click.argument("name")
 @click.option("--engine", "-e", "engine_path", type=click.Path(exists=True), 
@@ -175,6 +273,10 @@ def workspace() -> None:
 @click.option("--overlay", multiple=True, type=click.Path(exists=True),
               help="Overlay path (can be repeated)")
 @click.option("--no-overlays", is_flag=True, help="Don't apply overlays")
+@click.option("--platforms", "-P", "platforms_opt", multiple=True,
+              help="Platforms to include when selecting overlays "
+                   "(repeatable or comma-separated; 'host' = this machine, "
+                   "'all' = no filtering). Default: all.")
 @click.option("--no-solve", is_flag=True,
               help="Skip dependency resolution — only use explicitly provided paths")
 @click.option("--include-store", is_flag=True,
@@ -189,6 +291,7 @@ def create_command(
     output: str | None,
     overlay: tuple[str, ...],
     no_overlays: bool,
+    platforms_opt: tuple[str, ...],
     no_solve: bool,
     include_store: bool,
     auto_install: bool,
@@ -241,6 +344,9 @@ def create_command(
         root_type = ObjectType.ENGINE
     
     root_type_str = root_type.value
+    
+    # Expand platform selection (None = all platforms, no filtering)
+    selected_platforms = _expand_platform_selection(platforms_opt)
     
     # Build resolved_objects: name → (path, ObjectType)
     resolved_objects: dict[str, tuple[Path, ObjectType]] = {}
@@ -323,9 +429,13 @@ def create_command(
                             continue
                         resolved_objects[child_name] = (child.path, child.object_type)
 
-                # Add solved overlays (unless --no-overlays)
+                # Add solved overlays (unless --no-overlays), filtered by
+                # the workspace platform selection
                 if not no_overlays:
-                    for _base, entries in solve_result.overlays.items():
+                    selected_groups = _select_overlays_for_platforms(
+                        solve_result.overlays, selected_platforms
+                    )
+                    for _base, entries in selected_groups.items():
                         for ov in entries:
                             if ov.path and ov.status == CandidateStatus.LOCAL:
                                 # Avoid duplicating explicitly-provided overlays
@@ -394,10 +504,13 @@ def create_command(
                                     continue
                                 resolved_objects[child_name] = (child.path, child.object_type)
 
-                        # Re-process overlays
+                        # Re-process overlays (same platform selection)
                         if not no_overlays:
                             overlay_tuples = [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)]
-                            for _base, entries in solve_result.overlays.items():
+                            selected_groups = _select_overlays_for_platforms(
+                                solve_result.overlays, selected_platforms
+                            )
+                            for _base, entries in selected_groups.items():
                                 for ov in entries:
                                     if ov.path and ov.status == CandidateStatus.LOCAL:
                                         ov_resolved = ov.path.resolve()
@@ -457,6 +570,7 @@ def create_command(
             root_type=root_type_str,
             sources=workspace_obj.get_sources_dict(),
             file_links=workspace_obj.get_file_links(),
+            platforms=selected_platforms,
         )
         _write_workspace_meta(output_path, meta)
 
@@ -485,6 +599,8 @@ def create_command(
         if solve_result:
             data["resolved_local"] = solve_result.local_count
             data["resolved_remote"] = solve_result.remote_count
+        if selected_platforms:
+            data["platforms"] = selected_platforms
         emit_response(data=data)
     else:
         console.print(f"[green]Created workspace:[/green] {output_path}")
@@ -495,6 +611,8 @@ def create_command(
             if solve_result.remote_count:
                 console.print(f"  Remote (not installed): {solve_result.remote_count}")
         console.print(f"  Overlays: {len(overlay_tuples)}")
+        if selected_platforms:
+            console.print(f"  Platforms: {', '.join(selected_platforms)}")
 
 
 def _resolve_workspace_path(name_or_path: str) -> Path | None:

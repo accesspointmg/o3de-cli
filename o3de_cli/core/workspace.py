@@ -205,7 +205,7 @@ class Workspace:
                     f"Applying overlay (precedence {precedence})",
                     current, total_files,
                 )
-            overlay_name = overlay_path.name
+            overlay_name = _object_name_from_path(overlay_path, overlay_path.name)
             dest_root = self.root_path / "Overlays" / overlay_name
 
             # Resolve the base object's workspace tree for merge
@@ -438,7 +438,7 @@ class Workspace:
                 link.unlink()
                 del self.linked_files[link]
         for overlay_path, _precedence, extends_name in self.overlays:
-            overlay_name = overlay_path.name
+            overlay_name = _object_name_from_path(overlay_path, overlay_path.name)
             dest_root = self.root_path / "Overlays" / overlay_name
 
             base_dest_root: Path | None = None
@@ -487,7 +487,8 @@ class Workspace:
             key = _type_key.get(obj_type, "gems")
             cats[key][name] = str(path)
         for ov_path, _prec, _ext in self.overlays:
-            cats["overlays"][ov_path.name] = str(ov_path)
+            ov_name = _object_name_from_path(ov_path, ov_path.name)
+            cats["overlays"][ov_name] = str(ov_path)
         return cats
 
 
@@ -508,24 +509,47 @@ def _short_name(object_name: str) -> str:
     return object_name
 
 
+def _object_name_from_path(path: Path, fallback: str) -> str:
+    """Read the canonical object name from an object directory's JSON.
+
+    Checks 2.0.0 sidecars first, then native/legacy JSON files.  Returns
+    *fallback* when no readable object JSON is found.  This matters for
+    installed objects that live in ``<name>/<version>/`` folders, where
+    the directory name (e.g. ``1.0.0``) is not the object name.
+    """
+    from .models import get_object_name
+
+    for suffix in ("2-0-0.json", "json"):
+        for obj_type in ("engine", "project", "gem", "template", "overlay", "repo"):
+            candidate = path / f"{obj_type}.{suffix}"
+            if not candidate.exists():
+                continue
+            try:
+                with open(candidate, encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                name = get_object_name(data)
+                if name:
+                    return name
+            except Exception:
+                continue
+    return fallback
+
+
 def detect_root_type(path: Path) -> ObjectType:
     """Detect the object type of a root directory.
 
     Checks Schema 2.0 sidecars first, then falls back to legacy JSON files.
 
     Raises:
-        WorkspaceError: if no engine/project JSON can be found.
+        WorkspaceError: if no object JSON can be found.
     """
-    # Schema 2.0 sidecars (preferred)
-    if (path / "engine.2-0-0.json").exists():
-        return ObjectType.ENGINE
-    if (path / "project.2-0-0.json").exists():
-        return ObjectType.PROJECT
-    # Legacy Schema 1.0
-    if (path / "engine.json").exists():
-        return ObjectType.ENGINE
-    if (path / "project.json").exists():
-        return ObjectType.PROJECT
+    # Schema 2.0 sidecars (preferred), then legacy/native JSON files.
+    # gem.json/overlay.json may be either 2.0.0-native or legacy.
+    for suffix in ("2-0-0.json", "json"):
+        for obj_type in (ObjectType.ENGINE, ObjectType.PROJECT, ObjectType.GEM,
+                         ObjectType.TEMPLATE, ObjectType.OVERLAY, ObjectType.REPO):
+            if (path / f"{obj_type.value}.{suffix}").exists():
+                return obj_type
     raise WorkspaceError(
         f"Cannot determine root object type at: {path}"
     )
@@ -556,8 +580,9 @@ def create_workspace(
 
     ws = Workspace(target_path, root_object_path, root_type)
 
-    # Determine a name for the root object
-    root_name = root_object_path.name
+    # Determine a name for the root object (read from its object JSON;
+    # the directory name may be a version folder like "1.0.0")
+    root_name = _object_name_from_path(root_object_path, root_object_path.name)
     ws.add_resolved_object(root_name, root_object_path, root_type)
 
     for name, (path, obj_type) in resolved_objects.items():

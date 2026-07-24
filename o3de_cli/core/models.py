@@ -466,6 +466,10 @@ class WorkspaceMeta(BaseO3DEObject):
     created: str = Field(description="ISO 8601 creation timestamp")
     root_object: Optional[str] = Field(default=None, description="Root object path")
     root_type: Optional[str] = Field(default=None, description="Root object type")
+    platforms: Optional[list[str]] = Field(
+        default=None,
+        description="Platform selection used at compose time (None = all platforms)",
+    )
     sources: WorkspaceSources = Field(
         default_factory=WorkspaceSources,
         description="Categorised source objects (type → name → path)",
