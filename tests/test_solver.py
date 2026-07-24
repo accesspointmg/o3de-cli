@@ -406,19 +406,19 @@ class TestSolveForWorkspace:
         overlay = ResolvedObject(
             path=Path("/test/overlay"),
             object_type=ObjectType.GEM,
-            name="org.o3de.gem.test.restricted",
+            name="org.o3de.gem.test.overlay",
             version="1.0.0",
             data={"extends": "org.o3de.gem.test", "precedence": 10},
         )
 
         resolver = _make_resolver(engine, gem)
-        resolver.overlays = {"org.o3de.gem.test.restricted": overlay}
+        resolver.overlays = {"org.o3de.gem.test.overlay": overlay}
 
         result = solve_for_workspace("root", resolver)
         assert result.is_resolved
         assert "org.o3de.gem.test" in result.overlays
         assert len(result.overlays["org.o3de.gem.test"]) == 1
-        assert result.overlays["org.o3de.gem.test"][0].name == "org.o3de.gem.test.restricted"
+        assert result.overlays["org.o3de.gem.test"][0].name == "org.o3de.gem.test.overlay"
 
     def test_overlay_precedence_order(self):
         """Overlays should be sorted by precedence (ascending)."""

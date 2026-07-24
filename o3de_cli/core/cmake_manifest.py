@@ -116,7 +116,6 @@ def _dependent_lists(data: dict, type_key: str) -> dict[str, list[str]]:
         "projects": list(dep.get("projects", [])),
         "gems": list(dep.get("gems", [])),
         "templates": list(dep.get("templates", [])),
-        "repos": list(dep.get("repos", [])),
         "overlays": list(dep.get("overlays", [])),
     }
 
@@ -165,7 +164,6 @@ def _object_entry(
         "dependent_projects": dep["projects"],
         "dependent_gems": dep["gems"],
         "dependent_templates": dep["templates"],
-        "dependent_repos": dep["repos"],
 
         # Artifact form chosen for this object (workspace override):
         # "source" (default) - build from the linked source tree
