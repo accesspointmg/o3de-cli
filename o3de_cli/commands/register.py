@@ -34,7 +34,6 @@ OBJECT_JSON_FILES = {
     "template": "template.json",
     "repo": "repo.json",
     "overlay": "overlay.json",
-    "restricted": "restricted.json",  # Legacy type with no upgrade path
     "workspace": "workspace.json",
 }
 
