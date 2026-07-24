@@ -388,9 +388,10 @@ class Resolver:
         """
         Crawl remote repo URLs transitively, returning {url: repo_data}.
         
-        Each repo JSON may contain a "repos" list pointing to sub-repos,
-        which are also fetched. Already-visited URLs are skipped to avoid
-        infinite loops.
+        Follows legacy top-level ``repos`` lists, Schema 2.0.0
+        ``remote.repos`` (absolute URLs to other repos), and Schema 2.0.0
+        ``children.*`` (paths relative to the repo JSON's own location).
+        Already-visited URLs are skipped to avoid infinite loops.
         """
         import httpx
 
@@ -413,10 +414,28 @@ class Resolver:
                 resp.raise_for_status()
                 data = resp.json()
                 visited[url] = data
-                # Enqueue sub-repos for transitive crawling
+                # Legacy: top-level repos list of sub-repo URLs
                 for sub_url in data.get("repos", []):
-                    if sub_url not in visited:
+                    if isinstance(sub_url, str) and sub_url not in visited:
                         queue.append(sub_url)
+                # Schema 2.0.0: remote.* are absolute URLs to other objects
+                remote = data.get("remote", {})
+                if isinstance(remote, dict):
+                    for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                        for sub_url in remote.get(key, []):
+                            if isinstance(sub_url, str) and sub_url not in visited:
+                                queue.append(sub_url)
+                # Schema 2.0.0: children.* are relative to this JSON's location
+                children = data.get("children", {})
+                if isinstance(children, dict):
+                    base_dir = url.rsplit("/", 1)[0] + "/"
+                    for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                        for rel in children.get(key, []):
+                            if not isinstance(rel, str) or not rel:
+                                continue
+                            child_url = rel if rel.startswith(("http://", "https://")) else base_dir + rel.lstrip("/")
+                            if child_url not in visited:
+                                queue.append(child_url)
                 logger.info(f"Crawled remote repo: {url}")
             except Exception as e:
                 logger.warning(f"Failed to crawl remote repo {url}: {e}")
@@ -440,6 +459,29 @@ class Resolver:
         """
         remote_objects: dict[str, dict] = {}
         
+        # First pass: index every successfully crawled document by URL so
+        # 2.0.0 children (fetched as their own documents) resolve to
+        # canonical names.
+        url_index: dict[str, dict] = {}  # url -> {name, type, version}
+        for url, data in self._crawled_remotes.items():
+            if data.get("_error"):
+                continue
+            try:
+                obj_type = get_object_type(data)
+                name = get_object_name(data) or url
+                version = get_object_version(data) or ""
+            except Exception:
+                # Legacy repo without 2.0.0 header
+                obj_type = ObjectType.REPO
+                name = data.get("repo_name", url)
+                version = ""
+            url_index[url] = {"name": name, "type": obj_type.value, "version": version}
+        
+        def _resolve_child_url(base_url: str, rel: str) -> str:
+            if rel.startswith(("http://", "https://")):
+                return rel
+            return base_url.rsplit("/", 1)[0] + "/" + rel.lstrip("/")
+        
         for url, data in self._crawled_remotes.items():
             if data.get("_error"):
                 repo_name = url
@@ -455,10 +497,48 @@ class Resolver:
                 }
                 continue
             
-            repo_name = data.get("repo_name", url)
+            idx = url_index[url]
+            obj_name = idx["name"]
             
-            # Collect children: all advertised objects (gems, templates, etc.)
+            # Non-repo documents (2.0.0 children fetched during the crawl):
+            # surface as remote objects for drill-down.
+            if idx["type"] != "repo":
+                if obj_name not in remote_objects and obj_name not in self.objects:
+                    header = data.get(idx["type"], {}) if isinstance(data.get(idx["type"]), dict) else {}
+                    dm = {}
+                    if header.get("display_name"):
+                        dm["display_name"] = header["display_name"]
+                    if header.get("description"):
+                        dm["summary"] = header["description"]
+                    remote_objects[obj_name] = {
+                        "url": url,
+                        "type": idx["type"],
+                        "version": idx["version"],
+                        "children": [],
+                        "remotes": [],
+                        "dependencies": [],
+                        "status": "remote",
+                        "display_metadata": dm or None,
+                    }
+                continue
+            
+            repo_name = obj_name
+            
+            # Collect children
             children: list[str] = []
+            
+            # Schema 2.0.0: children.* relative paths -> crawled documents
+            children_2 = data.get("children", {})
+            if isinstance(children_2, dict):
+                for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                    for rel in children_2.get(key, []):
+                        if not isinstance(rel, str) or not rel:
+                            continue
+                        child_url = _resolve_child_url(url, rel)
+                        child_idx = url_index.get(child_url)
+                        if child_idx:
+                            children.append(child_idx["name"])
+            
             for obj_type in ["engines", "projects", "gems", "templates"]:
                 # Standard format: list of URLs
                 for obj_url in data.get(obj_type, []):
@@ -514,25 +594,39 @@ class Resolver:
                         if child_name:
                             children.append(child_name)
             
-            # Collect remotes: sub-repos
+            # Collect remotes: repos this repo itself advertises
             remotes: list[str] = []
             for sub_url in data.get("repos", []):
-                sub_data = self._crawled_remotes.get(sub_url, {})
-                sub_name = sub_data.get("repo_name", sub_url) if sub_data else sub_url
-                remotes.append(sub_name)
+                if not isinstance(sub_url, str):
+                    continue
+                sub_idx = url_index.get(sub_url)
+                remotes.append(sub_idx["name"] if sub_idx else sub_url)
+            remote_section = data.get("remote", {})
+            if isinstance(remote_section, dict):
+                for sub_url in remote_section.get("repos", []):
+                    if not isinstance(sub_url, str):
+                        continue
+                    sub_idx = url_index.get(sub_url)
+                    rname = sub_idx["name"] if sub_idx else sub_url
+                    if rname not in remotes:
+                        remotes.append(rname)
+            
+            repo_header = data.get("repo", {}) if isinstance(data.get("repo"), dict) else {}
+            display_name = repo_header.get("display_name") or data.get("repo_name", "")
+            summary = repo_header.get("description") or data.get("summary", "")
             
             remote_objects[repo_name] = {
                 "url": url,
                 "type": "repo",
-                "version": data.get("$schemaVersion", ""),
+                "version": "",
                 "children": children,
                 "remotes": remotes,
                 "dependencies": [],
                 "status": "remote",
                 "display_metadata": {
-                    "summary": data.get("summary", ""),
-                    "display_name": data.get("repo_name", ""),
-                } if data.get("summary") else None,
+                    "summary": summary,
+                    "display_name": display_name,
+                } if (summary or display_name) else None,
             }
         
         return remote_objects
@@ -1534,7 +1628,10 @@ class Resolver:
         url_to_name: dict[str, str] = {}
         for url, data in self._crawled_remotes.items():
             if not data.get("_error"):
-                url_to_name[url] = data.get("repo_name", url)
+                try:
+                    url_to_name[url] = get_object_name(data) or data.get("repo_name", url)
+                except Exception:
+                    url_to_name[url] = data.get("repo_name", url)
             else:
                 url_to_name[url] = url
         
@@ -1642,16 +1739,14 @@ class Resolver:
                 resolved_data["objects"][name]["all_children"] = ac_list or None
 
             # Build remotes for this object (list of repo names, like children)
+            # Only remotes the object ITSELF advertises in its remote section.
+            # Manifest-level remotes belong to the manifest root node only —
+            # attaching them to root objects would falsely make every
+            # top-level object advertise the user's registered repos.
             obj_remote = obj.data.get("remote", {})
             remote_names: list[str] = []
             if isinstance(obj_remote, dict):
                 for url in obj_remote.get("repos", []):
-                    rname = url_to_name.get(url, url)
-                    if rname not in remote_names:
-                        remote_names.append(rname)
-            # Root objects also get manifest-level remotes
-            if not obj.parent:
-                for url in self.manifest_remotes:
                     rname = url_to_name.get(url, url)
                     if rname not in remote_names:
                         remote_names.append(rname)
@@ -1677,6 +1772,8 @@ class Resolver:
                         if child not in seen:
                             cobj = remote_objects.get(child, {})
                             ctype = cobj.get("type", "")
+                            if not ctype and child in self.objects:
+                                ctype = self.objects[child].object_type.value
                             all_remote_set.append({"name": child, "type": ctype})
                             seen.add(child)
                     # Enqueue sub-remotes for transitive walk
@@ -1754,7 +1851,10 @@ class Resolver:
                 for child in robj.get("children", []):
                     if child not in seen:
                         cobj = remote_objects.get(child, {})
-                        root_all_remotes.append({"name": child, "type": cobj.get("type", "")})
+                        ctype = cobj.get("type", "")
+                        if not ctype and child in self.objects:
+                            ctype = self.objects[child].object_type.value
+                        root_all_remotes.append({"name": child, "type": ctype})
                         seen.add(child)
                 for sub in robj.get("remotes", []):
                     if sub not in seen:
