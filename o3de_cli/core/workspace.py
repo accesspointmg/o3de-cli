@@ -47,13 +47,16 @@ from .models import ObjectType
 logger = logging.getLogger("o3de_cli.workspace")
 
 
-# ObjectType → top-level workspace folder name
+# ObjectType → top-level workspace folder name.
+# NOTE: overlays deliberately have no folder — overlay files are composed
+# INTO the extended object's tree so the workspace is indistinguishable
+# from a monolithic layout.  Overlay membership is recorded in workspace
+# metadata (sources.overlays / file ownership), not on disk.
 _TYPE_FOLDERS: dict[ObjectType, str] = {
     ObjectType.ENGINE: "Engines",
     ObjectType.PROJECT: "Projects",
     ObjectType.GEM: "Gems",
     ObjectType.TEMPLATE: "Templates",
-    ObjectType.OVERLAY: "Overlays",
 }
 
 # TEMPORARY (hard-coded cheat): when linking an ENGINE into a workspace,
@@ -206,9 +209,9 @@ class Workspace:
                     current, total_files,
                 )
             overlay_name = _object_name_from_path(overlay_path, overlay_path.name)
-            dest_root = self.root_path / "Overlays" / overlay_name
 
-            # Resolve the base object's workspace tree for merge
+            # Resolve the base object's workspace tree — overlay files are
+            # composed INTO the extended object (no separate Overlays dir)
             base_dest_root: Path | None = None
             if extends_name and extends_name in self.resolved_objects:
                 base_path, base_type = self.resolved_objects[extends_name]
@@ -216,9 +219,16 @@ class Workspace:
                 base_short = _short_name(extends_name)
                 base_dest_root = self.root_path / base_folder / base_short
 
+            if base_dest_root is None:
+                logger.warning(
+                    f"Overlay {overlay_name} extends "
+                    f"{extends_name or '<unknown>'} which is not in this "
+                    f"workspace — skipping"
+                )
+                continue
+
             self._apply_overlay(
                 overlay_path,
-                dest_root=dest_root,
                 owner_name=overlay_name,
                 base_dest_root=base_dest_root,
             )
@@ -306,16 +316,16 @@ class Workspace:
     def _apply_overlay(
         self,
         overlay_path: Path,
-        dest_root: Path,
         owner_name: str,
-        base_dest_root: Path | None = None,
+        base_dest_root: Path,
     ) -> None:
-        """Apply an overlay — replaces matching files, adds new ones.
+        """Apply an overlay — compose its files INTO the extended object.
 
-        Files are always linked into the ``Overlays/<name>/`` audit tree.
-        When *base_dest_root* is given, matching files inside the base
-        object's workspace tree are replaced with symlinks to the overlay
-        source, and ownership is transferred.
+        Matching files inside the base object's workspace tree are replaced
+        with links to the overlay source; new files are added at the same
+        relative paths.  There is no separate on-disk overlay tree — the
+        composed object is indistinguishable from a monolithic one.
+        Ownership is recorded in ``file_owners`` for auditing.
         """
         if not overlay_path.exists():
             logger.warning(f"Overlay path does not exist: {overlay_path}")
@@ -330,28 +340,14 @@ class Workspace:
             if self.should_exclude(relative):
                 continue
 
-            # 1. Link into Overlays/ audit tree
-            target = dest_root / relative
-            if target.exists() or target.is_symlink():
-                target.unlink()
-                logger.debug(f"Overlay replacing: {relative}")
-            self._create_link(overlay_file, target)
-            ws_rel = target.relative_to(self.root_path).as_posix()
-            self.file_owners[ws_rel] = owner_name
-
-            # 2. Merge into base object tree (replace matching symlink)
-            if base_dest_root is not None:
-                base_target = base_dest_root / relative
-                if base_target.exists() or base_target.is_symlink():
-                    base_target.unlink()
-                    logger.debug(f"Overlay merging into base: {relative}")
-                else:
-                    base_target.parent.mkdir(parents=True, exist_ok=True)
-                self._force_link(overlay_file, base_target)
-                base_ws_rel = base_target.relative_to(
-                    self.root_path
-                ).as_posix()
-                self.file_owners[base_ws_rel] = owner_name
+            base_target = base_dest_root / relative
+            if base_target.exists() or base_target.is_symlink():
+                logger.debug(f"Overlay replacing in base: {relative}")
+            else:
+                base_target.parent.mkdir(parents=True, exist_ok=True)
+            self._force_link(overlay_file, base_target)
+            base_ws_rel = base_target.relative_to(self.root_path).as_posix()
+            self.file_owners[base_ws_rel] = owner_name
 
     def _create_link(self, source: Path, target: Path) -> None:
         """Create a symbolic link from *target* → *source*."""
@@ -439,7 +435,6 @@ class Workspace:
                 del self.linked_files[link]
         for overlay_path, _precedence, extends_name in self.overlays:
             overlay_name = _object_name_from_path(overlay_path, overlay_path.name)
-            dest_root = self.root_path / "Overlays" / overlay_name
 
             base_dest_root: Path | None = None
             if extends_name and extends_name in self.resolved_objects:
@@ -448,8 +443,16 @@ class Workspace:
                 base_short = _short_name(extends_name)
                 base_dest_root = self.root_path / base_folder / base_short
 
+            if base_dest_root is None:
+                logger.warning(
+                    f"Overlay {overlay_name} extends "
+                    f"{extends_name or '<unknown>'} which is not in this "
+                    f"workspace — skipping"
+                )
+                continue
+
             self._apply_overlay(
-                overlay_path, dest_root, overlay_name,
+                overlay_path, owner_name=overlay_name,
                 base_dest_root=base_dest_root,
             )
 
@@ -507,6 +510,27 @@ def _short_name(object_name: str) -> str:
     if "." in object_name:
         return object_name.rsplit(".", 1)[-1]
     return object_name
+
+
+def _overlay_extends_name(overlay_path: Path) -> str | None:
+    """Read the base object name from an overlay's ``extends`` field.
+
+    Strips any version specifier: ``org.o3de.gem.foo>=1.0.0`` → ``org.o3de.gem.foo``.
+    """
+    import re
+
+    for candidate in (overlay_path / "overlay.2-0-0.json", overlay_path / "overlay.json"):
+        if not candidate.exists():
+            continue
+        try:
+            with open(candidate, encoding="utf-8-sig") as f:
+                data = json.load(f)
+            extends = data.get("extends", "")
+            if extends:
+                return re.split(r"[><=~!\s]", extends, 1)[0]
+        except Exception:
+            continue
+    return None
 
 
 def _object_name_from_path(path: Path, fallback: str) -> str:
@@ -595,6 +619,8 @@ def create_workspace(
             else:
                 overlay_path, precedence = entry  # type: ignore[misc]
                 extends = None
+            if extends is None:
+                extends = _overlay_extends_name(Path(overlay_path))
             ws.add_overlay(overlay_path, precedence, extends=extends)
 
     ws = ws.create(clean=clean, progress_callback=progress_callback)

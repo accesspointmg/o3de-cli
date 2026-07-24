@@ -313,12 +313,13 @@ class TestFileOwnership:
         )
         assert ws.file_owners["Engines/base-engine/config.txt"] == "base-engine"
 
-        dest_overlay = ws_dir / "Overlays" / "console-overlay"
+        # Overlay composes INTO the base tree and takes ownership there
         ws._apply_overlay(
-            overlay, dest_root=dest_overlay,
-            owner_name="console-overlay",
+            overlay, owner_name="console-overlay",
+            base_dest_root=dest_base,
         )
-        assert ws.file_owners["Overlays/console-overlay/config.txt"] == "console-overlay"
+        assert ws.file_owners["Engines/base-engine/config.txt"] == "console-overlay"
+        assert (dest_base / "config.txt").read_text() == "patched"
 
 
 # ── J5: ResolvedCandidate & resolved_candidates ────────────────────

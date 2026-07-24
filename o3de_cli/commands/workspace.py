@@ -207,8 +207,10 @@ def _expand_platform_selection(platforms: tuple[str, ...]) -> list[str] | None:
 def _select_overlays_for_platforms(
     overlay_groups: dict,
     selected_platforms: list[str] | None,
+    include: set[str] | None = None,
+    exclude: set[str] | None = None,
 ) -> dict:
-    """Filter solved overlay groups by platform selection.
+    """Filter solved overlay groups by platform selection and explicit picks.
 
     Selection rules (per overlay-platform design):
     - No selection (None) → all overlays are included (tier: all).
@@ -219,11 +221,16 @@ def _select_overlays_for_platforms(
       via ``dependent.overlays`` of included overlays.
     - Platform-agnostic overlays that nothing depends on apply
       universally and are always included.
+    - ``include`` names are force-included (with their dependencies);
+      ``exclude`` names are always dropped and never traversed.
     """
-    if selected_platforms is None:
+    include = include or set()
+    exclude = exclude or set()
+
+    if selected_platforms is None and not include and not exclude:
         return overlay_groups
 
-    selected = {p.lower() for p in selected_platforms}
+    selected = {p.lower() for p in selected_platforms} if selected_platforms else None
 
     # Index all entries by name and find dependency targets
     all_entries: dict[str, object] = {}
@@ -236,7 +243,15 @@ def _select_overlays_for_platforms(
     included: set[str] = set()
     queue: list[str] = []
     for name, ov in all_entries.items():
-        if ov.platforms:
+        if name in exclude:
+            continue
+        if name in include:
+            queue.append(name)
+            continue
+        if selected is None:
+            # No platform filter: everything (minus exclusions)
+            queue.append(name)
+        elif ov.platforms:
             if {p.lower() for p in ov.platforms} & selected:
                 queue.append(name)
         elif name not in dep_targets:
@@ -246,7 +261,7 @@ def _select_overlays_for_platforms(
     # Transitively pull overlay dependencies of included overlays
     while queue:
         name = queue.pop()
-        if name in included:
+        if name in included or name in exclude:
             continue
         included.add(name)
         ov = all_entries.get(name)
@@ -277,6 +292,11 @@ def _select_overlays_for_platforms(
               help="Platforms to include when selecting overlays "
                    "(repeatable or comma-separated; 'host' = this machine, "
                    "'all' = no filtering). Default: all.")
+@click.option("--include-overlay", "include_overlay", multiple=True,
+              help="Force-include a solved overlay by object name "
+                   "(overrides platform filtering; repeatable)")
+@click.option("--exclude-overlay", "exclude_overlay", multiple=True,
+              help="Exclude a solved overlay by object name (repeatable)")
 @click.option("--no-solve", is_flag=True,
               help="Skip dependency resolution — only use explicitly provided paths")
 @click.option("--include-store", is_flag=True,
@@ -292,6 +312,8 @@ def create_command(
     overlay: tuple[str, ...],
     no_overlays: bool,
     platforms_opt: tuple[str, ...],
+    include_overlay: tuple[str, ...],
+    exclude_overlay: tuple[str, ...],
     no_solve: bool,
     include_store: bool,
     auto_install: bool,
@@ -347,6 +369,8 @@ def create_command(
     
     # Expand platform selection (None = all platforms, no filtering)
     selected_platforms = _expand_platform_selection(platforms_opt)
+    overlay_includes = set(include_overlay)
+    overlay_excludes = set(exclude_overlay)
     
     # Build resolved_objects: name → (path, ObjectType)
     resolved_objects: dict[str, tuple[Path, ObjectType]] = {}
@@ -433,7 +457,8 @@ def create_command(
                 # the workspace platform selection
                 if not no_overlays:
                     selected_groups = _select_overlays_for_platforms(
-                        solve_result.overlays, selected_platforms
+                        solve_result.overlays, selected_platforms,
+                        include=overlay_includes, exclude=overlay_excludes,
                     )
                     for _base, entries in selected_groups.items():
                         for ov in entries:
@@ -508,7 +533,8 @@ def create_command(
                         if not no_overlays:
                             overlay_tuples = [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)]
                             selected_groups = _select_overlays_for_platforms(
-                                solve_result.overlays, selected_platforms
+                                solve_result.overlays, selected_platforms,
+                                include=overlay_includes, exclude=overlay_excludes,
                             )
                             for _base, entries in selected_groups.items():
                                 for ov in entries:
