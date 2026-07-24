@@ -195,7 +195,7 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
             console.print("[red]Cannot publish — fix validation errors first.[/red]")
         raise SystemExit(1)
 
-    if warnings:
+    if warnings and not as_json:
         for w in warnings:
             console.print(f"[yellow]WARN:[/yellow] {w}")
 
@@ -381,10 +381,37 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
     if "origin" not in data:
         warnings.append("Missing 'origin' field — recommended for published objects")
 
-    # Check licenses
+    # Check licenses. Objects are distributed standalone, so they cannot rely
+    # on parent licensing: every referenced license file must exist at the
+    # object root, and at least one license should ship with the object.
+    obj_root = json_path.parent if json_path is not None else None
     licenses = data.get("licenses", [])
     if not licenses:
         warnings.append("No 'licenses' field — recommended for published objects")
+    elif obj_root is not None:
+        shipped = False
+        for i, lic in enumerate(licenses):
+            if not isinstance(lic, dict):
+                continue
+            rp = lic.get("relative_path")
+            if rp:
+                if (obj_root / rp).exists():
+                    shipped = True
+                else:
+                    errors.append(f"licenses[{i}].relative_path '{rp}' does not exist at the object root")
+        if not shipped:
+            warnings.append(
+                "No license file ships with the object (url-only licenses) — "
+                "standalone redistribution requires the license text in the object")
+
+    # Check icon/documentation relative paths exist
+    if obj_root is not None:
+        for field in ("icon", "documentation"):
+            entry = data.get(field)
+            if isinstance(entry, dict):
+                rp = entry.get("relative_path")
+                if rp and not (obj_root / rp).exists():
+                    errors.append(f"{field}.relative_path '{rp}' does not exist at the object root")
 
     # Check integrity fields on releases
     releases = data.get("releases", [])
