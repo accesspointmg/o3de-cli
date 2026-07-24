@@ -136,18 +136,16 @@ class TestOverlayApplication:
 
         overlay = tmp_path / "overlay"
         overlay.mkdir()
-        _write(overlay / "data.txt", "overlay content")
+        _write(overlay / "Overlay" / "data.txt", "overlay content")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
         ws.add_overlay(overlay, precedence=0, extends="root")
         ws.create()
 
-        # Overlay files compose INTO the extended object's tree
+        # Overlay payload composes INTO the extended object's tree
         target = tmp_path / "ws" / "Engines" / "root" / "data.txt"
         assert target.read_text() == "overlay content"
-        # No separate Overlays directory exists
-        assert not (tmp_path / "ws" / "Overlays").exists()
 
     def test_overlay_adds_new_file(self, tmp_path):
         engine = tmp_path / "engine"
@@ -156,7 +154,7 @@ class TestOverlayApplication:
 
         overlay = tmp_path / "overlay"
         overlay.mkdir()
-        _write(overlay / "extra.txt", "extra")
+        _write(overlay / "Overlay" / "extra.txt", "extra")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
@@ -173,16 +171,95 @@ class TestOverlayApplication:
         overlay = tmp_path / "overlay"
         overlay.mkdir()
         _write(overlay / "overlay.json", '{"overlay": {}}')
-        _write(overlay / "real.txt", "real")
+        _write(overlay / "Overlay" / "real.txt", "real")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
         ws.add_overlay(overlay, extends="root")
         ws.create()
 
-        # overlay.json is skipped, but real.txt should exist
-        linked_names = {p.name for p in ws.linked_files.keys()}
-        assert "overlay.json" not in linked_names
+        # overlay.json never composes into the base object; it lands in
+        # the workspace attribution ledger instead
+        base_root = tmp_path / "ws" / "Engines" / "root"
+        assert not (base_root / "overlay.json").exists()
+        assert (base_root / "real.txt").exists()
+
+    def test_overlay_metadata_in_workspace_ledger(self, tmp_path):
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        _write(engine / "file.txt", "data")
+
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        _write(overlay / "overlay.json", '{"overlay": {"name": "org.test.overlay.x"}}')
+        _write(overlay / "LICENSE.TXT", "license text")
+        _write(overlay / "Overlay" / "real.txt", "real")
+
+        ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
+        ws.add_resolved_object("root", engine, ObjectType.ENGINE)
+        ws.add_overlay(overlay, extends="root")
+        ws.create()
+
+        ledger = tmp_path / "ws" / "Overlays" / "org.test.overlay.x"
+        assert (ledger / "overlay.json").exists()
+        assert (ledger / "LICENSE.TXT").exists()
+        # Payload is not duplicated in the ledger
+        assert not (ledger / "Overlay").exists()
+
+    def test_overlay_attributions_object_mode(self, tmp_path):
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        _write(engine / "file.txt", "data")
+
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        _write(overlay / "overlay.json", '{"overlay": {"name": "org.test.overlay.x"}}')
+        _write(overlay / "Overlay" / "real.txt", "real")
+
+        ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE,
+                       attributions="object")
+        ws.add_resolved_object("root", engine, ObjectType.ENGINE)
+        ws.add_overlay(overlay, extends="root")
+        ws.create()
+
+        base_root = tmp_path / "ws" / "Engines" / "root"
+        assert (base_root / "org.test.overlay.x" / "overlay.json").exists()
+        assert not (tmp_path / "ws" / "Overlays" / "org.test.overlay.x").exists()
+
+    def test_overlay_attributions_off(self, tmp_path):
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        _write(engine / "file.txt", "data")
+
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        _write(overlay / "overlay.json", '{"overlay": {"name": "org.test.overlay.x"}}')
+        _write(overlay / "Overlay" / "real.txt", "real")
+
+        ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE,
+                       attributions="off")
+        ws.add_resolved_object("root", engine, ObjectType.ENGINE)
+        ws.add_overlay(overlay, extends="root")
+        ws.create()
+
+        assert not (tmp_path / "ws" / "Overlays" / "org.test.overlay.x").exists()
+        assert (tmp_path / "ws" / "Engines" / "root" / "real.txt").exists()
+
+    def test_overlay_without_payload_composes_nothing(self, tmp_path):
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        _write(engine / "file.txt", "data")
+
+        overlay = tmp_path / "overlay"
+        overlay.mkdir()
+        _write(overlay / "stray.txt", "should not compose")
+
+        ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
+        ws.add_resolved_object("root", engine, ObjectType.ENGINE)
+        ws.add_overlay(overlay, extends="root")
+        ws.create()
+
+        assert not (tmp_path / "ws" / "Engines" / "root" / "stray.txt").exists()
 
     def test_missing_overlay_warning(self, tmp_path):
         engine = tmp_path / "engine"
@@ -214,15 +291,15 @@ class TestWorkspaceUpdate:
         _write(engine / "file.txt", "base")
 
         overlay = tmp_path / "overlay"
-        overlay.mkdir()
+        (overlay / "Overlay").mkdir(parents=True)
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
         ws.add_overlay(overlay, extends="root")
         ws.create()
 
-        # Now add a file to overlay and update
-        _write(overlay / "new.txt", "added")
+        # Now add a file to the overlay payload and update
+        _write(overlay / "Overlay" / "new.txt", "added")
         ws.update()
 
         assert (tmp_path / "ws" / "Engines" / "root" / "new.txt").exists()
@@ -307,7 +384,7 @@ class TestCreateWorkspaceConvenience:
 
         overlay = tmp_path / "ov"
         overlay.mkdir()
-        _write(overlay / "patch.txt", "patch")
+        _write(overlay / "Overlay" / "patch.txt", "patch")
 
         ws = create_workspace(
             target_path=tmp_path / "ws",
@@ -344,14 +421,14 @@ class TestOverlayMerge:
     """Test that overlays with extends merge into the base object tree."""
 
     def test_overlay_replaces_base_symlink(self, tmp_path):
-        """Overlay file replaces matching symlink in base Engines/ tree."""
+        """Overlay payload file replaces matching symlink in base Engines/ tree."""
         engine = tmp_path / "engine"
         engine.mkdir()
         _write(engine / "data.txt", "base content")
 
         overlay = tmp_path / "overlay"
         overlay.mkdir()
-        _write(overlay / "data.txt", "overlay content")
+        _write(overlay / "Overlay" / "data.txt", "overlay content")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
@@ -363,9 +440,6 @@ class TestOverlayMerge:
         assert base_file.exists()
         assert base_file.read_text() == "overlay content"
 
-        # No separate Overlays audit tree — composition is monolithic
-        assert not (tmp_path / "ws" / "Overlays").exists()
-
     def test_overlay_adds_new_file_to_base(self, tmp_path):
         """Overlay file that doesn't exist in base is added to base tree."""
         engine = tmp_path / "engine"
@@ -374,7 +448,7 @@ class TestOverlayMerge:
 
         overlay = tmp_path / "overlay"
         overlay.mkdir()
-        _write(overlay / "new_file.txt", "new from overlay")
+        _write(overlay / "Overlay" / "new_file.txt", "new from overlay")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
@@ -394,7 +468,7 @@ class TestOverlayMerge:
 
         overlay = tmp_path / "overlay"
         overlay.mkdir()
-        _write(overlay / "data.txt", "patched")
+        _write(overlay / "Overlay" / "data.txt", "patched")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
@@ -413,7 +487,7 @@ class TestOverlayMerge:
 
         overlay = tmp_path / "overlay"
         overlay.mkdir()
-        _write(overlay / "data.txt", "overlay content")
+        _write(overlay / "Overlay" / "data.txt", "overlay content")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
@@ -424,9 +498,6 @@ class TestOverlayMerge:
         base_file = tmp_path / "ws" / "Engines" / "root" / "data.txt"
         assert base_file.read_text() == "base content"
 
-        # Overlay was skipped — nothing composed anywhere
-        assert not (tmp_path / "ws" / "Overlays").exists()
-
     def test_higher_precedence_wins(self, tmp_path):
         """When two overlays target the same base file, higher precedence wins."""
         engine = tmp_path / "engine"
@@ -435,11 +506,11 @@ class TestOverlayMerge:
 
         ov1 = tmp_path / "ov_low"
         ov1.mkdir()
-        _write(ov1 / "data.txt", "low precedence")
+        _write(ov1 / "Overlay" / "data.txt", "low precedence")
 
         ov2 = tmp_path / "ov_high"
         ov2.mkdir()
-        _write(ov2 / "data.txt", "high precedence")
+        _write(ov2 / "Overlay" / "data.txt", "high precedence")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
@@ -463,7 +534,7 @@ class TestOverlayMerge:
 
         overlay = tmp_path / "gem_patch"
         overlay.mkdir()
-        _write(overlay / "code.cpp", "patched")
+        _write(overlay / "Overlay" / "code.cpp", "patched")
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
@@ -503,20 +574,19 @@ class TestOverlayMerge:
         _write(engine / "data.txt", "base")
 
         overlay = tmp_path / "overlay"
-        overlay.mkdir()
+        (overlay / "Overlay").mkdir(parents=True)
 
         ws = Workspace(tmp_path / "ws", engine, ObjectType.ENGINE)
         ws.add_resolved_object("root", engine, ObjectType.ENGINE)
         ws.add_overlay(overlay, precedence=0, extends="root")
         ws.create()
 
-        # Add a new file to overlay and update
-        _write(overlay / "added.txt", "added via update")
+        # Add a new file to the overlay payload and update
+        _write(overlay / "Overlay" / "added.txt", "added via update")
         ws.update()
 
-        # New file should appear in the base tree (no audit tree exists)
+        # New file should appear in the base tree
         assert (tmp_path / "ws" / "Engines" / "root" / "added.txt").exists()
-        assert not (tmp_path / "ws" / "Overlays").exists()
 
     def test_create_workspace_convenience_with_extends(self, tmp_path, mock_manifest):
         """create_workspace() passes extends through 3-tuples.
@@ -531,7 +601,7 @@ class TestOverlayMerge:
 
         overlay = tmp_path / "ov"
         overlay.mkdir()
-        _write(overlay / "data.txt", "patched")
+        _write(overlay / "Overlay" / "data.txt", "patched")
 
         ws = create_workspace(
             target_path=tmp_path / "ws",

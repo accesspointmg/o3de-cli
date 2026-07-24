@@ -142,6 +142,7 @@ def _build_workspace_meta(
     sources: dict[str, dict[str, str]],
     file_links: dict[str, str] | None = None,
     platforms: list[str] | None = None,
+    attributions: str | None = None,
 ) -> WorkspaceMeta:
     """Build a WorkspaceMeta model for a new workspace."""
     data = {
@@ -156,6 +157,8 @@ def _build_workspace_meta(
     }
     if platforms:
         data["platforms"] = platforms
+    if attributions and attributions != "workspace":
+        data["attributions"] = attributions
     return WorkspaceMeta.model_validate(data)
 
 
@@ -312,6 +315,12 @@ def _select_overlays_for_platforms(
                    "(overrides platform filtering; repeatable)")
 @click.option("--exclude-overlay", "exclude_overlay", multiple=True,
               help="Exclude a solved overlay by object name (repeatable)")
+@click.option("--attributions", "attributions",
+              type=click.Choice(["workspace", "object", "off"]),
+              default="workspace", show_default=True,
+              help="Where composed overlays' metadata (overlay.json, "
+                   "licenses, icon) is recorded: workspace ledger, inside "
+                   "the extended object, or not at all")
 @click.option("--no-solve", is_flag=True,
               help="Skip dependency resolution — only use explicitly provided paths")
 @click.option("--include-store", is_flag=True,
@@ -330,6 +339,7 @@ def create_command(
     tags_opt: tuple[str, ...],
     include_overlay: tuple[str, ...],
     exclude_overlay: tuple[str, ...],
+    attributions: str,
     no_solve: bool,
     include_store: bool,
     auto_install: bool,
@@ -636,6 +646,7 @@ def create_command(
             root_object_path=root_path,
             resolved_objects=resolved_objects,
             overlays=overlay_tuples,
+            attributions=attributions,
         )
         
         # Save workspace metadata via Pydantic model
@@ -646,6 +657,7 @@ def create_command(
             sources=workspace_obj.get_sources_dict(),
             file_links=workspace_obj.get_file_links(),
             platforms=selected_platforms,
+            attributions=attributions,
         )
         _write_workspace_meta(output_path, meta)
 
@@ -768,12 +780,14 @@ def _relink_object(
     # Re-apply overlays into the freshly relinked tree, precedence order
     if overlays:
         from o3de_cli.core.workspace import _object_name_from_path
+        attributions = meta.attributions or "workspace"
         for ov_path, _prec in sorted(overlays, key=lambda t: t[1]):
             ov_name = _object_name_from_path(ov_path, ov_path.name)
             ws._apply_overlay(
                 ov_path,
                 owner_name=ov_name,
                 base_dest_root=dest_root,
+                attributions=attributions,
             )
 
     meta.file_links.update(ws.get_file_links())
@@ -1351,6 +1365,23 @@ def update_command(
                 all_objects, overlays=overlays_by_base.get(base_name, []),
             )
             recomposed.append(base_name)
+
+        # Remove the workspace attribution ledger entries for removed
+        # overlays (object-mode attribution is wiped by the recompose)
+        import shutil
+        for ov_name in removes:
+            attr_dir = workspace_path / "Overlays" / ov_name
+            if attr_dir.exists():
+                def _clear_readonly(func, path, _exc_info):
+                    import os, stat
+                    os.chmod(path, stat.S_IWRITE)
+                    func(path)
+                shutil.rmtree(attr_dir, onexc=_clear_readonly)
+            attr_prefix = f"Overlays/{ov_name}/"
+            meta.file_links = {
+                src: rel for src, rel in meta.file_links.items()
+                if not rel.startswith(attr_prefix)
+            }
 
         # Persist the new frozen overlay set
         meta.sources.overlays = new_set

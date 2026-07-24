@@ -295,7 +295,8 @@ class TestFileOwnership:
 
         overlay = tmp_path / "overlay"
         overlay.mkdir()
-        (overlay / "config.txt").write_text("patched")
+        (overlay / "Overlay").mkdir()
+        (overlay / "Overlay" / "config.txt").write_text("patched")
 
         ws_dir = tmp_path / "ws"
         ws_dir.mkdir()

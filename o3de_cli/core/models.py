@@ -470,6 +470,11 @@ class WorkspaceMeta(BaseO3DEObject):
         default=None,
         description="Platform selection used at compose time (None = all platforms)",
     )
+    attributions: Optional[str] = Field(
+        default=None,
+        description="Overlay attribution mode: workspace, object, or off "
+                    "(None = workspace)",
+    )
     sources: WorkspaceSources = Field(
         default_factory=WorkspaceSources,
         description="Categorised source objects (type → name → path)",

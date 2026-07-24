@@ -413,6 +413,22 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
                 if rp and not (obj_root / rp).exists():
                     errors.append(f"{field}.relative_path '{rp}' does not exist at the object root")
 
+    # Overlays must carry their payload in the Overlay/ subfolder
+    # (mirrors the Template/ convention): object metadata at the root
+    # never composes; only Overlay/ contents are composed onto the
+    # extended object.
+    if obj_type == ObjectType.OVERLAY and obj_root is not None:
+        payload_dir = obj_root / "Overlay"
+        if not payload_dir.is_dir():
+            errors.append(
+                "Overlay has no 'Overlay/' payload folder — the payload "
+                "composed onto the extended object must live in "
+                "'Overlay/'; the object root holds only metadata "
+                "(overlay.json, licenses, icon, docs)"
+            )
+        elif not any(payload_dir.rglob("*")):
+            warnings.append("'Overlay/' payload folder is empty")
+
     # Check integrity fields on releases
     releases = data.get("releases", [])
     if releases:

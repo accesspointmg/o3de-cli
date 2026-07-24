@@ -96,10 +96,16 @@ class Workspace:
         root_path: Path,
         root_object_path: Path,
         root_object_type: ObjectType,
+        attributions: str = "workspace",
     ):
         self.root_path = Path(root_path)
         self.root_object_path = Path(root_object_path)
         self.root_object_type = root_object_type
+
+        # Where composed overlays' object metadata is recorded:
+        # "workspace" (ledger at <ws>/Overlays/<name>/), "object"
+        # (inside the extended object), or "off"
+        self.attributions = attributions
 
         # Resolved objects: name → (source_path, object_type)
         self.resolved_objects: dict[str, tuple[Path, ObjectType]] = {}
@@ -231,6 +237,7 @@ class Workspace:
                 overlay_path,
                 owner_name=overlay_name,
                 base_dest_root=base_dest_root,
+                attributions=self.attributions,
             )
 
         if progress_callback:
@@ -313,30 +320,53 @@ class Workspace:
 
         return current
 
+    # Name of the payload subfolder inside an overlay object.  Mirrors the
+    # Template/ convention: object metadata (overlay.json, licenses, icon,
+    # docs) lives at the object root and NEVER composes; only the payload
+    # subfolder's contents are composed onto the extended object.
+    OVERLAY_PAYLOAD_DIR = "Overlay"
+
     def _apply_overlay(
         self,
         overlay_path: Path,
         owner_name: str,
         base_dest_root: Path,
+        attributions: str = "workspace",
     ) -> None:
-        """Apply an overlay — compose its files INTO the extended object.
+        """Apply an overlay — compose its payload INTO the extended object.
 
-        Matching files inside the base object's workspace tree are replaced
-        with links to the overlay source; new files are added at the same
-        relative paths.  There is no separate on-disk overlay tree — the
+        The overlay's ``Overlay/`` subfolder is the payload: its contents
+        are linked onto the base object's workspace tree at the same
+        relative paths (replacing matching files, adding new ones).  The
         composed object is indistinguishable from a monolithic one.
-        Ownership is recorded in ``file_owners`` for auditing.
+
+        Everything OUTSIDE the payload folder is object metadata
+        (overlay.json, licenses, icon, docs).  Depending on *attributions*
+        it is linked as a provenance/attribution record:
+        - ``workspace`` (default): ``<workspace>/Overlays/<name>/``
+        - ``object``: ``<base>/<name>/`` (travels with the object)
+        - ``off``: not linked (provenance only in workspace meta)
+
+        An overlay without an ``Overlay/`` payload folder is malformed
+        and composes nothing (warning).
         """
         if not overlay_path.exists():
             logger.warning(f"Overlay path does not exist: {overlay_path}")
             return
 
-        for overlay_file in overlay_path.rglob("*"):
+        payload_root = overlay_path / self.OVERLAY_PAYLOAD_DIR
+        if not payload_root.is_dir():
+            logger.warning(
+                f"Overlay {owner_name} has no '{self.OVERLAY_PAYLOAD_DIR}/' "
+                f"payload folder — nothing to compose"
+            )
+            return
+
+        # 1. Compose the payload into the base object's tree
+        for overlay_file in payload_root.rglob("*"):
             if not overlay_file.is_file():
                 continue
-            if overlay_file.name == "overlay.json":
-                continue
-            relative = overlay_file.relative_to(overlay_path)
+            relative = overlay_file.relative_to(payload_root)
             if self.should_exclude(relative):
                 continue
 
@@ -348,6 +378,25 @@ class Workspace:
             self._force_link(overlay_file, base_target)
             base_ws_rel = base_target.relative_to(self.root_path).as_posix()
             self.file_owners[base_ws_rel] = owner_name
+
+        # 2. Link object metadata as the attribution record
+        if attributions not in ("off", ""):
+            if attributions == "object":
+                attr_root = base_dest_root / owner_name
+            else:
+                attr_root = self.root_path / "Overlays" / owner_name
+            for meta_file in overlay_path.rglob("*"):
+                if not meta_file.is_file():
+                    continue
+                relative = meta_file.relative_to(overlay_path)
+                if relative.parts[0] == self.OVERLAY_PAYLOAD_DIR:
+                    continue
+                if self.should_exclude(relative):
+                    continue
+                target = attr_root / relative
+                self._force_link(meta_file, target)
+                ws_rel = target.relative_to(self.root_path).as_posix()
+                self.file_owners[ws_rel] = owner_name
 
     def _create_link(self, source: Path, target: Path) -> None:
         """Create a symbolic link from *target* → *source*."""
@@ -454,6 +503,7 @@ class Workspace:
             self._apply_overlay(
                 overlay_path, owner_name=overlay_name,
                 base_dest_root=base_dest_root,
+                attributions=self.attributions,
             )
 
     def get_stats(self) -> dict:
@@ -586,6 +636,7 @@ def create_workspace(
     overlays: list[tuple[Path, int, str | None]] | list[tuple[Path, int]] | None = None,
     clean: bool = False,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    attributions: str = "workspace",
 ) -> Workspace:
     """Convenience function to create a workspace.
 
@@ -596,13 +647,16 @@ def create_workspace(
         overlays: (overlay_path, precedence[, extends_name]) tuples.
         clean: Remove existing workspace first.
         progress_callback: Optional progress callback.
+        attributions: Where composed overlays' metadata is recorded
+            ("workspace", "object", or "off").
 
     Returns:
         Created Workspace object.
     """
     root_type = detect_root_type(root_object_path)
 
-    ws = Workspace(target_path, root_object_path, root_type)
+    ws = Workspace(target_path, root_object_path, root_type,
+                   attributions=attributions)
 
     # Determine a name for the root object (read from its object JSON;
     # the directory name may be a version folder like "1.0.0")
