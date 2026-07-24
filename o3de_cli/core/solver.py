@@ -133,6 +133,8 @@ class OverlayEntry:
     platforms: list[str] = field(default_factory=list)
     # Overlay names this overlay depends on (from dependent.overlays)
     overlay_deps: list[str] = field(default_factory=list)
+    # User tags (selection criteria)
+    user_tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -539,6 +541,10 @@ def solve_for_workspace(
                 ObjectNameVersion(d).name
                 for d in (overlay_obj.data.get("dependent", {}) or {}).get("overlays", []) or []
                 if isinstance(d, str)
+            ],
+            user_tags=[
+                t for t in overlay_obj.data.get("user_tags", []) or []
+                if isinstance(t, str)
             ],
         )
         overlays.setdefault(extends_spec.name, []).append(entry)

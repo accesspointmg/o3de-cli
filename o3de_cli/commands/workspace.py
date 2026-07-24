@@ -209,15 +209,16 @@ def _select_overlays_for_platforms(
     selected_platforms: list[str] | None,
     include: set[str] | None = None,
     exclude: set[str] | None = None,
+    selected_tags: list[str] | None = None,
 ) -> dict:
-    """Filter solved overlay groups by platform selection and explicit picks.
+    """Filter solved overlay groups by criteria and explicit picks.
 
-    Selection rules (per overlay-platform design):
-    - No selection (None) → all overlays are included (tier: all).
-    - Platform-specific overlays (non-empty ``platforms``) are included
-      iff they deliver at least one selected platform.
+    Selection rules (per overlay-selection design):
+    - No criteria (platforms and tags both None) → all overlays.
+    - Criteria combine with OR: an overlay is auto-selected if it
+      delivers ANY selected platform OR carries ANY selected user tag.
     - Family/common overlays (no ``platforms``) that other overlays
-      depend on are NOT platform-matched — they are pulled transitively
+      depend on are NOT criteria-matched — they are pulled transitively
       via ``dependent.overlays`` of included overlays.
     - Platform-agnostic overlays that nothing depends on apply
       universally and are always included.
@@ -227,10 +228,12 @@ def _select_overlays_for_platforms(
     include = include or set()
     exclude = exclude or set()
 
-    if selected_platforms is None and not include and not exclude:
+    if selected_platforms is None and not selected_tags and not include and not exclude:
         return overlay_groups
 
     selected = {p.lower() for p in selected_platforms} if selected_platforms else None
+    tags = {t.lower() for t in selected_tags} if selected_tags else None
+    has_criteria = selected is not None or tags is not None
 
     # Index all entries by name and find dependency targets
     all_entries: dict[str, object] = {}
@@ -248,13 +251,21 @@ def _select_overlays_for_platforms(
         if name in include:
             queue.append(name)
             continue
-        if selected is None:
-            # No platform filter: everything (minus exclusions)
+        if not has_criteria:
+            # No criteria: everything (minus exclusions)
             queue.append(name)
-        elif ov.platforms:
-            if {p.lower() for p in ov.platforms} & selected:
-                queue.append(name)
-        elif name not in dep_targets:
+            continue
+        plat_match = bool(
+            selected and ov.platforms
+            and {p.lower() for p in ov.platforms} & selected
+        )
+        tag_match = bool(
+            tags and getattr(ov, "user_tags", None)
+            and {t.lower() for t in ov.user_tags} & tags
+        )
+        if plat_match or tag_match:
+            queue.append(name)
+        elif not ov.platforms and name not in dep_targets:
             # Platform-agnostic and not a dependency target: applies always
             queue.append(name)
 
@@ -292,6 +303,10 @@ def _select_overlays_for_platforms(
               help="Platforms to include when selecting overlays "
                    "(repeatable or comma-separated; 'host' = this machine, "
                    "'all' = no filtering). Default: all.")
+@click.option("--tags", "-T", "tags_opt", multiple=True,
+              help="User tags to include when selecting overlays "
+                   "(repeatable or comma-separated; OR-combined with "
+                   "--platforms).")
 @click.option("--include-overlay", "include_overlay", multiple=True,
               help="Force-include a solved overlay by object name "
                    "(overrides platform filtering; repeatable)")
@@ -312,6 +327,7 @@ def create_command(
     overlay: tuple[str, ...],
     no_overlays: bool,
     platforms_opt: tuple[str, ...],
+    tags_opt: tuple[str, ...],
     include_overlay: tuple[str, ...],
     exclude_overlay: tuple[str, ...],
     no_solve: bool,
@@ -369,6 +385,15 @@ def create_command(
     
     # Expand platform selection (None = all platforms, no filtering)
     selected_platforms = _expand_platform_selection(platforms_opt)
+    selected_tags: list[str] | None = None
+    if tags_opt:
+        selected_tags = []
+        for value in tags_opt:
+            for token in value.split(","):
+                token = token.strip()
+                if token and token.lower() not in {t.lower() for t in selected_tags}:
+                    selected_tags.append(token)
+        selected_tags = selected_tags or None
     overlay_includes = set(include_overlay)
     overlay_excludes = set(exclude_overlay)
     
@@ -459,6 +484,7 @@ def create_command(
                     selected_groups = _select_overlays_for_platforms(
                         solve_result.overlays, selected_platforms,
                         include=overlay_includes, exclude=overlay_excludes,
+                        selected_tags=selected_tags,
                     )
                     for _base, entries in selected_groups.items():
                         for ov in entries:
@@ -535,6 +561,7 @@ def create_command(
                             selected_groups = _select_overlays_for_platforms(
                                 solve_result.overlays, selected_platforms,
                                 include=overlay_includes, exclude=overlay_excludes,
+                                selected_tags=selected_tags,
                             )
                             for _base, entries in selected_groups.items():
                                 for ov in entries:
@@ -667,11 +694,14 @@ def _relink_object(
     new_path: Path,
     obj_type: ObjectType,
     all_objects: dict[str, tuple[Path, ObjectType]],
+    overlays: list[tuple[Path, int]] | None = None,
 ) -> None:
     """Replace one object's linked tree in the workspace with *new_path*.
 
     Removes the old destination directory, relinks from the new source,
-    and updates meta.sources + meta.file_links in place.
+    re-applies *overlays* (``(path, precedence)`` tuples, applied in
+    precedence order INTO the object's tree), and updates meta.sources +
+    meta.file_links in place.
     """
     import shutil
     from o3de_cli.core.workspace import (
@@ -712,6 +742,18 @@ def _relink_object(
         owner_name=name,
         skip_topdirs=_ENGINE_SKIP_TOPDIRS if obj_type == ObjectType.ENGINE else None,
     )
+
+    # Re-apply overlays into the freshly relinked tree, precedence order
+    if overlays:
+        from o3de_cli.core.workspace import _object_name_from_path
+        for ov_path, _prec in sorted(overlays, key=lambda t: t[1]):
+            ov_name = _object_name_from_path(ov_path, ov_path.name)
+            ws._apply_overlay(
+                ov_path,
+                owner_name=ov_name,
+                base_dest_root=dest_root,
+            )
+
     meta.file_links.update(ws.get_file_links())
 
     # Update the sources bucket
@@ -1061,15 +1103,65 @@ def override_command(
             )
 
 
+def _read_overlay_info(path: Path) -> dict:
+    """Read overlay metadata needed for composition from an overlay dir.
+
+    Returns ``{name, extends, precedence, deps}`` where ``extends`` is the
+    base object's bare name and ``deps`` are overlay names from
+    ``dependent.overlays``.
+    """
+    import json as json_mod
+    from o3de_cli.core.resolver import ObjectNameVersion
+
+    info = {"name": path.name, "extends": None, "precedence": 0, "deps": []}
+    for fname in ("overlay.2-0-0.json", "overlay.json"):
+        candidate = path / fname
+        if not candidate.exists():
+            continue
+        try:
+            with open(candidate, encoding="utf-8-sig") as f:
+                data = json_mod.load(f)
+        except (json_mod.JSONDecodeError, IOError):
+            continue
+        header = data.get("overlay", {}) if isinstance(data.get("overlay"), dict) else {}
+        info["name"] = header.get("name") or info["name"]
+        extends = data.get("extends", "")
+        if extends:
+            info["extends"] = ObjectNameVersion(extends).name
+        info["precedence"] = data.get("precedence", 0)
+        info["deps"] = [
+            ObjectNameVersion(d).name
+            for d in (data.get("dependent", {}) or {}).get("overlays", []) or []
+            if isinstance(d, str)
+        ]
+        break
+    return info
+
+
 @workspace.command("update")
 @click.argument("name_or_path")
 @click.option("--overlay", multiple=True, type=click.Path(exists=True),
               help="Additional overlay path")
+@click.option("--add-overlay", "add_overlay", multiple=True,
+              help="Add an installed overlay by object name (repeatable); "
+                   "its overlay dependencies are pulled in automatically")
+@click.option("--remove-overlay", "remove_overlay", multiple=True,
+              help="Remove a composed overlay by object name (repeatable); "
+                   "the extended object is recomposed without it")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-def update_command(name_or_path: str, overlay: tuple[str, ...], as_json: bool) -> None:
+def update_command(
+    name_or_path: str,
+    overlay: tuple[str, ...],
+    add_overlay: tuple[str, ...],
+    remove_overlay: tuple[str, ...],
+    as_json: bool,
+) -> None:
     """Update an existing workspace.
     
-    Re-syncs symlinks and applies any new overlays.
+    Re-syncs symlinks and applies any new overlays.  With --add-overlay /
+    --remove-overlay, changes the workspace's composed overlay set: the
+    affected extended objects are recomposed (base relinked, remaining
+    overlays re-applied in precedence order).
     """
     from o3de_cli.core.json_output import emit_response, emit_error
     
@@ -1094,6 +1186,140 @@ def update_command(name_or_path: str, overlay: tuple[str, ...], as_json: bool) -
             console.print(f"[red]Not a valid workspace:[/red] {workspace_path}")
             console.print("Missing workspace.json metadata file.")
         raise SystemExit(1)
+
+    # ------------------------------------------------------------------
+    # Overlay set change: --add-overlay / --remove-overlay
+    # ------------------------------------------------------------------
+    if add_overlay or remove_overlay:
+        def _fail(msg: str, code: str) -> None:
+            if as_json:
+                emit_error(msg, code=code)
+            else:
+                console.print(f"[red]{msg}[/red]")
+            raise SystemExit(1)
+
+        current: dict[str, str] = dict(meta.sources.overlays)
+
+        # Resolve additions against installed overlays
+        resolver = Resolver()
+        resolver.resolve()
+
+        adds: dict[str, str] = {}
+        pending = list(add_overlay)
+        while pending:
+            ov_name = pending.pop(0)
+            if ov_name in current or ov_name in adds:
+                continue
+            ov = resolver.overlays.get(ov_name)
+            if ov is None or not ov.path:
+                _fail(f"Overlay not installed locally: {ov_name}", "E_OVERLAY_NOT_FOUND")
+            adds[ov_name] = str(ov.path)
+            # Pull overlay dependencies along
+            info = _read_overlay_info(ov.path)
+            for dep in info["deps"]:
+                if dep not in current and dep not in adds:
+                    pending.append(dep)
+
+        removes = set(remove_overlay)
+        for ov_name in removes:
+            if ov_name not in current:
+                _fail(f"Overlay not in workspace: {ov_name}", "E_OVERLAY_NOT_IN_WS")
+
+        # New frozen set
+        new_set: dict[str, str] = {
+            n: p for n, p in current.items() if n not in removes
+        }
+        new_set.update(adds)
+
+        # Dependency guard: a remaining overlay must not depend on a removed one
+        for ov_name, ov_path in new_set.items():
+            info = _read_overlay_info(Path(ov_path))
+            broken = [d for d in info["deps"] if d in removes]
+            if broken:
+                _fail(
+                    f"Cannot remove {', '.join(broken)}: still required by "
+                    f"{ov_name} (remove it too or keep the dependency)",
+                    "E_OVERLAY_DEP",
+                )
+
+        # Group the NEW overlay set by extended base object
+        overlays_by_base: dict[str, list[tuple[Path, int]]] = {}
+        for ov_name, ov_path in new_set.items():
+            info = _read_overlay_info(Path(ov_path))
+            if info["extends"]:
+                overlays_by_base.setdefault(info["extends"], []).append(
+                    (Path(ov_path), info["precedence"])
+                )
+
+        # Bases affected by the change
+        affected_bases: set[str] = set()
+        for ov_name in set(adds) | removes:
+            src = adds.get(ov_name) or current.get(ov_name)
+            if src:
+                info = _read_overlay_info(Path(src))
+                if info["extends"]:
+                    affected_bases.add(info["extends"])
+
+        # Build the full object map from meta.sources
+        all_objects: dict[str, tuple[Path, ObjectType]] = {}
+        bucket_types = [
+            ("engines", ObjectType.ENGINE), ("projects", ObjectType.PROJECT),
+            ("gems", ObjectType.GEM), ("templates", ObjectType.TEMPLATE),
+        ]
+        for bucket, btype in bucket_types:
+            for obj_name, obj_path in getattr(meta.sources, bucket).items():
+                if obj_path:
+                    all_objects[obj_name] = (Path(obj_path), btype)
+
+        recomposed: list[str] = []
+        skipped: list[str] = []
+        for base_name in sorted(affected_bases):
+            entry = all_objects.get(base_name)
+            if entry is None:
+                skipped.append(base_name)
+                continue
+            base_path, base_type = entry
+            _relink_object(
+                workspace_path, meta, base_name, base_path, base_type,
+                all_objects, overlays=overlays_by_base.get(base_name, []),
+            )
+            recomposed.append(base_name)
+
+        # Persist the new frozen overlay set
+        meta.sources.overlays = new_set
+        _write_workspace_meta(workspace_path, meta)
+
+        # Regenerate the workspace-scoped CMake manifest
+        from o3de_cli.core.cmake_manifest import generate_cmake_manifest
+        tp = _find_third_party_path(meta=meta)
+        generate_cmake_manifest(
+            workspace_path, third_party_path=str(tp) if tp else "",
+        )
+
+        if as_json:
+            emit_response(data={
+                "action": "overlays-updated",
+                "workspace": str(workspace_path),
+                "added": sorted(adds),
+                "removed": sorted(removes),
+                "recomposed": recomposed,
+                "skipped": skipped,
+                "overlays": sorted(new_set),
+            })
+        else:
+            console.print(f"[green]Updated overlays:[/green] {workspace_path}")
+            if adds:
+                console.print(f"  Added: {', '.join(sorted(adds))}")
+            if removes:
+                console.print(f"  Removed: {', '.join(sorted(removes))}")
+            console.print(f"  Recomposed: {', '.join(recomposed) or '(none)'}")
+            if skipped:
+                console.print(
+                    f"[yellow]  Skipped (base not in workspace): "
+                    f"{', '.join(skipped)}[/yellow]"
+                )
+            console.print(f"  Overlays now: {len(new_set)}")
+        return
     
     # Reconstruct workspace from metadata
     sources: list[Path] = []
