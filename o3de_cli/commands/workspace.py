@@ -315,6 +315,11 @@ def _select_overlays_for_platforms(
                    "(overrides platform filtering; repeatable)")
 @click.option("--exclude-overlay", "exclude_overlay", multiple=True,
               help="Exclude a solved overlay by object name (repeatable)")
+@click.option("--overlay-order", "overlay_order_opt", multiple=True,
+              help="Explicit apply order for overlays extending one object: "
+                   "comma-separated overlay names, first applied first "
+                   "(later entries win file conflicts). Overrides authored "
+                   "precedence; repeatable per base.")
 @click.option("--attributions", "attributions",
               type=click.Choice(["workspace", "object", "off"]),
               default="workspace", show_default=True,
@@ -339,6 +344,7 @@ def create_command(
     tags_opt: tuple[str, ...],
     include_overlay: tuple[str, ...],
     exclude_overlay: tuple[str, ...],
+    overlay_order_opt: tuple[str, ...],
     attributions: str,
     no_solve: bool,
     include_store: bool,
@@ -640,7 +646,64 @@ def create_command(
         # Phase 2: Assemble the workspace
         # ------------------------------------------------------------------
         task2 = progress.add_task("Creating workspace...", total=None)
-        
+
+        # Apply explicit per-base overlay ordering (overrides authored
+        # precedence): named overlays first in the given order, the rest
+        # keep their precedence order.  Applied as sequential precedences
+        # so the composer's precedence sort realizes the final order.
+        overlay_order_map: dict[str, list[str]] = {}
+        if overlay_order_opt and overlay_tuples:
+            from o3de_cli.core.workspace import _object_name_from_path
+            name_by_path = {
+                p.resolve(): _object_name_from_path(p.resolve(), p.name)
+                for p, *_ in overlay_tuples
+            }
+            for value in overlay_order_opt:
+                names = [t.strip() for t in value.split(",") if t.strip()]
+                if len(names) < 2:
+                    console.print(
+                        "[red]--overlay-order needs at least two "
+                        "comma-separated overlay names[/red]"
+                    )
+                    raise SystemExit(1)
+                bases: set[str] = set()
+                for n in names:
+                    match = next(
+                        (p for p, nm in name_by_path.items() if nm == n), None
+                    )
+                    if match is None:
+                        console.print(
+                            f"[red]--overlay-order: overlay not selected "
+                            f"for this workspace: {n}[/red]"
+                        )
+                        raise SystemExit(1)
+                    info = _read_overlay_info(match)
+                    bases.add(info["extends"] or "")
+                if len(bases) != 1:
+                    console.print(
+                        "[red]--overlay-order: overlays must all extend "
+                        "the same object[/red]"
+                    )
+                    raise SystemExit(1)
+                overlay_order_map[bases.pop()] = names
+
+            if overlay_order_map:
+                explicit_pos: dict[Path, int] = {}
+                for names in overlay_order_map.values():
+                    for i, n in enumerate(names):
+                        for p, nm in name_by_path.items():
+                            if nm == n:
+                                explicit_pos[p] = i
+                ordered = sorted(
+                    overlay_tuples,
+                    key=lambda t: (
+                        explicit_pos.get(t[0].resolve(), 10_000 + t[1]),
+                    ),
+                )
+                overlay_tuples = [
+                    (p, i, ext) for i, (p, _prec, ext) in enumerate(ordered)
+                ]
+
         workspace_obj = create_workspace(
             target_path=output_path,
             root_object_path=root_path,
@@ -659,6 +722,8 @@ def create_command(
             platforms=selected_platforms,
             attributions=attributions,
         )
+        if overlay_order_map:
+            meta.overlay_order = overlay_order_map
         _write_workspace_meta(output_path, meta)
 
         # Write the workspace-scoped CMake resolved manifest — the
