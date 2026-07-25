@@ -46,6 +46,16 @@ def _project(tmp_path, name="org.test.project"):
     return pdir
 
 
+def _gem(tmp_path, name="org.test.gem"):
+    gdir = tmp_path / "gem"
+    gdir.mkdir(exist_ok=True)
+    _write_json(gdir / "gem.2-0-0.json", {
+        "$schemaVersion": "2.0.0",
+        "gem": {"name": name, "version": "1.0.0"},
+    })
+    return gdir
+
+
 class TestWorkspaceCreate:
     def test_create_needs_engine_or_project(self, tmp_path):
         from o3de_cli.commands.workspace import workspace
@@ -90,6 +100,50 @@ class TestWorkspaceCreate:
         ])
         assert result.exit_code == 1
         assert "already exists" in result.output
+
+
+class TestWorkspaceCreateGemRoot:
+    """Gem-rooted workspaces: --root <gem> with -e <engine> secondary."""
+
+    def _create(self, tmp_path, extra_args=()):
+        from o3de_cli.commands.workspace import workspace
+        gdir = _gem(tmp_path)
+        edir = _engine(tmp_path)
+        mp = _manifest(tmp_path)
+        output = tmp_path / "ws_out"
+        runner = CliRunner()
+        with patch("o3de_cli.commands.workspace.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.core.paths.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.commands.workspace.get_resolved_manifest_path",
+                   return_value=tmp_path / "resolved.json"), \
+             patch("o3de_cli.commands.workspace.get_default_workspaces_path",
+                   return_value=tmp_path / "workspaces"), \
+             patch("o3de_cli.core.resolver.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.core.resolver.get_resolved_manifest_path",
+                   return_value=tmp_path / "resolved.json"):
+            result = runner.invoke(workspace, [
+                "create", "gemws",
+                "--root", str(gdir),
+                "--engine", str(edir),
+                "--output", str(output),
+                *extra_args,
+            ])
+        return result, output / "gemws", gdir, edir
+
+    def test_gem_root_composes_engine_as_secondary(self, tmp_path):
+        result, ws, gdir, edir = self._create(tmp_path)
+        assert result.exit_code == 0, result.output
+        meta = json.loads((ws / "workspace.json").read_text(encoding="utf-8-sig"))
+        assert meta["root_type"] == "gem"
+        assert Path(meta["root_object"]).resolve() == gdir.resolve()
+        assert "org.test.gem" in meta["sources"]["gems"]
+        assert "org.test.engine" in meta["sources"]["engines"]
+
+    def test_gem_root_workspace_dirs(self, tmp_path):
+        result, ws, gdir, edir = self._create(tmp_path)
+        assert result.exit_code == 0, result.output
+        assert (ws / "Gems").is_dir()
+        assert (ws / "Engines").is_dir()
 
 
 # ── B: Command helper tests ────────────────────────────────────────
@@ -458,6 +512,78 @@ class TestBuildCommandCMake:
         assert cfg[preset_idx + 1] == "windows-default"
         # Preset mode should not use -B
         assert "-B" not in cfg
+
+
+class TestBuildCommandGemRoot:
+    """Gem-rooted workspaces default the build target to the root gem."""
+
+    def _ws_gem_rooted(self, tmp_path):
+        engine_dir = tmp_path / "engine"
+        engine_dir.mkdir()
+        (engine_dir / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.22)")
+
+        gem_dir = tmp_path / "gem"
+        gem_dir.mkdir()
+
+        meta = _workspace_meta_json(
+            root_type="gem", root_object=str(gem_dir),
+            candidates=[
+                {"name": "org.o3de.engine.o3de", "version": "1.0.0",
+                 "object_type": "engine", "status": "local",
+                 "path": str(engine_dir)},
+                {"name": "org.test.gem", "version": "1.0.0",
+                 "object_type": "gem", "status": "local",
+                 "path": str(gem_dir)},
+            ],
+        )
+        return _create_ws_dir(tmp_path, meta), engine_dir, gem_dir
+
+    def test_default_target_is_root_gem(self, tmp_path):
+        from o3de_cli.commands.workspace import workspace
+        ws, engine_dir, gem_dir = self._ws_gem_rooted(tmp_path)
+        runner = CliRunner()
+
+        calls = []
+        def mock_run_cmake(cmd, **kwargs):
+            calls.append(cmd)
+            return 0
+
+        with patch("o3de_cli.commands.workspace._run_cmake", side_effect=mock_run_cmake), \
+             patch("o3de_cli.commands.workspace._find_third_party_path", return_value=None):
+            result = runner.invoke(workspace, ["build", str(ws)])
+
+        assert result.exit_code == 0, result.output
+        assert "defaulting build target" in result.output
+        # No project → engine-centric configure
+        cfg = calls[0]
+        s_idx = cfg.index("-S")
+        assert cfg[s_idx + 1] == str(engine_dir)
+        # Build targets the root gem
+        bld = calls[1]
+        target_idx = bld.index("--target")
+        assert bld[target_idx + 1] == "org.test.gem"
+
+    def test_explicit_target_wins(self, tmp_path):
+        from o3de_cli.commands.workspace import workspace
+        ws, engine_dir, gem_dir = self._ws_gem_rooted(tmp_path)
+        runner = CliRunner()
+
+        calls = []
+        def mock_run_cmake(cmd, **kwargs):
+            calls.append(cmd)
+            return 0
+
+        with patch("o3de_cli.commands.workspace._run_cmake", side_effect=mock_run_cmake), \
+             patch("o3de_cli.commands.workspace._find_third_party_path", return_value=None):
+            result = runner.invoke(workspace, [
+                "build", str(ws), "--target", "SomeOtherTarget",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert "defaulting build target" not in result.output
+        bld = calls[1]
+        target_idx = bld.index("--target")
+        assert bld[target_idx + 1] == "SomeOtherTarget"
 
 
 # ── D: Integration — create persists candidates ────────────────────
