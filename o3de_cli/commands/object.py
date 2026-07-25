@@ -1129,6 +1129,49 @@ def hoist_command(
         _fail(f"filter-repo failed: {result.stdout}{result.stderr}",
               "E_FILTER_FAILED", as_json)
 
+    # ── LFS carry-over ────────────────────────────────────────────────
+    # The split repo inherits LFS *pointer* blobs but neither the root
+    # .gitattributes (it lived outside the gem's paths) nor the LFS
+    # objects themselves.  Carry the source repo's LFS patterns over,
+    # and copy the objects for the files at HEAD from the source repo's
+    # local LFS store so checkouts and pushes work.
+    src_attributes = git_root / ".gitattributes"
+    if src_attributes.is_file() and not (out_dir / ".gitattributes").exists():
+        shutil.copy2(src_attributes, out_dir / ".gitattributes")
+    rc, lfs_files = _run_git(
+        ["lfs", "ls-files", "--name-only"], cwd=out_dir,
+    )
+    if rc == 0 and lfs_files.strip():
+        copied = 0
+        for rel in lfs_files.splitlines():
+            rel = rel.strip()
+            if not rel:
+                continue
+            # Read the pointer's oid from the working-tree pointer file
+            try:
+                ptr = (out_dir / rel).read_text(encoding="utf-8")
+                oid = next(
+                    line.split(":", 1)[1].strip()
+                    for line in ptr.splitlines()
+                    if line.startswith("oid sha256:")
+                )
+            except Exception:
+                continue
+            src_obj = (git_root / ".git" / "lfs" / "objects"
+                       / oid[:2] / oid[2:4] / oid)
+            dst_obj = (out_dir / ".git" / "lfs" / "objects"
+                       / oid[:2] / oid[2:4] / oid)
+            if src_obj.is_file() and not dst_obj.exists():
+                dst_obj.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_obj, dst_obj)
+                copied += 1
+        # Historical pointers may lack objects locally; allow pushes
+        _run_git(["config", "lfs.allowincompletepush", "true"], cwd=out_dir)
+        # Materialize the working tree now that objects are present
+        _run_git(["lfs", "checkout"], cwd=out_dir)
+        if not as_json and copied:
+            console.print(f"[dim]LFS: carried {copied} objects[/dim]")
+
     # ── Metadata commit on top of the split history ──────────────────
     gem_dir = out_dir / gem_target
 
