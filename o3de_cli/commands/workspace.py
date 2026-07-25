@@ -1219,6 +1219,11 @@ def _read_overlay_info(path: Path) -> dict:
                    "comma-separated overlay names, first applied first "
                    "(later entries win file conflicts). Overrides authored "
                    "precedence for this workspace; repeatable per base.")
+@click.option("--attributions", "attributions",
+              type=click.Choice(["workspace", "object", "off"]),
+              default=None,
+              help="Change where composed overlays' metadata is recorded; "
+                   "existing attribution records are migrated")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def update_command(
     name_or_path: str,
@@ -1226,14 +1231,16 @@ def update_command(
     add_overlay: tuple[str, ...],
     remove_overlay: tuple[str, ...],
     overlay_order: tuple[str, ...],
+    attributions: str | None,
     as_json: bool,
 ) -> None:
     """Update an existing workspace.
     
     Re-syncs symlinks and applies any new overlays.  With --add-overlay /
-    --remove-overlay / --overlay-order, changes the workspace's composed
-    overlay set or apply order: the affected extended objects are
-    recomposed (base relinked, overlays re-applied in order).
+    --remove-overlay / --overlay-order / --attributions, changes the
+    workspace's composed overlay set, apply order, or attribution mode:
+    affected extended objects are recomposed and attribution records
+    migrated.
     """
     from o3de_cli.core.json_output import emit_response, emit_error
     
@@ -1260,10 +1267,13 @@ def update_command(
         raise SystemExit(1)
 
     # ------------------------------------------------------------------
-    # Overlay set / order change: --add-overlay / --remove-overlay /
-    # --overlay-order
+    # Overlay set / order / attribution change
     # ------------------------------------------------------------------
-    if add_overlay or remove_overlay or overlay_order:
+    attr_change = (
+        attributions is not None
+        and attributions != (meta.attributions or "workspace")
+    )
+    if add_overlay or remove_overlay or overlay_order or attr_change:
         def _fail(msg: str, code: str) -> None:
             if as_json:
                 emit_error(msg, code=code)
@@ -1395,6 +1405,32 @@ def update_command(
                 if info["extends"]:
                     affected_bases.add(info["extends"])
 
+        # Attribution mode change: migrate records.  Recomposing every
+        # base with overlays re-places attribution at the new location
+        # (and wipes object-mode records); the workspace ledger must be
+        # cleared explicitly when leaving workspace mode.
+        old_attr_mode = meta.attributions or "workspace"
+        if attr_change:
+            affected_bases |= set(overlays_by_base)
+            meta.attributions = (
+                None if attributions == "workspace" else attributions
+            )
+            if old_attr_mode == "workspace":
+                import shutil as _shutil
+                for ov_name in new_set:
+                    attr_dir = workspace_path / "Overlays" / ov_name
+                    if attr_dir.exists():
+                        def _clear_ro(func, path, _exc_info):
+                            import os, stat
+                            os.chmod(path, stat.S_IWRITE)
+                            func(path)
+                        _shutil.rmtree(attr_dir, onexc=_clear_ro)
+                    attr_prefix = f"Overlays/{ov_name}/"
+                    meta.file_links = {
+                        src: rel for src, rel in meta.file_links.items()
+                        if not rel.startswith(attr_prefix)
+                    }
+
         # Build the full object map from meta.sources
         all_objects: dict[str, tuple[Path, ObjectType]] = {}
         bucket_types = [
@@ -1456,6 +1492,7 @@ def update_command(
                 "added": sorted(adds),
                 "removed": sorted(removes),
                 "reordered": sorted(ordered_bases),
+                "attributions": attributions if attr_change else None,
                 "recomposed": recomposed,
                 "skipped": skipped,
                 "overlays": sorted(new_set),
@@ -1466,6 +1503,10 @@ def update_command(
                 console.print(f"  Added: {', '.join(sorted(adds))}")
             if removes:
                 console.print(f"  Removed: {', '.join(sorted(removes))}")
+            if attr_change:
+                console.print(
+                    f"  Attributions: {old_attr_mode} → {attributions}"
+                )
             if ordered_bases:
                 for base in sorted(ordered_bases):
                     console.print(
