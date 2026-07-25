@@ -60,6 +60,7 @@ class TestWorkspaceCreate:
         output = tmp_path / "ws_out"
         runner = CliRunner()
         with patch("o3de_cli.commands.workspace.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.core.paths.get_manifest_path", return_value=mp), \
              patch("o3de_cli.commands.workspace.get_resolved_manifest_path",
                    return_value=tmp_path / "resolved.json"), \
              patch("o3de_cli.commands.workspace.get_default_workspaces_path",
@@ -471,6 +472,7 @@ class TestCreatePersistsCandidates:
         output = tmp_path / "ws_out"
         runner = CliRunner()
         with patch("o3de_cli.commands.workspace.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.core.paths.get_manifest_path", return_value=mp), \
              patch("o3de_cli.commands.workspace.get_resolved_manifest_path",
                    return_value=tmp_path / "resolved.json"), \
              patch("o3de_cli.commands.workspace.get_default_workspaces_path",
@@ -518,6 +520,7 @@ class TestAutoInstall:
         mock_solve.overlays = {}
 
         with patch("o3de_cli.commands.workspace.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.core.paths.get_manifest_path", return_value=mp), \
              patch("o3de_cli.commands.workspace.get_resolved_manifest_path",
                    return_value=tmp_path / "resolved.json"), \
              patch("o3de_cli.commands.workspace.get_default_workspaces_path",
@@ -571,6 +574,7 @@ class TestAutoInstall:
         solve_calls = [mock_solve_1, mock_solve_2]
 
         with patch("o3de_cli.commands.workspace.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.core.paths.get_manifest_path", return_value=mp), \
              patch("o3de_cli.commands.workspace.get_resolved_manifest_path",
                    return_value=tmp_path / "resolved.json"), \
              patch("o3de_cli.commands.workspace.get_default_workspaces_path",
@@ -627,6 +631,7 @@ class TestAutoInstall:
         mock_solve.overlays = {}
 
         with patch("o3de_cli.commands.workspace.get_manifest_path", return_value=mp), \
+             patch("o3de_cli.core.paths.get_manifest_path", return_value=mp), \
              patch("o3de_cli.commands.workspace.get_resolved_manifest_path",
                    return_value=tmp_path / "resolved.json"), \
              patch("o3de_cli.commands.workspace.get_default_workspaces_path",
