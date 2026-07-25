@@ -1195,10 +1195,17 @@ def hoist_command(
     if licenses:
         repo_meta["licenses"] = licenses
     repo_meta["canonical_tags"] = ["Repo"]
+    # Point children at the 2.0.0 sidecar when the gem ships one — the
+    # remote crawler fetches the literal child path, and the legacy
+    # gem.json would resolve under its legacy short name
+    gem_json_name = (
+        "gem.2-0-0.json"
+        if (gem_dir / "gem.2-0-0.json").is_file() else "gem.json"
+    )
     repo_meta["children"] = {
         "engines": [],
         "projects": [],
-        "gems": [f"{gem_target}/gem.json"],
+        "gems": [f"{gem_target}/{gem_json_name}"],
         "templates": [],
         "repos": [],
         "overlays": [

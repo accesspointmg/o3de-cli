@@ -82,7 +82,9 @@ class TestHoist:
         # Layout: repo.json root, gem without platform dirs, overlays
         repo_meta = json.loads((out / "repo.json").read_text(encoding="utf-8"))
         assert repo_meta["repo"]["name"] == "org.test.repo.widget"
-        assert repo_meta["children"]["gems"] == ["Gems/Widget/gem.json"]
+        # children point at the 2.0.0 sidecar (canonical name for the
+        # remote crawler, which fetches the literal child path)
+        assert repo_meta["children"]["gems"] == ["Gems/Widget/gem.2-0-0.json"]
         assert sorted(repo_meta["children"]["overlays"]) == [
             "Overlays/widget.common/overlay.json",
             "Overlays/widget.windows/overlay.json",
