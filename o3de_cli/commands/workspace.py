@@ -1156,7 +1156,10 @@ def override_command(
             old_path = current.get(cname)
             if old_path and Path(old_path).resolve() == cpath.resolve():
                 continue
-            _relink_object(ws_path, meta, cname, cpath, ctype, new_map)
+            # Re-apply any overlays composed onto this object — relinking
+            # without them would silently strip the composition
+            _relink_object(ws_path, meta, cname, cpath, ctype, new_map,
+                           overlays=_overlays_for_base(meta, cname))
             changed.append(cname)
 
         _write_workspace_meta(ws_path, meta)
@@ -1267,6 +1270,26 @@ def _read_overlay_info(path: Path) -> dict:
         ]
         break
     return info
+
+
+def _overlays_for_base(meta: WorkspaceMeta, base_name: str) -> list[tuple[Path, int]]:
+    """Return the workspace's composed overlays extending *base_name* in
+    final apply order (authored precedence, then meta.overlay_order),
+    as ``(path, sequence)`` tuples for :func:`_relink_object`."""
+    entries: list[tuple[str, Path, int]] = []
+    for ov_name, ov_path in meta.sources.overlays.items():
+        if not ov_path:
+            continue
+        info = _read_overlay_info(Path(ov_path))
+        if info["extends"] == base_name:
+            entries.append((ov_name, Path(ov_path), info["precedence"]))
+    entries.sort(key=lambda t: (t[2], t[0]))
+    explicit = (meta.overlay_order or {}).get(base_name) or []
+    if explicit:
+        named = [e for n in explicit for e in entries if e[0] == n]
+        rest = [e for e in entries if e[0] not in set(explicit)]
+        entries = named + rest
+    return [(p, i) for i, (_n, p, _prec) in enumerate(entries)]
 
 
 @workspace.command("update")

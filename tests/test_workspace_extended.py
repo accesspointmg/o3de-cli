@@ -565,6 +565,47 @@ class TestOverlayMerge:
                        overlays=[(ov2, 0), (ov1, 1)])
         assert target.read_text() == "one"
 
+    def test_overlays_for_base_from_meta(self, tmp_path):
+        """_overlays_for_base returns the composed overlays for a base in
+        final apply order (precedence, then meta.overlay_order)."""
+        from o3de_cli.commands.workspace import (
+            _overlays_for_base, _build_workspace_meta,
+        )
+
+        ov1 = tmp_path / "ov1"
+        ov1.mkdir()
+        _write(ov1 / "overlay.json",
+               '{"overlay": {"name": "org.t.overlay.one"}, '
+               '"extends": "mygem", "precedence": 0}')
+        _write(ov1 / "Overlay" / "a.txt", "one")
+
+        ov2 = tmp_path / "ov2"
+        ov2.mkdir()
+        _write(ov2 / "overlay.json",
+               '{"overlay": {"name": "org.t.overlay.two"}, '
+               '"extends": "mygem", "precedence": 10}')
+        _write(ov2 / "Overlay" / "a.txt", "two")
+
+        meta = _build_workspace_meta(
+            name="t", root_path=tmp_path, root_type="gem",
+            sources={"overlays": {
+                "org.t.overlay.one": str(ov1),
+                "org.t.overlay.two": str(ov2),
+            }},
+        )
+
+        # Authored precedence: one (0) before two (10)
+        order = [p.name for p, _i in _overlays_for_base(meta, "mygem")]
+        assert order == ["ov1", "ov2"]
+
+        # Explicit workspace order flips it
+        meta.overlay_order = {"mygem": ["org.t.overlay.two", "org.t.overlay.one"]}
+        order = [p.name for p, _i in _overlays_for_base(meta, "mygem")]
+        assert order == ["ov2", "ov1"]
+
+        # Unrelated base: nothing
+        assert _overlays_for_base(meta, "othergem") == []
+
     def test_overlay_extends_gem(self, tmp_path):
         """Overlay extending a gem replaces files in Gems/ tree."""
         engine = tmp_path / "engine"
