@@ -620,6 +620,71 @@ def _split_overlay_name(base_name: str, suffix: str) -> str:
     return base_name + f".overlay.{suffix.lower()}"
 
 
+def _family_repo_name(base_name: str) -> str:
+    """Derive a family repo object name from an object name.
+
+    ``org.o3de.gem.achievements`` → ``org.o3de.repo.achievements``.
+    """
+    parts = base_name.split(".")
+    for i, part in enumerate(parts):
+        if part in ("gem", "project", "engine", "template"):
+            parts[i] = "repo"
+            return ".".join(parts)
+    return base_name + ".repo"
+
+
+def _build_overlay_meta(
+    ov_name: str,
+    plat: str,
+    is_common: bool,
+    base_name: str,
+    base_version: str,
+    ov_version: str,
+    type_token: str,
+    precedence: int,
+    origin: dict | None,
+    licenses: list[dict],
+    user_tags: list[str],
+    common_name: str | None,
+) -> dict:
+    """Build the overlay.json document for a split-out platform payload."""
+    display_base = base_name.split(".")[-1]
+    meta: dict = {
+        "$schemaVersion": "2.0.0",
+        "$schema": "https://canonical.o3de.org/o3de-overlay-2.0.0.json",
+        "overlay": {
+            "name": ov_name,
+            "version": ov_version,
+            "display_name": f"{display_base} {plat}",
+            "description": (
+                f"Shared platform-common payload for the {display_base} "
+                f"{type_token}. Platform overlays depend on this overlay."
+                if is_common else
+                f"{plat} platform delivery for the {display_base} "
+                f"{type_token}, composed into the {type_token} tree at "
+                f"workspace compose time."
+            ),
+            "type": "code",
+        },
+        "extends": f"{base_name}>={base_version}",
+        "precedence": 0 if is_common else precedence,
+    }
+    if origin:
+        meta["origin"] = origin
+    if licenses:
+        meta["licenses"] = licenses
+    meta["canonical_tags"] = ["Overlay"]
+    if user_tags:
+        meta["user_tags"] = user_tags
+    if not is_common:
+        meta["platforms"] = [plat]
+        if common_name:
+            meta["dependent"] = {
+                "overlays": [f"{common_name}>={ov_version}"],
+            }
+    return meta
+
+
 @object_group.command("split-platforms")
 @click.argument("object_path", type=click.Path(exists=True, file_okay=False))
 @click.option("--output", "-o", type=click.Path(),
@@ -790,40 +855,13 @@ def split_platforms_command(
             shutil.copy2(obj_root / lic["relative_path"],
                          ov_root / lic["relative_path"])
 
-        display_base = base_name.split(".")[-1]
-        meta: dict = {
-            "$schemaVersion": "2.0.0",
-            "$schema": "https://canonical.o3de.org/o3de-overlay-2.0.0.json",
-            "overlay": {
-                "name": ov_name,
-                "version": ov_version,
-                "display_name": f"{display_base} {plat}",
-                "description": (
-                    f"Shared platform-common payload for the {display_base} "
-                    f"{type_token}. Platform overlays depend on this overlay."
-                    if is_common else
-                    f"{plat} platform delivery for the {display_base} "
-                    f"{type_token}, composed into the {type_token} tree at "
-                    f"workspace compose time."
-                ),
-                "type": "code",
-            },
-            "extends": f"{base_name}>={base_version}",
-            "precedence": 0 if is_common else precedence,
-        }
-        if origin:
-            meta["origin"] = origin
-        if licenses:
-            meta["licenses"] = licenses
-        meta["canonical_tags"] = ["Overlay"]
-        if user_tags:
-            meta["user_tags"] = user_tags
-        if not is_common:
-            meta["platforms"] = [plat]
-            if common_name:
-                meta["dependent"] = {
-                    "overlays": [f"{common_name}>={ov_version}"],
-                }
+        meta = _build_overlay_meta(
+            ov_name=ov_name, plat=plat, is_common=is_common,
+            base_name=base_name, base_version=base_version,
+            ov_version=ov_version, type_token=type_token,
+            precedence=precedence, origin=origin, licenses=licenses,
+            user_tags=user_tags, common_name=common_name,
+        )
         with open(ov_root / "overlay.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
             f.write("\n")
@@ -885,3 +923,346 @@ def split_platforms_command(
             console.print(
                 f"[dim]Registered: {', '.join(registered)}[/dim]"
             )
+
+
+# ── hoist ───────────────────────────────────────────────────────────
+
+
+def _run_git(args: list[str], cwd: Path | None = None,
+             env: dict | None = None) -> tuple[int, str]:
+    """Run a git command, returning (returncode, combined output)."""
+    import os
+    import subprocess
+
+    full_env = {**os.environ, **(env or {})}
+    result = subprocess.run(
+        ["git", *args], cwd=cwd, env=full_env,
+        capture_output=True, text=True,
+    )
+    return result.returncode, (result.stdout + result.stderr).strip()
+
+
+@object_group.command("hoist")
+@click.argument("object_path", type=click.Path(exists=True, file_okay=False))
+@click.option("--output", "-o", type=click.Path(),
+              help="Path for the new family repo (default: sibling of the "
+                   "source git repo, named o3de-<family>)")
+@click.option("--repo-name", default=None,
+              help="Family repo object name "
+                   "(default: derived, e.g. org.o3de.repo.<family>)")
+@click.option("--branch", default=None,
+              help="Branch to hoist from (default: the source repo's "
+                   "current branch)")
+@click.option("--overlay-version", "-V", "overlay_version", default=None,
+              help="Version for the created overlays "
+                   "(default: the base object's version)")
+@click.option("--tags", "-T", "tags_opt", multiple=True,
+              help="user_tags to stamp on the created overlays")
+@click.option("--precedence", type=int, default=10, show_default=True,
+              help="Precedence for platform overlays (common overlay is 0)")
+@click.option("--register", "do_register", is_flag=True,
+              help="Register the family repo in the manifest")
+@click.option("--dry-run", is_flag=True,
+              help="Only report what would be hoisted")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def hoist_command(
+    object_path: str,
+    output: str | None,
+    repo_name: str | None,
+    branch: str | None,
+    overlay_version: str | None,
+    tags_opt: tuple[str, ...],
+    precedence: int,
+    do_register: bool,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    """Hoist a gem out of its engine repo into a family repo, with history.
+
+    Uses git filter-repo to project the gem's full git history into a
+    new repo-rooted family repository:
+
+    \b
+        o3de-<family>/
+          repo.json                      ← repo object (children below)
+          Gems/<Gem>/                    ← gem history, platform dirs removed
+          Overlays/<family>.<plat>/      ← per-platform overlay objects,
+            Overlay/...                    platform file history preserved
+
+    The split is deterministic: re-running it after upstream merges
+    produces the same historical commits, so the family repo can fetch
+    and merge upstream changes indefinitely.
+
+    Example:
+        o3de object hoist ./o3de/Gems/Achievements --register
+    """
+    import shutil
+    import subprocess
+
+    from o3de_cli.core.json_output import emit_response
+    from o3de_cli.core.models import get_object_name, get_object_version
+
+    obj_root = Path(object_path).resolve()
+    try:
+        obj_data, type_token = _load_object_json(obj_root)
+    except FileNotFoundError as e:
+        _fail(str(e), "E_NOT_AN_OBJECT", as_json)
+        raise
+
+    base_name = get_object_name(obj_data) or obj_root.name
+    base_version = get_object_version(obj_data)
+    ov_version = overlay_version or base_version or "1.0.0"
+    family = base_name.split(".")[-1]
+    family_repo_name = repo_name or _family_repo_name(base_name)
+
+    # Locate the enclosing git repository
+    rc, git_root_str = _run_git(
+        ["rev-parse", "--show-toplevel"], cwd=obj_root,
+    )
+    if rc != 0:
+        _fail(f"Not inside a git repository: {obj_root}",
+              "E_NOT_A_GIT_REPO", as_json)
+    git_root = Path(git_root_str)
+    try:
+        gem_rel = obj_root.relative_to(git_root).as_posix()
+    except ValueError:
+        _fail(f"{obj_root} is not under git root {git_root}",
+              "E_NOT_IN_REPO", as_json)
+        raise
+
+    if branch is None:
+        rc, branch = _run_git(
+            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=git_root,
+        )
+        if rc != 0 or branch == "HEAD":
+            _fail("Cannot determine the source branch (detached HEAD?) — "
+                  "pass --branch", "E_NO_BRANCH", as_json)
+
+    # git filter-repo availability
+    try:
+        import git_filter_repo  # noqa: F401
+    except ImportError:
+        _fail("git-filter-repo is not installed. "
+              "Install it with: pip install git-filter-repo",
+              "E_NO_FILTER_REPO", as_json)
+
+    # Detect platform payloads in the working tree
+    detected = _find_platform_dirs(obj_root)
+
+    # Build the filter-repo argument list: keep the gem's history and
+    # rename each platform dir into its overlay's payload location.
+    # Platform renames must precede the (optional) gem-root rename so a
+    # renamed path no longer matches the gem prefix.
+    gem_target = f"Gems/{obj_root.name}"
+    filter_args = ["--path", f"{gem_rel}/"]
+    overlay_dirs: dict[str, str] = {}  # overlay dir name → platform
+    renames: list[tuple[str, str]] = []
+    common_name = (
+        _split_overlay_name(base_name, "common")
+        if _COMMON_PLATFORM in detected else None
+    )
+    for plat, dirs in sorted(detected.items()):
+        ov_dir = f"{family}.{plat.lower()}"
+        overlay_dirs[ov_dir] = plat
+        for plat_dir in dirs:
+            src = plat_dir.relative_to(git_root).as_posix()
+            obj_rel = plat_dir.relative_to(obj_root).as_posix()
+            dst = f"Overlays/{ov_dir}/Overlay/{obj_rel}"
+            renames.append((src, dst))
+            filter_args += ["--path-rename", f"{src}/:{dst}/"]
+    if gem_rel != gem_target:
+        filter_args += ["--path-rename", f"{gem_rel}/:{gem_target}/"]
+
+    out_dir = (
+        Path(output).resolve() if output
+        else git_root.parent / f"o3de-{family}"
+    )
+
+    if dry_run:
+        plan = {
+            "object": base_name,
+            "repo": family_repo_name,
+            "path": str(out_dir),
+            "branch": branch,
+            "gem_dir": gem_target,
+            "overlays": [
+                {"dir": f"Overlays/{d}", "platform": p,
+                 "overlay": _split_overlay_name(base_name, p)}
+                for d, p in sorted(overlay_dirs.items())
+            ],
+        }
+        if as_json:
+            emit_response(data=plan)
+        else:
+            console.print(f"[bold]Would hoist {base_name}:[/bold]")
+            console.print(f"  Family repo: {family_repo_name} → {out_dir}")
+            console.print(f"  Branch: {branch}")
+            console.print(f"  Gem: {gem_rel} → {gem_target}")
+            for src, dst in renames:
+                console.print(f"  {src} → {dst}")
+        return
+
+    if out_dir.exists():
+        _fail(f"Output path already exists: {out_dir}",
+              "E_OUTPUT_EXISTS", as_json)
+
+    # Fresh clone (filter-repo requirement); skip LFS smudge — pointers
+    # filter fine and the gem may not have LFS content at all
+    if not as_json:
+        console.print(f"[dim]Cloning {git_root} (branch {branch})...[/dim]")
+    rc, out = _run_git(
+        ["clone", "--no-local", "--single-branch", "--branch", branch,
+         f"file://{git_root.as_posix()}", str(out_dir)],
+        env={"GIT_LFS_SKIP_SMUDGE": "1"},
+    )
+    if rc != 0:
+        _fail(f"Clone failed: {out}", "E_CLONE_FAILED", as_json)
+
+    if not as_json:
+        console.print("[dim]Filtering history (git filter-repo)...[/dim]")
+    result = subprocess.run(
+        [sys.executable, "-m", "git_filter_repo", *filter_args],
+        cwd=out_dir, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        _fail(f"filter-repo failed: {result.stdout}{result.stderr}",
+              "E_FILTER_FAILED", as_json)
+
+    # ── Metadata commit on top of the split history ──────────────────
+    gem_dir = out_dir / gem_target
+
+    # Licenses travel from the gem to each overlay and to the repo root
+    licenses = []
+    for lic in obj_data.get("licenses", []):
+        rel = lic.get("relative_path")
+        if rel and (gem_dir / rel).is_file():
+            licenses.append(lic)
+    origin = obj_data.get("origin")
+
+    user_tags: list[str] = []
+    for value in tags_opt:
+        for token in value.split(","):
+            token = token.strip()
+            if token and token not in user_tags:
+                user_tags.append(token)
+
+    created_overlays: list[str] = []
+    for ov_dir, plat in sorted(overlay_dirs.items()):
+        ov_root = out_dir / "Overlays" / ov_dir
+        if not ov_root.is_dir():
+            continue  # platform had no history (nothing to overlay)
+        is_common = plat == _COMMON_PLATFORM
+        ov_name = _split_overlay_name(base_name, plat)
+        meta = _build_overlay_meta(
+            ov_name=ov_name, plat=plat, is_common=is_common,
+            base_name=base_name, base_version=base_version,
+            ov_version=ov_version, type_token=type_token,
+            precedence=precedence, origin=origin, licenses=licenses,
+            user_tags=user_tags, common_name=common_name,
+        )
+        with open(ov_root / "overlay.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+            f.write("\n")
+        for lic in licenses:
+            shutil.copy2(gem_dir / lic["relative_path"],
+                         ov_root / lic["relative_path"])
+        created_overlays.append(ov_name)
+
+    # Repo root licenses
+    for lic in licenses:
+        shutil.copy2(gem_dir / lic["relative_path"],
+                     out_dir / lic["relative_path"])
+
+    # repo.json — the family repo object
+    display_family = family.capitalize()
+    repo_meta: dict = {
+        "$schemaVersion": "2.0.0",
+        "$schema": "https://canonical.o3de.org/o3de-repo-2.0.0.json",
+        "repo": {
+            "name": family_repo_name,
+            "display_name": f"{display_family} Family Repo",
+            "description": (
+                f"Family repository for the {display_family} {type_token}: "
+                f"the {type_token} plus one overlay per platform, hoisted "
+                f"from the engine with full git history."
+            ),
+            "type": "repo",
+        },
+    }
+    if origin:
+        repo_meta["origin"] = origin
+    if licenses:
+        repo_meta["licenses"] = licenses
+    repo_meta["canonical_tags"] = ["Repo"]
+    repo_meta["children"] = {
+        "engines": [],
+        "projects": [],
+        "gems": [f"{gem_target}/gem.json"],
+        "templates": [],
+        "repos": [],
+        "overlays": [
+            f"Overlays/{d}/overlay.json" for d in sorted(overlay_dirs)
+            if (out_dir / "Overlays" / d).is_dir()
+        ],
+    }
+    repo_meta["remote"] = {
+        "engines": [], "projects": [], "gems": [],
+        "templates": [], "repos": [], "overlays": [],
+    }
+    with open(out_dir / "repo.json", "w", encoding="utf-8") as f:
+        json.dump(repo_meta, f, indent=2)
+        f.write("\n")
+
+    rc, out = _run_git(["add", "-A"], cwd=out_dir)
+    if rc == 0:
+        rc, out = _run_git(
+            ["commit", "-m",
+             f"Hoist {base_name} into family repo {family_repo_name}\n\n"
+             f"repo.json + per-platform overlay objects laid over the\n"
+             f"filter-repo split of the {type_token}'s git history."],
+            cwd=out_dir,
+        )
+    if rc != 0:
+        _fail(f"Metadata commit failed: {out}", "E_COMMIT_FAILED", as_json)
+
+    # Register the family repo (repo-level registration only — the
+    # resolver exposes the gem and overlays through repo.json children)
+    registered = False
+    if do_register:
+        from o3de_cli.core.paths import get_manifest_path
+
+        manifest_path = get_manifest_path()
+        if manifest_path and manifest_path.exists():
+            with open(manifest_path, encoding="utf-8-sig") as f:
+                manifest = json.load(f)
+            section = manifest.setdefault("local", {})
+            repos_list = section.setdefault("repos", [])
+            path_str = out_dir.as_posix()
+            if path_str not in repos_list:
+                repos_list.append(path_str)
+                registered = True
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2)
+
+    if as_json:
+        emit_response(data={
+            "object": base_name,
+            "repo": family_repo_name,
+            "path": str(out_dir),
+            "branch": branch,
+            "overlays": created_overlays,
+            "registered": registered,
+        })
+    else:
+        console.print(f"[green]Hoisted {base_name}:[/green] {out_dir}")
+        console.print(f"  Repo object: {family_repo_name}")
+        console.print(f"  Gem: {gem_target}")
+        for ov in created_overlays:
+            console.print(f"  Overlay: {ov}")
+        if registered:
+            console.print("[dim]Registered family repo in manifest[/dim]")
+        console.print(
+            "[dim]Upstream sync: re-run the same hoist to a scratch path "
+            "after upstream merges, then fetch+merge from it[/dim]"
+        )
