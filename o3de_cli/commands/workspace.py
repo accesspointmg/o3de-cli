@@ -534,21 +534,13 @@ def create_command(
                             continue
                         resolved_objects[child_name] = (child.path, child.object_type)
 
-                # Add solved overlays (unless --no-overlays), filtered by
-                # the workspace platform selection
-                if not no_overlays:
-                    selected_groups = _select_overlays_for_platforms(
-                        solve_result.overlays, selected_platforms,
-                        include=overlay_includes, exclude=overlay_excludes,
-                        selected_tags=selected_tags,
-                    )
-                    for _base, entries in selected_groups.items():
-                        for ov in entries:
-                            if ov.path and ov.status == CandidateStatus.LOCAL:
-                                # Avoid duplicating explicitly-provided overlays
-                                ov_resolved = ov.path.resolve()
-                                if not any(p.resolve() == ov_resolved for p, *_ in overlay_tuples):
-                                    overlay_tuples.append((ov_resolved, ov.precedence, ov.extends))
+                # Overlay groups accumulate across the root solve and any
+                # secondary engine closure solve below; selection happens
+                # once after all solves.
+                overlay_groups = {
+                    base: list(entries)
+                    for base, entries in solve_result.overlays.items()
+                }
 
                 # A secondary engine that the root's solve did NOT pull in
                 # (gem/template roots have no engine dependency) needs its
@@ -589,6 +581,31 @@ def create_command(
                                 resolved_objects[cand_name] = (
                                     cand.path, cand.object_type,
                                 )
+                    # Merge the engine solve's overlay groups — overlays
+                    # extending closure-pulled objects must compose too
+                    for base, entries in eng_solve.overlays.items():
+                        group = overlay_groups.setdefault(base, [])
+                        existing = {e.name for e in group}
+                        group.extend(
+                            e for e in entries if e.name not in existing
+                        )
+                        group.sort(key=lambda e: e.precedence)
+
+                # Add solved overlays (unless --no-overlays), filtered by
+                # the workspace platform selection
+                if not no_overlays:
+                    selected_groups = _select_overlays_for_platforms(
+                        overlay_groups, selected_platforms,
+                        include=overlay_includes, exclude=overlay_excludes,
+                        selected_tags=selected_tags,
+                    )
+                    for _base, entries in selected_groups.items():
+                        for ov in entries:
+                            if ov.path and ov.status == CandidateStatus.LOCAL:
+                                # Avoid duplicating explicitly-provided overlays
+                                ov_resolved = ov.path.resolve()
+                                if not any(p.resolve() == ov_resolved for p, *_ in overlay_tuples):
+                                    overlay_tuples.append((ov_resolved, ov.precedence, ov.extends))
 
                 # Report remote/unknown candidates
                 remote_count = solve_result.remote_count
@@ -2515,10 +2532,24 @@ def build_command(
     if not target and meta.root_type == "gem" and meta.root_object:
         root_resolved = Path(meta.root_object).resolve()
         root_gem_name = None
-        for gname, gpath in meta.sources.gems.items():
-            if gpath and Path(gpath).resolve() == root_resolved:
-                root_gem_name = gname
-                break
+        # Legacy gem.json gem_name names the CMake targets when present
+        # (2.0.0-native gems target their canonical name instead)
+        for json_name in ("gem.json", "gem.2-0-0.json"):
+            gem_json = root_resolved / json_name
+            if gem_json.exists():
+                try:
+                    with open(gem_json, encoding="utf-8-sig") as f:
+                        legacy = json.load(f).get("gem_name")
+                    if legacy:
+                        root_gem_name = legacy
+                        break
+                except Exception:
+                    pass
+        if root_gem_name is None:
+            for gname, gpath in meta.sources.gems.items():
+                if gpath and Path(gpath).resolve() == root_resolved:
+                    root_gem_name = gname
+                    break
         if root_gem_name is None:
             from o3de_cli.core.workspace import _object_name_from_path
             root_gem_name = _object_name_from_path(

@@ -504,6 +504,49 @@ def solve_for_workspace(
         if name in candidates:
             del children[name]
 
+    # Children compose into the workspace, so THEIR dependencies must be
+    # satisfied too — configure walks every composed object (e.g. an
+    # engine child project declaring dependent.gems that live outside
+    # the engine tree).  Solve unmet child dependencies and merge,
+    # iterating to a fixpoint since new candidates may carry children.
+    extra_requirements: list[Requirement] = []
+    requested_child_deps: set[str] = set()
+    while True:
+        new_requirements: list[Requirement] = []
+        for child in children.values():
+            child_obj = child.resolved_object
+            if child_obj is None:
+                continue
+            for dep_spec in child_obj.dependencies:
+                if (dep_spec.name in candidates
+                        or dep_spec.name in children
+                        or dep_spec.name in requested_child_deps):
+                    continue
+                requested_child_deps.add(dep_spec.name)
+                new_requirements.append(
+                    Requirement(name=dep_spec.name, specifier=dep_spec.specifier)
+                )
+        if not new_requirements:
+            break
+        extra_requirements.extend(new_requirements)
+        try:
+            result = rl_resolver.resolve(root_requirements + extra_requirements)
+        except (RequirementsConflicted, ResolutionImpossible) as e:
+            return SolveResult(
+                root_name=root_name,
+                root_version=root.version,
+                conflict_message=(
+                    f"Child object dependencies unresolvable: {e}"
+                ),
+            )
+        candidates = dict(result.mapping)
+        candidates[root.name] = root_candidate
+        children = {}
+        _add_children_recursive(root, children)
+        for name in list(children):
+            if name in candidates:
+                del children[name]
+
     # Match overlays
     overlays: dict[str, list[OverlayEntry]] = {}
     for overlay_obj in resolver.overlays.values():
@@ -513,7 +556,7 @@ def solve_for_workspace(
             continue
 
         extends_spec = ObjectNameVersion(extends)
-        target = candidates.get(extends_spec.name)
+        target = candidates.get(extends_spec.name) or children.get(extends_spec.name)
         if target is None:
             continue
 

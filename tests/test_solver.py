@@ -381,6 +381,69 @@ class TestSolveForWorkspace:
         assert "child_gem" in result.children
         assert result.children["child_gem"].status == CandidateStatus.LOCAL
 
+    def test_child_dependencies_solved(self):
+        """A child's own dependencies must enter the candidate graph.
+
+        Children compose into the workspace, so configure walks them —
+        e.g. an engine child project declaring dependent.gems that live
+        outside the engine tree.
+        """
+        outside_gem = _make_resolved("outside_gem", version="1.0.0")
+        child_project = _make_resolved(
+            "child_project", version="1.0.0",
+            object_type=ObjectType.PROJECT,
+            deps=["outside_gem>=1.0.0"],
+        )
+        engine = _make_resolved(
+            "root", version="1.0.0", object_type=ObjectType.ENGINE,
+            children=[child_project],
+        )
+        resolver = _make_resolver(engine, outside_gem)
+        result = solve_for_workspace("root", resolver)
+
+        assert result.is_resolved
+        assert "child_project" in result.children
+        assert "outside_gem" in result.candidates
+        assert result.candidates["outside_gem"].status == CandidateStatus.LOCAL
+
+    def test_child_dependency_unresolvable(self):
+        """Unmet child dependencies fail the solve with a message."""
+        child_project = _make_resolved(
+            "child_project", version="1.0.0",
+            object_type=ObjectType.PROJECT,
+            deps=["nowhere_gem>=1.0.0"],
+        )
+        engine = _make_resolved(
+            "root", version="1.0.0", object_type=ObjectType.ENGINE,
+            children=[child_project],
+        )
+        resolver = _make_resolver(engine)
+        result = solve_for_workspace("root", resolver)
+
+        assert not result.is_resolved
+        assert "nowhere_gem" in result.conflict_message
+
+    def test_overlay_matches_child(self):
+        """Overlays extending a containment child must be matched."""
+        child_gem = _make_resolved("child_gem", version="1.0.0")
+        engine = _make_resolved(
+            "root", version="1.0.0", object_type=ObjectType.ENGINE,
+            children=[child_gem],
+        )
+        overlay = ResolvedObject(
+            path=Path("/test/child_ov"),
+            object_type=ObjectType.OVERLAY,
+            name="child_ov", version="1.0.0",
+            data={"extends": "child_gem", "precedence": 10},
+        )
+        resolver = _make_resolver(engine)
+        resolver.overlays = {"child_ov": overlay}
+
+        result = solve_for_workspace("root", resolver)
+        assert result.is_resolved
+        assert "child_gem" in result.overlays
+        assert result.overlays["child_gem"][0].name == "child_ov"
+
     def test_progress_callback(self):
         """Should invoke the progress callback during solving."""
         engine = _make_resolved(

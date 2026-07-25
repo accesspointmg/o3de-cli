@@ -585,6 +585,30 @@ class TestBuildCommandGemRoot:
         target_idx = bld.index("--target")
         assert bld[target_idx + 1] == "SomeOtherTarget"
 
+    def test_legacy_gem_name_preferred(self, tmp_path):
+        """Legacy gem.json gem_name names the CMake targets."""
+        from o3de_cli.commands.workspace import workspace
+        ws, engine_dir, gem_dir = self._ws_gem_rooted(tmp_path)
+        (gem_dir / "gem.json").write_text(json.dumps({
+            "gem_name": "Widget",
+            "version": "1.0.0",
+        }))
+        runner = CliRunner()
+
+        calls = []
+        def mock_run_cmake(cmd, **kwargs):
+            calls.append(cmd)
+            return 0
+
+        with patch("o3de_cli.commands.workspace._run_cmake", side_effect=mock_run_cmake), \
+             patch("o3de_cli.commands.workspace._find_third_party_path", return_value=None):
+            result = runner.invoke(workspace, ["build", str(ws)])
+
+        assert result.exit_code == 0, result.output
+        bld = calls[1]
+        target_idx = bld.index("--target")
+        assert bld[target_idx + 1] == "Widget"
+
 
 # ── D: Integration — create persists candidates ────────────────────
 
