@@ -522,6 +522,49 @@ class TestOverlayMerge:
         base_file = tmp_path / "ws" / "Engines" / "root" / "data.txt"
         assert base_file.read_text() == "high precedence"
 
+    def test_explicit_order_overrides_precedence(self, tmp_path):
+        """Workspace-explicit overlay order (via _relink_object) wins over
+        authored precedence: the LAST applied overlay owns conflicts."""
+        from o3de_cli.commands.workspace import (
+            _relink_object, _build_workspace_meta,
+        )
+
+        gem = tmp_path / "gem"
+        gem.mkdir()
+        _write(gem / "gem.json", '{"gem": {"name": "mygem"}}')
+        _write(gem / "data.txt", "base")
+
+        ov1 = tmp_path / "ov1"
+        ov1.mkdir()
+        _write(ov1 / "overlay.json", '{"overlay": {"name": "org.t.overlay.one"}}')
+        _write(ov1 / "Overlay" / "data.txt", "one")
+
+        ov2 = tmp_path / "ov2"
+        ov2.mkdir()
+        _write(ov2 / "overlay.json", '{"overlay": {"name": "org.t.overlay.two"}}')
+        _write(ov2 / "Overlay" / "data.txt", "two")
+
+        ws_path = tmp_path / "ws"
+        ws_path.mkdir()
+        meta = _build_workspace_meta(
+            name="t", root_path=gem, root_type="gem",
+            sources={"gems": {"mygem": str(gem)}},
+        )
+
+        target = ws_path / "Gems" / "mygem" / "data.txt"
+
+        # Order: one then two → two wins
+        _relink_object(ws_path, meta, "mygem", gem, ObjectType.GEM,
+                       {"mygem": (gem, ObjectType.GEM)},
+                       overlays=[(ov1, 0), (ov2, 1)])
+        assert target.read_text() == "two"
+
+        # Reversed order: two then one → one wins
+        _relink_object(ws_path, meta, "mygem", gem, ObjectType.GEM,
+                       {"mygem": (gem, ObjectType.GEM)},
+                       overlays=[(ov2, 0), (ov1, 1)])
+        assert target.read_text() == "one"
+
     def test_overlay_extends_gem(self, tmp_path):
         """Overlay extending a gem replaces files in Gems/ tree."""
         engine = tmp_path / "engine"

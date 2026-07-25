@@ -1214,20 +1214,26 @@ def _read_overlay_info(path: Path) -> dict:
 @click.option("--remove-overlay", "remove_overlay", multiple=True,
               help="Remove a composed overlay by object name (repeatable); "
                    "the extended object is recomposed without it")
+@click.option("--overlay-order", "overlay_order", multiple=True,
+              help="Explicit apply order for overlays extending one object: "
+                   "comma-separated overlay names, first applied first "
+                   "(later entries win file conflicts). Overrides authored "
+                   "precedence for this workspace; repeatable per base.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def update_command(
     name_or_path: str,
     overlay: tuple[str, ...],
     add_overlay: tuple[str, ...],
     remove_overlay: tuple[str, ...],
+    overlay_order: tuple[str, ...],
     as_json: bool,
 ) -> None:
     """Update an existing workspace.
     
     Re-syncs symlinks and applies any new overlays.  With --add-overlay /
-    --remove-overlay, changes the workspace's composed overlay set: the
-    affected extended objects are recomposed (base relinked, remaining
-    overlays re-applied in precedence order).
+    --remove-overlay / --overlay-order, changes the workspace's composed
+    overlay set or apply order: the affected extended objects are
+    recomposed (base relinked, overlays re-applied in order).
     """
     from o3de_cli.core.json_output import emit_response, emit_error
     
@@ -1254,9 +1260,10 @@ def update_command(
         raise SystemExit(1)
 
     # ------------------------------------------------------------------
-    # Overlay set change: --add-overlay / --remove-overlay
+    # Overlay set / order change: --add-overlay / --remove-overlay /
+    # --overlay-order
     # ------------------------------------------------------------------
-    if add_overlay or remove_overlay:
+    if add_overlay or remove_overlay or overlay_order:
         def _fail(msg: str, code: str) -> None:
             if as_json:
                 emit_error(msg, code=code)
@@ -1324,16 +1331,63 @@ def update_command(
                 )
 
         # Group the NEW overlay set by extended base object
-        overlays_by_base: dict[str, list[tuple[Path, int]]] = {}
+        # (name, path, authored precedence)
+        overlays_by_base: dict[str, list[tuple[str, Path, int]]] = {}
         for ov_name, ov_path in new_set.items():
             info = _read_overlay_info(Path(ov_path))
             if info["extends"]:
                 overlays_by_base.setdefault(info["extends"], []).append(
-                    (Path(ov_path), info["precedence"])
+                    (ov_name, Path(ov_path), info["precedence"])
                 )
 
+        # Parse explicit ordering requests; validate and map to bases
+        order_map: dict[str, list[str]] = dict(meta.overlay_order or {})
+        # Drop removed overlays from any persisted order
+        for base in list(order_map):
+            order_map[base] = [n for n in order_map[base] if n not in removes]
+            if not order_map[base]:
+                del order_map[base]
+
+        ordered_bases: set[str] = set()
+        for value in overlay_order:
+            names = [t.strip() for t in value.split(",") if t.strip()]
+            if len(names) < 2:
+                _fail(
+                    "--overlay-order needs at least two comma-separated "
+                    "overlay names",
+                    "E_OVERLAY_ORDER",
+                )
+            bases: set[str] = set()
+            for n in names:
+                if n not in new_set:
+                    _fail(f"--overlay-order: overlay not in workspace: {n}",
+                          "E_OVERLAY_ORDER")
+                info = _read_overlay_info(Path(new_set[n]))
+                bases.add(info["extends"] or "")
+            if len(bases) != 1:
+                _fail(
+                    "--overlay-order: overlays must all extend the same "
+                    "object",
+                    "E_OVERLAY_ORDER",
+                )
+            base = bases.pop()
+            order_map[base] = names
+            ordered_bases.add(base)
+
+        def _ordered_for_base(base: str) -> list[tuple[Path, int]]:
+            """Final apply order: authored precedence, then explicit
+            workspace order stable-reordering the named ones first."""
+            entries = sorted(overlays_by_base.get(base, []),
+                             key=lambda t: (t[2], t[0]))
+            explicit = order_map.get(base) or []
+            if explicit:
+                named = [e for n in explicit for e in entries if e[0] == n]
+                rest = [e for e in entries if e[0] not in set(explicit)]
+                entries = named + rest
+            return [(path, i) for i, (_n, path, _p) in enumerate(entries)]
+
         # Bases affected by the change
-        affected_bases: set[str] = set()
+        affected_bases: set[str] = set(ordered_bases)
         for ov_name in set(adds) | removes:
             src = adds.get(ov_name) or current.get(ov_name)
             if src:
@@ -1362,7 +1416,7 @@ def update_command(
             base_path, base_type = entry
             _relink_object(
                 workspace_path, meta, base_name, base_path, base_type,
-                all_objects, overlays=overlays_by_base.get(base_name, []),
+                all_objects, overlays=_ordered_for_base(base_name),
             )
             recomposed.append(base_name)
 
@@ -1383,8 +1437,9 @@ def update_command(
                 if not rel.startswith(attr_prefix)
             }
 
-        # Persist the new frozen overlay set
+        # Persist the new frozen overlay set and apply order
         meta.sources.overlays = new_set
+        meta.overlay_order = order_map or None
         _write_workspace_meta(workspace_path, meta)
 
         # Regenerate the workspace-scoped CMake manifest
@@ -1400,6 +1455,7 @@ def update_command(
                 "workspace": str(workspace_path),
                 "added": sorted(adds),
                 "removed": sorted(removes),
+                "reordered": sorted(ordered_bases),
                 "recomposed": recomposed,
                 "skipped": skipped,
                 "overlays": sorted(new_set),
@@ -1410,6 +1466,11 @@ def update_command(
                 console.print(f"  Added: {', '.join(sorted(adds))}")
             if removes:
                 console.print(f"  Removed: {', '.join(sorted(removes))}")
+            if ordered_bases:
+                for base in sorted(ordered_bases):
+                    console.print(
+                        f"  Order for {base}: {' → '.join(order_map[base])}"
+                    )
             console.print(f"  Recomposed: {', '.join(recomposed) or '(none)'}")
             if skipped:
                 console.print(

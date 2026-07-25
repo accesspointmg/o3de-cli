@@ -475,6 +475,12 @@ class WorkspaceMeta(BaseO3DEObject):
         description="Overlay attribution mode: workspace, object, or off "
                     "(None = workspace)",
     )
+    overlay_order: Optional[dict[str, list[str]]] = Field(
+        default=None,
+        description="Explicit overlay apply order per extended object "
+                    "(base name → overlay names, first applied first); "
+                    "overrides authored precedence",
+    )
     sources: WorkspaceSources = Field(
         default_factory=WorkspaceSources,
         description="Categorised source objects (type → name → path)",
