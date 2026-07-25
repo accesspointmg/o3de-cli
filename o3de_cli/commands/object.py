@@ -551,3 +551,337 @@ def package_command(
                 f'  {{"name": "{version}", "binaries": [{{"platform": '
                 f'"<Platform>", "binary": "<url>", "sha256": "{sha256}"}}]}}[/dim]'
             )
+
+
+# ── split-platforms ─────────────────────────────────────────────────
+
+_SPLIT_SKIP_DIRS = {
+    ".git", ".svn", ".vs", "__pycache__", "build", "Cache", "External",
+    "node_modules", "user",
+}
+
+#: Directory name that marks a common (platform-agnostic fallback) payload.
+_COMMON_PLATFORM = "Common"
+
+
+def _load_object_json(object_path: Path) -> tuple[dict, str]:
+    """Load the object JSON at *object_path*.
+
+    Returns (data, type_token).  Prefers 2.0.0 sidecars.  Raises
+    ``FileNotFoundError`` when no object JSON exists.
+    """
+    for suffix in ("2-0-0.json", "json"):
+        for type_token in ("engine", "project", "gem", "template"):
+            candidate = object_path / f"{type_token}.{suffix}"
+            if candidate.exists():
+                with open(candidate, encoding="utf-8-sig") as f:
+                    return json.load(f), type_token
+    raise FileNotFoundError(
+        f"No engine/project/gem/template JSON at: {object_path}"
+    )
+
+
+def _find_platform_dirs(object_root: Path) -> dict[str, list[Path]]:
+    """Find PAL ``Platform/<Name>`` directories under *object_root*.
+
+    Returns platform name → list of absolute platform directories.
+    Walks the tree skipping VCS/build folders; every child directory of
+    a directory literally named ``Platform`` is a platform payload.
+    """
+    found: dict[str, list[Path]] = {}
+
+    def walk(directory: Path) -> None:
+        for child in sorted(directory.iterdir()):
+            if not child.is_dir() or child.name in _SPLIT_SKIP_DIRS:
+                continue
+            if child.name == "Platform":
+                for plat_dir in sorted(child.iterdir()):
+                    if plat_dir.is_dir():
+                        found.setdefault(plat_dir.name, []).append(plat_dir)
+            else:
+                walk(child)
+
+    walk(object_root)
+    return found
+
+
+def _split_overlay_name(base_name: str, suffix: str) -> str:
+    """Derive an overlay name from *base_name* and a platform *suffix*.
+
+    ``org.o3de.gem.achievementstest`` + ``windows`` →
+    ``org.o3de.overlay.achievementstest.windows``.  Falls back to
+    appending ``.overlay`` when no type token is present.
+    """
+    parts = base_name.split(".")
+    for i, part in enumerate(parts):
+        if part in ("gem", "project", "engine", "template"):
+            parts[i] = "overlay"
+            return ".".join(parts) + f".{suffix.lower()}"
+    return base_name + f".overlay.{suffix.lower()}"
+
+
+@object_group.command("split-platforms")
+@click.argument("object_path", type=click.Path(exists=True, file_okay=False))
+@click.option("--output", "-o", type=click.Path(),
+              help="Directory to create the overlay objects in "
+                   "(default: the object's parent directory)")
+@click.option("--platforms", "-P", "platforms_opt", multiple=True,
+              help="Only split these platforms (repeatable or "
+                   "comma-separated; default: all detected)")
+@click.option("--overlay-version", "-V", "overlay_version", default=None,
+              help="Version for the created overlays "
+                   "(default: the base object's version)")
+@click.option("--tags", "-T", "tags_opt", multiple=True,
+              help="user_tags to stamp on the created overlays")
+@click.option("--precedence", type=int, default=10, show_default=True,
+              help="Precedence for platform overlays (common overlay is 0)")
+@click.option("--remove", "do_remove", is_flag=True,
+              help="Remove the split platform directories from the "
+                   "source object after creating the overlays")
+@click.option("--register", "do_register", is_flag=True,
+              help="Register the created overlays in the manifest")
+@click.option("--dry-run", is_flag=True,
+              help="Only report what would be split")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def split_platforms_command(
+    object_path: str,
+    output: str | None,
+    platforms_opt: tuple[str, ...],
+    overlay_version: str | None,
+    tags_opt: tuple[str, ...],
+    precedence: int,
+    do_remove: bool,
+    do_register: bool,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    """Split an object's PAL platform directories into overlay objects.
+
+    Scans OBJECT_PATH for ``Platform/<Name>`` directories and creates
+    one overlay object per platform, each carrying that platform's
+    files as an ``Overlay/`` payload that composes back onto the base
+    object at workspace compose time.  ``Platform/Common`` becomes a
+    shared family overlay that the platform overlays depend on.
+
+    Example:
+        o3de object split-platforms ./Gems/MyGem -o ./overlays --remove
+    """
+    import shutil
+
+    from o3de_cli.core.json_output import emit_response
+    from o3de_cli.core.models import get_object_name, get_object_version
+
+    obj_root = Path(object_path).resolve()
+    try:
+        obj_data, type_token = _load_object_json(obj_root)
+    except FileNotFoundError as e:
+        _fail(str(e), "E_NOT_AN_OBJECT", as_json)
+        raise
+
+    base_name = get_object_name(obj_data) or obj_root.name
+    base_version = get_object_version(obj_data)
+    ov_version = overlay_version or base_version or "1.0.0"
+
+    # Detect platform payloads
+    detected = _find_platform_dirs(obj_root)
+    if not detected:
+        _fail(
+            f"No Platform/<Name> directories found in {obj_root}",
+            "E_NO_PLATFORM_DIRS",
+            as_json,
+        )
+
+    # Filter selection
+    selected: list[str] | None = None
+    if platforms_opt:
+        selected = []
+        for value in platforms_opt:
+            for token in value.split(","):
+                token = token.strip()
+                if token:
+                    selected.append(token)
+        unknown = [p for p in selected
+                   if p.lower() not in {d.lower() for d in detected}]
+        if unknown:
+            _fail(
+                f"Platforms not present in the object: {', '.join(unknown)} "
+                f"(detected: {', '.join(sorted(detected))})",
+                "E_PLATFORM_NOT_FOUND",
+                as_json,
+            )
+        keep = {p.lower() for p in selected}
+        # Common is always split when any platform is (dependency target)
+        detected = {
+            name: dirs for name, dirs in detected.items()
+            if name.lower() in keep or name == _COMMON_PLATFORM
+        }
+
+    out_dir = Path(output).resolve() if output else obj_root.parent
+
+    # Ordered so the common overlay is created first (dependency target)
+    plat_names = sorted(detected, key=lambda n: (n != _COMMON_PLATFORM, n))
+
+    user_tags: list[str] = []
+    for value in tags_opt:
+        for token in value.split(","):
+            token = token.strip()
+            if token and token not in user_tags:
+                user_tags.append(token)
+
+    common_name = (
+        _split_overlay_name(base_name, "common")
+        if _COMMON_PLATFORM in detected else None
+    )
+
+    plan: list[dict] = []
+    for plat in plat_names:
+        is_common = plat == _COMMON_PLATFORM
+        ov_name = _split_overlay_name(base_name, plat)
+        files = [
+            f for d in detected[plat] for f in sorted(d.rglob("*")) if f.is_file()
+        ]
+        plan.append({
+            "platform": plat,
+            "overlay": ov_name,
+            "path": str(out_dir / ov_name),
+            "files": len(files),
+            "common": is_common,
+        })
+
+    if dry_run:
+        if as_json:
+            emit_response(data={"object": base_name, "overlays": plan})
+        else:
+            console.print(f"[bold]Would split {base_name}:[/bold]")
+            for entry in plan:
+                console.print(
+                    f"  {entry['platform']:<12} → {entry['overlay']} "
+                    f"({entry['files']} files)"
+                )
+        return
+
+    # Licenses travelling to each overlay: entries whose file exists at
+    # the object root (relative_path licenses are object-root metadata)
+    licenses = []
+    for lic in obj_data.get("licenses", []):
+        rel = lic.get("relative_path")
+        if rel and (obj_root / rel).is_file():
+            licenses.append(lic)
+
+    origin = obj_data.get("origin")
+
+    created: list[dict] = []
+    for plat in plat_names:
+        is_common = plat == _COMMON_PLATFORM
+        ov_name = _split_overlay_name(base_name, plat)
+        ov_root = out_dir / ov_name
+        if ov_root.exists():
+            _fail(f"Overlay path already exists: {ov_root}",
+                  "E_OVERLAY_EXISTS", as_json)
+        payload_root = ov_root / "Overlay"
+
+        # Copy platform payload preserving the object-relative layout
+        for plat_dir in detected[plat]:
+            rel = plat_dir.relative_to(obj_root)
+            shutil.copytree(plat_dir, payload_root / rel)
+
+        # Copy license files
+        for lic in licenses:
+            shutil.copy2(obj_root / lic["relative_path"],
+                         ov_root / lic["relative_path"])
+
+        display_base = base_name.split(".")[-1]
+        meta: dict = {
+            "$schemaVersion": "2.0.0",
+            "$schema": "https://canonical.o3de.org/o3de-overlay-2.0.0.json",
+            "overlay": {
+                "name": ov_name,
+                "version": ov_version,
+                "display_name": f"{display_base} {plat}",
+                "description": (
+                    f"Shared platform-common payload for the {display_base} "
+                    f"{type_token}. Platform overlays depend on this overlay."
+                    if is_common else
+                    f"{plat} platform delivery for the {display_base} "
+                    f"{type_token}, composed into the {type_token} tree at "
+                    f"workspace compose time."
+                ),
+                "type": "code",
+            },
+            "extends": f"{base_name}>={base_version}",
+            "precedence": 0 if is_common else precedence,
+        }
+        if origin:
+            meta["origin"] = origin
+        if licenses:
+            meta["licenses"] = licenses
+        meta["canonical_tags"] = ["Overlay"]
+        if user_tags:
+            meta["user_tags"] = user_tags
+        if not is_common:
+            meta["platforms"] = [plat]
+            if common_name:
+                meta["dependent"] = {
+                    "overlays": [f"{common_name}>={ov_version}"],
+                }
+        with open(ov_root / "overlay.json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+            f.write("\n")
+
+        created.append({
+            "platform": plat,
+            "overlay": ov_name,
+            "path": str(ov_root),
+        })
+
+    # Remove split payloads from the source object
+    removed: list[str] = []
+    if do_remove:
+        for plat in plat_names:
+            for plat_dir in detected[plat]:
+                shutil.rmtree(plat_dir)
+                removed.append(str(plat_dir.relative_to(obj_root)))
+                # Prune the parent Platform dir when empty
+                parent = plat_dir.parent
+                if parent.name == "Platform" and not any(parent.iterdir()):
+                    parent.rmdir()
+
+    # Register created overlays in the manifest
+    registered: list[str] = []
+    if do_register:
+        from o3de_cli.core.paths import get_manifest_path
+
+        manifest_path = get_manifest_path()
+        if manifest_path and manifest_path.exists():
+            with open(manifest_path, encoding="utf-8-sig") as f:
+                manifest = json.load(f)
+            section = manifest.setdefault("local", {})
+            overlays_list = section.setdefault("overlays", [])
+            for entry in created:
+                path_str = Path(entry["path"]).as_posix()
+                if path_str not in overlays_list:
+                    overlays_list.append(path_str)
+                    registered.append(entry["overlay"])
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2)
+
+    if as_json:
+        emit_response(data={
+            "object": base_name,
+            "version": base_version,
+            "overlays": created,
+            "removed": removed,
+            "registered": registered,
+        })
+    else:
+        console.print(f"[green]Split {base_name}:[/green]")
+        for entry in created:
+            console.print(f"  {entry['platform']:<12} → {entry['path']}")
+        if removed:
+            console.print(
+                f"[yellow]Removed from source:[/yellow] {', '.join(removed)}"
+            )
+        if registered:
+            console.print(
+                f"[dim]Registered: {', '.join(registered)}[/dim]"
+            )
