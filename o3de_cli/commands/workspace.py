@@ -298,6 +298,10 @@ def _select_overlays_for_platforms(
               help="Engine path")
 @click.option("--project", "-p", "project_path", type=click.Path(exists=True),
               help="Project path")  
+@click.option("--root", "-r", "root_opt", type=click.Path(exists=True),
+              help="Root object path of any type (gem, template, engine, "
+                   "project) — the object this workspace is for; its "
+                   "dependencies anchor the solve")
 @click.option("--output", "-o", type=click.Path(), help="Output directory")
 @click.option("--overlay", multiple=True, type=click.Path(exists=True),
               help="Overlay path (can be repeated)")
@@ -337,6 +341,7 @@ def create_command(
     name: str,
     engine_path: str | None,
     project_path: str | None,
+    root_opt: str | None,
     output: str | None,
     overlay: tuple[str, ...],
     no_overlays: bool,
@@ -363,12 +368,12 @@ def create_command(
         o3de-pilot workspace create my-build -e ./o3de -p ./my-project
         o3de-pilot workspace create my-build -e ./o3de -p ./my-project --no-solve
     """
-    if not engine_path and not project_path:
+    if not engine_path and not project_path and not root_opt:
         if as_json:
             from o3de_cli.core.json_output import emit_error
-            emit_error("Must specify --engine or --project (or both)", code="E_INVALID_ARGS")
+            emit_error("Must specify --root, --engine or --project", code="E_INVALID_ARGS")
         else:
-            console.print("[red]Must specify --engine or --project (or both)[/red]")
+            console.print("[red]Must specify --root, --engine or --project[/red]")
         raise SystemExit(1)
     
     # Determine output path
@@ -386,16 +391,22 @@ def create_command(
             console.print("Use 'workspace update' to update, or delete first.")
         raise SystemExit(1)
     
-    # Determine root object
-    if engine_path:
-        root_path = Path(engine_path).resolve()
+    # Determine root object.  The root anchors the dependency solve
+    # (dependencies radiate from it), so when a project is given it is
+    # the root — its dependent.engines/dependent.gems pull everything
+    # else in.  An explicit --engine alongside it composes that engine
+    # as a secondary object.  Engine-only workspaces (no project) root
+    # at the engine — valid for engine development.  --root wins over
+    # both and accepts any object type (gem/template development).
+    if root_opt:
+        root_path = Path(root_opt).resolve()
         root_type = detect_root_type(root_path)
     elif project_path:
         root_path = Path(project_path).resolve()
         root_type = detect_root_type(root_path)
     else:
         root_path = Path(engine_path).resolve()
-        root_type = ObjectType.ENGINE
+        root_type = detect_root_type(root_path)
     
     root_type_str = root_type.value
     
@@ -418,9 +429,14 @@ def create_command(
     solve_result: SolveResult | None = None
     
     if engine_path and project_path:
-        # Both provided — secondary goes in too
-        proj_path = Path(project_path).resolve()
-        resolved_objects[proj_path.name] = (proj_path, ObjectType.PROJECT)
+        # Both provided — the engine composes as a secondary object
+        # (the project root's dependent.engines normally resolves it
+        # anyway; an explicit path wins if they differ)
+        eng_path = Path(engine_path).resolve()
+        if eng_path != root_path:
+            from o3de_cli.core.workspace import _object_name_from_path
+            eng_name = _object_name_from_path(eng_path, eng_path.name)
+            resolved_objects[eng_name] = (eng_path, ObjectType.ENGINE)
     
     # Collect overlays with precedence
     overlay_tuples = [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)] if not no_overlays else []
