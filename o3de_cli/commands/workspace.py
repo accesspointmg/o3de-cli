@@ -428,15 +428,17 @@ def create_command(
     resolved_objects: dict[str, tuple[Path, ObjectType]] = {}
     solve_result: SolveResult | None = None
     
-    if engine_path and project_path:
-        # Both provided — the engine composes as a secondary object
-        # (the project root's dependent.engines normally resolves it
-        # anyway; an explicit path wins if they differ)
+    if engine_path and Path(engine_path).resolve() != root_path:
+        # Explicit engine alongside a non-engine root — compose it as a
+        # secondary object (the root's dependent.engines normally
+        # resolves an engine anyway; an explicit path wins if they
+        # differ, and gem/template roots have no engine dependency at
+        # all, so this is how their workspaces get an engine to build
+        # against)
         eng_path = Path(engine_path).resolve()
-        if eng_path != root_path:
-            from o3de_cli.core.workspace import _object_name_from_path
-            eng_name = _object_name_from_path(eng_path, eng_path.name)
-            resolved_objects[eng_name] = (eng_path, ObjectType.ENGINE)
+        from o3de_cli.core.workspace import _object_name_from_path
+        eng_name = _object_name_from_path(eng_path, eng_path.name)
+        resolved_objects[eng_name] = (eng_path, ObjectType.ENGINE)
     
     # Collect overlays with precedence
     overlay_tuples = [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)] if not no_overlays else []
@@ -547,6 +549,46 @@ def create_command(
                                 ov_resolved = ov.path.resolve()
                                 if not any(p.resolve() == ov_resolved for p, *_ in overlay_tuples):
                                     overlay_tuples.append((ov_resolved, ov.precedence, ov.extends))
+
+                # A secondary engine that the root's solve did NOT pull in
+                # (gem/template roots have no engine dependency) needs its
+                # OWN dependency closure — an engine without its
+                # default-enabled gems cannot configure.  Solve it as an
+                # additional root and merge.
+                extra_engines = [
+                    (n, p) for n, (p, t) in resolved_objects.items()
+                    if t == ObjectType.ENGINE
+                    and n not in solve_result.candidates
+                    and n not in solve_result.children
+                ]
+                for eng_name, _eng_path in extra_engines:
+                    if eng_name not in resolver.objects:
+                        continue
+                    progress.update(
+                        task, description=f"Solving engine {eng_name}...",
+                    )
+                    eng_solve = solve_for_workspace(
+                        root_name=eng_name,
+                        resolver=resolver,
+                        store=store,
+                        progress_callback=on_progress,
+                    )
+                    if not eng_solve.is_resolved:
+                        progress.stop()
+                        console.print(
+                            f"[red]Engine dependency resolution failed:[/red] "
+                            f"{eng_solve.conflict_message}"
+                        )
+                        raise SystemExit(1)
+                    for cmap in (eng_solve.candidates, eng_solve.children):
+                        for cand_name, cand in cmap.items():
+                            if (cand.status == CandidateStatus.LOCAL
+                                    and cand.path
+                                    and cand.path.resolve() != root_path
+                                    and cand_name not in resolved_objects):
+                                resolved_objects[cand_name] = (
+                                    cand.path, cand.object_type,
+                                )
 
                 # Report remote/unknown candidates
                 remote_count = solve_result.remote_count
@@ -2465,6 +2507,28 @@ def build_command(
             console.print(
                 "[yellow]No project found in workspace — "
                 "switching to engine-centric build.[/yellow]"
+            )
+
+    # Gem-rooted workspace with no explicit target: build the gem.
+    # The engine-centric configure registers the composed gem via the
+    # workspace-scoped manifest, so its module target exists.
+    if not target and meta.root_type == "gem" and meta.root_object:
+        root_resolved = Path(meta.root_object).resolve()
+        root_gem_name = None
+        for gname, gpath in meta.sources.gems.items():
+            if gpath and Path(gpath).resolve() == root_resolved:
+                root_gem_name = gname
+                break
+        if root_gem_name is None:
+            from o3de_cli.core.workspace import _object_name_from_path
+            root_gem_name = _object_name_from_path(
+                root_resolved, root_resolved.name,
+            )
+        target = (root_gem_name,)
+        if not as_json:
+            console.print(
+                f"[dim]Gem-rooted workspace — defaulting build target to "
+                f"{root_gem_name}[/dim]"
             )
 
     # Resolve third-party path (K6 resolution chain)
