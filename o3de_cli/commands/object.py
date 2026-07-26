@@ -1053,7 +1053,9 @@ def hoist_command(
     # rename each platform dir into its overlay's payload location.
     # Platform renames must precede the (optional) gem-root rename so a
     # renamed path no longer matches the gem prefix.
-    gem_target = f"Gems/{obj_root.name}"
+    _type_subdirs = {"gem": "Gems", "template": "Templates", "project": "Projects"}
+    obj_subdir = _type_subdirs.get(type_token, "Gems")
+    gem_target = f"{obj_subdir}/{obj_root.name}"
     filter_args = ["--path", f"{gem_rel}/"]
     overlay_dirs: dict[str, str] = {}  # overlay dir name → platform
     renames: list[tuple[str, str]] = []
@@ -1241,14 +1243,15 @@ def hoist_command(
     # Point children at the 2.0.0 sidecar when the gem ships one — the
     # remote crawler fetches the literal child path, and the legacy
     # gem.json would resolve under its legacy short name
-    gem_json_name = (
-        "gem.2-0-0.json"
-        if (gem_dir / "gem.2-0-0.json").is_file() else "gem.json"
+    obj_json_name = (
+        f"{type_token}.2-0-0.json"
+        if (gem_dir / f"{type_token}.2-0-0.json").is_file()
+        else f"{type_token}.json"
     )
-    repo_meta["children"] = {
+    children = {
         "engines": [],
         "projects": [],
-        "gems": [f"{gem_target}/{gem_json_name}"],
+        "gems": [],
         "templates": [],
         "repos": [],
         "overlays": [
@@ -1256,6 +1259,12 @@ def hoist_command(
             if (out_dir / "Overlays" / d).is_dir()
         ],
     }
+    # Place the object reference under the correct child type
+    _child_key = {"gem": "gems", "template": "templates", "project": "projects"}
+    children[_child_key.get(type_token, "gems")].append(
+        f"{gem_target}/{obj_json_name}"
+    )
+    repo_meta["children"] = children
     repo_meta["remote"] = {
         "engines": [], "projects": [], "gems": [],
         "templates": [], "repos": [], "overlays": [],
