@@ -43,7 +43,7 @@ def runner():
 # ---------------------------------------------------------------------------
 
 _MANIFEST_TEMPLATE = {
-    "$schema": "https://canonical.o3de.org/o3de-manifest-2.0.0.json",
+    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
     "$schemaVersion": "2.0.0",
     "o3de_manifest": {
         "name": "test",
@@ -60,7 +60,7 @@ _MANIFEST_TEMPLATE = {
 }
 
 _GEM_TEMPLATE = {
-    "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
     "$schemaVersion": "2.0.0",
     "gem": {
         "name": "org.test.gem.{name}",
@@ -70,7 +70,7 @@ _GEM_TEMPLATE = {
 }
 
 _PROJECT_TEMPLATE = {
-    "$schema": "https://canonical.o3de.org/o3de-project-2.0.0.json",
+    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-project-2.0.0.json",
     "$schemaVersion": "2.0.0",
     "project": {
         "name": "org.test.project.{name}",
@@ -80,7 +80,7 @@ _PROJECT_TEMPLATE = {
 }
 
 _ENGINE_TEMPLATE = {
-    "$schema": "https://canonical.o3de.org/o3de-engine-2.0.0.json",
+    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-engine-2.0.0.json",
     "$schemaVersion": "2.0.0",
     "engine": {
         "name": "org.test.engine.{name}",
@@ -90,7 +90,7 @@ _ENGINE_TEMPLATE = {
 }
 
 _TEMPLATE_TEMPLATE = {
-    "$schema": "https://canonical.o3de.org/o3de-template-2.0.0.json",
+    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-template-2.0.0.json",
     "$schemaVersion": "2.0.0",
     "template": {
         "name": "org.test.template.{name}",
@@ -196,7 +196,7 @@ def make_gem(
     gem_dir = base_path / short
     gem_dir.mkdir(parents=True, exist_ok=True)
     data = {
-        "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
         "$schemaVersion": "2.0.0",
         "gem": {
             "name": name,

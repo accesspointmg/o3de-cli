@@ -19,7 +19,7 @@ def _make_gem(tmp_path, name="org.test.gem.foo", version="1.0.0"):
     gdir.mkdir(exist_ok=True)
     data = {
         "$schemaVersion": "2.0.0",
-        "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
         "gem": {"name": name, "version": version},
         "origin": "test",
         "licenses": [{"name": "Apache-2.0"}],
@@ -75,7 +75,7 @@ class TestPublishValidate:
         # Missing origin and licenses → warnings
         _write_json(gdir / "gem.2-0-0.json", {
             "$schemaVersion": "2.0.0",
-            "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
             "gem": {"name": "org.test.gem.x", "version": "1.0.0"},
         })
         runner = CliRunner()

@@ -116,7 +116,7 @@ class TestGetSchemaVersion:
     def test_schema_2_with_url(self):
         """Should parse schema URL for version 2.0.0."""
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-engine-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-engine-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "engine": {"name": "org.o3de.engine.o3de"}
         }
@@ -128,7 +128,7 @@ class TestGetSchemaVersion:
         """Should detect v2 gem with nested structure."""
         data = {
             "$schemaVersion": "2.0.0",
-            "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
             "gem": {"name": "org.o3de.gem.core", "version": "1.0.0"}
         }
         obj_type, version = get_schema_version(data)
@@ -161,7 +161,7 @@ class TestNeedsUpgrade:
     def test_version_2_no_upgrade(self):
         """Version 2.0.0 should not need upgrade."""
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "gem": {"name": "org.o3de.gem.test"}
         }
@@ -500,7 +500,7 @@ class TestUpgradeToLatest:
     def test_already_latest_passes_through(self):
         """Should pass through already-latest data."""
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "gem": {
                 "name": "org.o3de.gem.test",
@@ -863,7 +863,7 @@ class TestRealisticManifestUpgrade:
                 "G:/overlo3de/apmg/o3de-jasper"
             ],
             "repos": [
-                "https://canonical.o3de.org/repo.json"
+                "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json"
             ]
         }
         result = upgrade_to_latest(data, "manifest")
@@ -891,7 +891,7 @@ class TestRealisticManifestUpgrade:
         
         # Check remote collections
         assert "remote" in result
-        assert "https://canonical.o3de.org/repo.json" in result["remote"]["repos"]
+        assert "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json" in result["remote"]["repos"]
 
 
 class TestRealisticRestrictedNoUpgrade:
@@ -931,7 +931,7 @@ class TestRealisticRepoUpgrade:
         """Should upgrade community repo from v0 to v2."""
         data = {
             "repo_name": "o3de-community",
-            "repo_uri": "https://canonical.o3de.org/repo.json",
+            "repo_uri": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json",
             "origin": "Open 3D Engine Community",
             "origin_url": "https://www.o3de.org/community/",
             "summary": "Community repository for O3DE objects",

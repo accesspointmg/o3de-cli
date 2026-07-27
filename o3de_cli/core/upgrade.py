@@ -850,7 +850,7 @@ def _add_platforms(output: dict, data: dict, is_overlay: bool = False) -> dict:
 
 def _upgrade_manifest_1_to_2(data: dict, output: dict, reversed_domain: str) -> dict:
     """Upgrade manifest from 1.0.0 to 2.0.0."""
-    output["$schema"] = "https://canonical.o3de.org/o3de-manifest-2.0.0.json"
+    output["$schema"] = "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json"
     
     # Manifest name
     old_name = data.get("o3de_manifest_name", "")

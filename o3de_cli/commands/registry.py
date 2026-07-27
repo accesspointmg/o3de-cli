@@ -411,7 +411,7 @@ def add_remote_command(url: str, name: str | None) -> None:
     """Add a remote repository.
     
     Example:
-        o3de-pilot registry add-remote https://canonical.o3de.org/repo.json
+        o3de-pilot registry add-remote https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json
     """
     manifest_path = get_manifest_path()
     
@@ -420,7 +420,7 @@ def add_remote_command(url: str, name: str | None) -> None:
             manifest = json.load(f)
     else:
         manifest = {
-            "$schema": "https://canonical.o3de.org/o3de-manifest-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "local": {},
             "remote": {},

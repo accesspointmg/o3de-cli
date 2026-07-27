@@ -162,7 +162,7 @@ class TestResolverObjectsAll:
 class TestWorkspaceMetaOverrides:
     def test_overrides_round_trip(self):
         meta = WorkspaceMeta.model_validate({
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "ws"},
             "created": "2026-07-22T00:00:00",
@@ -183,7 +183,7 @@ class TestWorkspaceMetaOverrides:
 
     def test_overrides_default_empty(self):
         meta = WorkspaceMeta.model_validate({
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "ws"},
             "created": "2026-07-22T00:00:00",

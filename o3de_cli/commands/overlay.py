@@ -104,7 +104,7 @@ def create_overlay(name: str, path: str | None, template_name: str | None) -> No
         console.print(f"[dim]Applied template: {template_name}[/dim]")
 
     overlay_json = {
-        "$schema": "https://canonical.o3de.org/o3de-overlay-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-overlay-2.0.0.json",
         "$schemaVersion": "2.0.0",
         "overlay": {
             "name": name,

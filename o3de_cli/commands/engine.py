@@ -110,7 +110,7 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
         (engine_path / "Templates").mkdir()
 
     engine_json = {
-        "$schema": "https://canonical.o3de.org/o3de-engine-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-engine-2.0.0.json",
         "$schemaVersion": "2.0.0",
         "engine": {
             "name": name,

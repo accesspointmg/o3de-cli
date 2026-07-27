@@ -249,7 +249,7 @@ def _workspace_meta_json(
 ):
     """Build a minimal workspace.json dict for testing."""
     data = {
-        "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
         "$schemaVersion": "2.0.0",
         "workspace": {"name": "test-ws"},
         "created": "2026-05-31T12:00:00",

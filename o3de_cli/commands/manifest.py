@@ -360,7 +360,7 @@ def add_command(path: str, obj_type: str | None, as_json: bool) -> None:
             manifest_data = json.load(f)
     else:
         manifest_data = {
-            "$schema": "https://canonical.o3de.org/o3de-manifest-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "local": {},
             "remotes": [],

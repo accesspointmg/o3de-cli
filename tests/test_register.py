@@ -77,7 +77,7 @@ class TestCheckAndUpgradeObject:
         # Put 2.0.0 content directly in the sidecar file
         sidecar = tmp_path / "gem.2-0-0.json"
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "gem": {
                 "name": "org.test.gem.mygem",
@@ -285,7 +285,7 @@ class TestSchemaVersionDetection:
         from o3de_cli.core.upgrade import get_schema_version
         
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "gem": {"name": "org.test.gem"}
         }
@@ -335,7 +335,7 @@ class TestUpgradeFlow:
         from o3de_cli.core.upgrade import upgrade_to_latest, needs_upgrade
         
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "gem": {"name": "org.test.gem.idempotent", "version": "1.0.0"}
         }

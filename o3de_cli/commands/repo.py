@@ -126,7 +126,7 @@ def create_repo(name: str, path: str | None, template_name: str | None) -> None:
         console.print(f"[dim]Applied template: {template_name}[/dim]")
 
     repo_json = {
-        "$schema": "https://canonical.o3de.org/o3de-repo-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-repo-2.0.0.json",
         "$schemaVersion": "2.0.0",
         "repo": {
             "name": name,

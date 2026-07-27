@@ -104,7 +104,7 @@ def create(name: str, path: str | None, template_name: str | None) -> None:
     
     # Create gem.2-0-0.json
     gem_json = {
-        "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
         "$schemaVersion": "2.0.0",
         "gem": {
             "name": name,

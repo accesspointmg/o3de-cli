@@ -400,7 +400,7 @@ class TestDeprecationWarnings:
             gem_dir = Path(tmpdir) / "Gems" / "OldGem"
             gem_dir.mkdir(parents=True)
             gem_json = {
-                "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+                "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
                 "$schemaVersion": "2.0.0",
                 "gem": {
                     "name": "org.test.gem.oldgem",
@@ -415,7 +415,7 @@ class TestDeprecationWarnings:
                 json.dump(gem_json, f)
             
             manifest = {
-                "$schema": "https://canonical.o3de.org/o3de-manifest-2.0.0.json",
+                "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
                 "$schemaVersion": "2.0.0",
                 "o3de_manifest": {"name": "test"},
                 "local": {
@@ -451,7 +451,7 @@ class TestMissingDependencies:
             gem_a_dir.mkdir(parents=True)
             with open(gem_a_dir / "gem.2-0-0.json", "w") as f:
                 json.dump({
-                    "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+                    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
                     "$schemaVersion": "2.0.0",
                     "gem": {"name": "gem.a", "version": "1.0.0", "dependent": {"gems": ["gem.b"]}}
                 }, f)
@@ -460,13 +460,13 @@ class TestMissingDependencies:
             gem_b_dir.mkdir(parents=True)
             with open(gem_b_dir / "gem.2-0-0.json", "w") as f:
                 json.dump({
-                    "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+                    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
                     "$schemaVersion": "2.0.0",
                     "gem": {"name": "gem.b", "version": "1.0.0"}
                 }, f)
             
             manifest = {
-                "$schema": "https://canonical.o3de.org/o3de-manifest-2.0.0.json",
+                "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
                 "$schemaVersion": "2.0.0",
                 "o3de_manifest": {"name": "test"},
                 "local": {
@@ -494,13 +494,13 @@ class TestMissingDependencies:
             gem_a_dir.mkdir(parents=True)
             with open(gem_a_dir / "gem.2-0-0.json", "w") as f:
                 json.dump({
-                    "$schema": "https://canonical.o3de.org/o3de-gem-2.0.0.json",
+                    "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-gem-2.0.0.json",
                     "$schemaVersion": "2.0.0",
                     "gem": {"name": "gem.a", "version": "1.0.0", "dependent": {"gems": ["gem.missing"]}}
                 }, f)
             
             manifest = {
-                "$schema": "https://canonical.o3de.org/o3de-manifest-2.0.0.json",
+                "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
                 "$schemaVersion": "2.0.0",
                 "o3de_manifest": {"name": "test"},
                 "local": {

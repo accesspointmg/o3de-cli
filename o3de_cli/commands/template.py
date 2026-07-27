@@ -308,7 +308,7 @@ def create_template(name: str, path: str | None, source: str | None, as_json: bo
 
     # Create template.2-0-0.json
     tpl_json = {
-        "$schema": "https://canonical.o3de.org/o3de-template-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-template-2.0.0.json",
         "$schemaVersion": "2.0.0",
         "template": {
             "name": name,

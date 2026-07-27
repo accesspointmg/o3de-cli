@@ -70,7 +70,7 @@ class TestWorkspaceSchema:
         validator = jsonschema.Draft7Validator(schema, registry=registry)
 
         valid_data = {
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "test-build"},
             "created": "2026-05-25T12:00:00",
@@ -111,7 +111,7 @@ class TestWorkspaceSchema:
         validator = jsonschema.Draft7Validator(schema, registry=registry)
 
         invalid_data = {
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "created": "2026-05-25T12:00:00",
             "sources": [],
@@ -128,7 +128,7 @@ class TestWorkspaceMeta:
     def test_round_trip(self):
         from o3de_cli.core.models import WorkspaceMeta
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "my-build", "version": "1.0.0"},
             "created": "2026-05-25T12:00:00",
@@ -154,7 +154,7 @@ class TestWorkspaceMeta:
     def test_minimal_valid(self):
         from o3de_cli.core.models import WorkspaceMeta
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "minimal"},
             "created": "2026-01-01T00:00:00",
@@ -353,7 +353,7 @@ class TestWorkspaceMetaWithCandidates:
     def test_round_trip_with_candidates(self):
         from o3de_cli.core.models import WorkspaceMeta
         data = {
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "solved-ws"},
             "created": "2026-05-31T12:00:00",
@@ -438,7 +438,7 @@ class TestWorkspaceMetaWithCandidates:
         validator = jsonschema.Draft7Validator(schema, registry=registry)
 
         valid_data = {
-            "$schema": "https://canonical.o3de.org/o3de-workspace-2.0.0.json",
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "test-build"},
             "created": "2026-05-31T12:00:00",

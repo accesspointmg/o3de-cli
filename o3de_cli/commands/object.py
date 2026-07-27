@@ -651,7 +651,7 @@ def _build_overlay_meta(
     display_base = base_name.split(".")[-1]
     meta: dict = {
         "$schemaVersion": "2.0.0",
-        "$schema": "https://canonical.o3de.org/o3de-overlay-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-overlay-2.0.0.json",
         "overlay": {
             "name": ov_name,
             "version": ov_version,
@@ -1223,7 +1223,7 @@ def hoist_command(
     display_family = family.capitalize()
     repo_meta: dict = {
         "$schemaVersion": "2.0.0",
-        "$schema": "https://canonical.o3de.org/o3de-repo-2.0.0.json",
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-repo-2.0.0.json",
         "repo": {
             "name": family_repo_name,
             "display_name": f"{display_family} Family Repo",
