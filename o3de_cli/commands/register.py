@@ -237,19 +237,27 @@ def ensure_manifest_2() -> Path:
     
     if versioned.exists():
         return versioned
-    
+
     if legacy.exists():
-        # Upgrade legacy manifest
-        console.print("[yellow]Upgrading manifest to schema 2.0.0...[/yellow]")
-        
+        corrupt = False
         try:
             with open(legacy, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except json.JSONDecodeError:
             # Create fresh manifest if legacy is corrupt
             data = {}
-        
-        if needs_upgrade(data, "2.0.0"):
+            corrupt = True
+
+        if not corrupt:
+            if not needs_upgrade(data, "2.0.0"):
+                # Already at 2.0.0, just under the unversioned filename.
+                # Edit it in place — creating a versioned sidecar here would
+                # shadow it via get_manifest_path() and strand its contents.
+                _ensure_default_dirs(legacy)
+                return legacy
+
+            # Upgrade legacy manifest
+            console.print("[yellow]Upgrading manifest to schema 2.0.0...[/yellow]")
             result = upgrade_file(legacy, target_version="2.0.0", backup=True)
             if result:
                 console.print(f"[green]Manifest upgraded to 2.0.0[/green]")
@@ -257,7 +265,10 @@ def ensure_manifest_2() -> Path:
                 if versioned.exists():
                     _ensure_default_dirs(versioned)
                     return versioned
-    
+            # Upgrade failed — keep using the manifest we have rather than
+            # replacing it with an empty default.
+            return legacy
+
     # Create new 2.0.0 manifest
     from o3de_cli.core.paths import get_default_manifest_data
     manifest_data = get_default_manifest_data()
