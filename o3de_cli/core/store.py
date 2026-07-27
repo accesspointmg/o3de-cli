@@ -512,79 +512,124 @@ class Store:
         self,
         repo_urls: list[str],
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        max_concurrency: int = 32,
     ) -> int:
-        """Synchronous version of refresh."""
+        """Synchronous version of refresh with parallel fetching.
+        
+        Uses wave-based BFS: fetches all URLs at the current level
+        concurrently, then discovers child URLs for the next wave.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         self._visited_urls.clear()
         self.objects.clear()
         
         # Queue items are tuples: (url, parent_repo_url, inherited_sc_url, inherited_sc_branch)
-        queue: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = [
+        wave: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = [
             (url, None, None, None) for url in repo_urls
         ]
-        total = len(queue)
+        total = len(wave)
         processed = 0
         
-        while queue:
-            url, parent_repo_url, inherited_sc_url, inherited_sc_branch = queue.pop(0)
+        with httpx.Client(timeout=self.timeout) as client:
             
-            if url in self._visited_urls:
-                continue
+            def _fetch_one(url: str) -> tuple[str, Optional[dict]]:
+                """Fetch a single URL, returning (url, data_or_None)."""
+                # Check cache first
+                cached = self.cache.get(url)
+                if cached and not self.cache.is_stale(url):
+                    return (url, cached)
+                try:
+                    response = client.get(url)
+                    response.raise_for_status()
+                    data = response.json()
+                    etag = response.headers.get("etag")
+                    self.cache.put(url, data, etag)
+                    return (url, data)
+                except (httpx.HTTPError, json.JSONDecodeError) as e:
+                    # Try stale cache
+                    if cached:
+                        logger.warning(f"Fetch failed, using stale cache: {url}")
+                        return (url, cached)
+                    logger.warning(f"Skipping {url}: {e}")
+                    return (url, None)
             
-            self._visited_urls.add(url)
-            processed += 1
-            
-            if progress_callback:
-                progress_callback(f"Fetching {urlparse(url).path}", processed, total)
-            
-            try:
-                data = self.fetch_json_sync(url)
-            except FetchError as e:
-                logger.warning(f"Skipping {url}: {e}")
-                continue
-            
-            obj_type = get_object_type(data)
-            remote_obj = self._parse_remote_object(
-                url, data, obj_type,
-                parent_repo_url=parent_repo_url,
-                inherited_source_control_url=inherited_sc_url,
-                inherited_source_control_branch=inherited_sc_branch,
-            )
-            
-            if remote_obj:
-                key = f"{remote_obj.object_type.value}:{remote_obj.name}"
-                version = remote_obj.version or "0.0.0"
+            while wave:
+                # De-duplicate and skip already-visited within this wave
+                pending: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+                pending_urls: list[str] = []
+                for item in wave:
+                    url = item[0]
+                    if url not in self._visited_urls:
+                        self._visited_urls.add(url)
+                        pending.append(item)
+                        pending_urls.append(url)
                 
-                # Track all versions
-                if key not in self.versions:
-                    self.versions[key] = {}
-                self.versions[key][version] = remote_obj
+                if not pending:
+                    break
                 
-                # Keep latest version in objects dict for backwards compatibility
-                if key not in self.objects or self._is_newer_version(version, self.objects[key].version):
-                    self.objects[key] = remote_obj
-            
-            # Determine source control info to pass to children
-            # If this is a repo, use its source_control as inherited for children
-            child_repo_url: Optional[str] = None
-            child_sc_url: Optional[str] = None
-            child_sc_branch: Optional[str] = None
-            
-            if remote_obj and obj_type == ObjectType.REPO:
-                # This is a repo - children inherit its source control
-                child_repo_url = url
-                child_sc_url = remote_obj.source_control_url or inherited_sc_url
-                child_sc_branch = remote_obj.source_control_branch or inherited_sc_branch
-            else:
-                # Not a repo - pass through existing inherited info
-                child_repo_url = parent_repo_url
-                child_sc_url = inherited_sc_url
-                child_sc_branch = inherited_sc_branch
-            
-            new_urls = self._extract_remote_urls(data, base_url=url)
-            for new_url in new_urls:
-                if new_url not in self._visited_urls:
-                    queue.append((new_url, child_repo_url, child_sc_url, child_sc_branch))
-                    total += 1
+                # Parallel fetch all URLs in this wave
+                url_to_data: dict[str, Optional[dict]] = {}
+                with ThreadPoolExecutor(max_workers=min(max_concurrency, len(pending_urls))) as executor:
+                    futures = {executor.submit(_fetch_one, url): url for url in pending_urls}
+                    for future in as_completed(futures):
+                        url, data = future.result()
+                        url_to_data[url] = data
+                
+                # Process results and build next wave
+                next_wave: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+                
+                for url, parent_repo_url, inherited_sc_url, inherited_sc_branch in pending:
+                    processed += 1
+                    if progress_callback:
+                        progress_callback(f"Fetching {urlparse(url).path}", processed, total)
+                    
+                    data = url_to_data.get(url)
+                    if data is None:
+                        continue
+                    
+                    obj_type = get_object_type(data)
+                    remote_obj = self._parse_remote_object(
+                        url, data, obj_type,
+                        parent_repo_url=parent_repo_url,
+                        inherited_source_control_url=inherited_sc_url,
+                        inherited_source_control_branch=inherited_sc_branch,
+                    )
+                    
+                    if remote_obj:
+                        key = f"{remote_obj.object_type.value}:{remote_obj.name}"
+                        version = remote_obj.version or "0.0.0"
+                        
+                        # Track all versions
+                        if key not in self.versions:
+                            self.versions[key] = {}
+                        self.versions[key][version] = remote_obj
+                        
+                        # Keep latest version in objects dict for backwards compatibility
+                        if key not in self.objects or self._is_newer_version(version, self.objects[key].version):
+                            self.objects[key] = remote_obj
+                    
+                    # Determine source control info to pass to children
+                    child_repo_url: Optional[str] = None
+                    child_sc_url: Optional[str] = None
+                    child_sc_branch: Optional[str] = None
+                    
+                    if remote_obj and obj_type == ObjectType.REPO:
+                        child_repo_url = url
+                        child_sc_url = remote_obj.source_control_url or inherited_sc_url
+                        child_sc_branch = remote_obj.source_control_branch or inherited_sc_branch
+                    else:
+                        child_repo_url = parent_repo_url
+                        child_sc_url = inherited_sc_url
+                        child_sc_branch = inherited_sc_branch
+                    
+                    new_urls = self._extract_remote_urls(data, base_url=url)
+                    for new_url in new_urls:
+                        if new_url not in self._visited_urls:
+                            next_wave.append((new_url, child_repo_url, child_sc_url, child_sc_branch))
+                            total += 1
+                
+                wave = next_wave
         
         return len(self.objects)
     

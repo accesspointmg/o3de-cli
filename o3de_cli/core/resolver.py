@@ -392,54 +392,86 @@ class Resolver:
         ``remote.repos`` (absolute URLs to other repos), and Schema 2.0.0
         ``children.*`` (paths relative to the repo JSON's own location).
         Already-visited URLs are skipped to avoid infinite loops.
+        
+        Uses wave-based parallel fetching for speed.
         """
         import httpx
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         visited: dict[str, dict] = {}
-        queue = list(urls)
-        while queue:
-            url = queue.pop(0)
-            if url in visited:
-                continue
-            try:
-                # Try the URL as-is first
-                resp = httpx.get(url, timeout=10, follow_redirects=True)
-                # If not JSON, try appending /repo.json
-                if resp.status_code != 200 or 'json' not in resp.headers.get('content-type', ''):
-                    if not url.endswith('.json'):
-                        alt_url = url.rstrip('/') + '/repo.json'
-                        alt_resp = httpx.get(alt_url, timeout=10, follow_redirects=True)
-                        if alt_resp.status_code == 200:
-                            resp = alt_resp
-                resp.raise_for_status()
-                data = resp.json()
-                visited[url] = data
-                # Legacy: top-level repos list of sub-repo URLs
-                for sub_url in data.get("repos", []):
-                    if isinstance(sub_url, str) and sub_url not in visited:
-                        queue.append(sub_url)
-                # Schema 2.0.0: remote.* are absolute URLs to other objects
-                remote = data.get("remote", {})
-                if isinstance(remote, dict):
-                    for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
-                        for sub_url in remote.get(key, []):
-                            if isinstance(sub_url, str) and sub_url not in visited:
-                                queue.append(sub_url)
-                # Schema 2.0.0: children.* are relative to this JSON's location
-                children = data.get("children", {})
-                if isinstance(children, dict):
-                    base_dir = url.rsplit("/", 1)[0] + "/"
-                    for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
-                        for rel in children.get(key, []):
-                            if not isinstance(rel, str) or not rel:
-                                continue
-                            child_url = rel if rel.startswith(("http://", "https://")) else base_dir + rel.lstrip("/")
-                            if child_url not in visited:
-                                queue.append(child_url)
-                logger.info(f"Crawled remote repo: {url}")
-            except Exception as e:
-                logger.warning(f"Failed to crawl remote repo {url}: {e}")
-                visited[url] = {"repo_name": url, "_error": str(e)}
+        wave = list(urls)
+        
+        with httpx.Client(timeout=10) as client:
+            
+            def _fetch(url: str) -> tuple[str, Optional[dict], Optional[str]]:
+                try:
+                    resp = client.get(url, follow_redirects=True)
+                    if resp.status_code != 200 or 'json' not in resp.headers.get('content-type', ''):
+                        if not url.endswith('.json'):
+                            alt_url = url.rstrip('/') + '/repo.json'
+                            alt_resp = client.get(alt_url, follow_redirects=True)
+                            if alt_resp.status_code == 200:
+                                resp = alt_resp
+                    resp.raise_for_status()
+                    return (url, resp.json(), None)
+                except Exception as e:
+                    return (url, None, str(e))
+            
+            while wave:
+                # De-duplicate against already-visited
+                pending = [u for u in wave if u not in visited]
+                if not pending:
+                    break
+                
+                # Mark all as visited (reserve slots)
+                for u in pending:
+                    visited[u] = {}
+                
+                # Parallel fetch
+                url_to_result: dict[str, tuple[Optional[dict], Optional[str]]] = {}
+                with ThreadPoolExecutor(max_workers=min(32, len(pending))) as executor:
+                    futures = {executor.submit(_fetch, u): u for u in pending}
+                    for future in as_completed(futures):
+                        url, data, error = future.result()
+                        url_to_result[url] = (data, error)
+                
+                # Process results, discover next wave
+                next_wave: list[str] = []
+                for url in pending:
+                    data, error = url_to_result[url]
+                    if error or data is None:
+                        logger.warning(f"Failed to crawl remote repo {url}: {error}")
+                        visited[url] = {"repo_name": url, "_error": error or "unknown"}
+                        continue
+                    
+                    visited[url] = data
+                    
+                    # Legacy: top-level repos list
+                    for sub_url in data.get("repos", []):
+                        if isinstance(sub_url, str) and sub_url not in visited:
+                            next_wave.append(sub_url)
+                    # Schema 2.0.0: remote.*
+                    remote = data.get("remote", {})
+                    if isinstance(remote, dict):
+                        for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                            for sub_url in remote.get(key, []):
+                                if isinstance(sub_url, str) and sub_url not in visited:
+                                    next_wave.append(sub_url)
+                    # Schema 2.0.0: children.*
+                    children = data.get("children", {})
+                    if isinstance(children, dict):
+                        base_dir = url.rsplit("/", 1)[0] + "/"
+                        for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                            for rel in children.get(key, []):
+                                if not isinstance(rel, str) or not rel:
+                                    continue
+                                child_url = rel if rel.startswith(("http://", "https://")) else base_dir + rel.lstrip("/")
+                                if child_url not in visited:
+                                    next_wave.append(child_url)
+                    logger.info(f"Crawled remote repo: {url}")
+                
+                wave = next_wave
+        
         return visited
 
     def _build_remote_objects(self) -> dict[str, dict]:
