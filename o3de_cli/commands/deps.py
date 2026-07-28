@@ -76,7 +76,9 @@ def tree_command(name: str | None, depth: int, as_json: bool, show_all: bool) ->
             return
 
         for root in roots:
-            tree = Tree(f"[bold cyan]{root.name}[/bold cyan]@{root.version} ({root.object_type.value})")
+            tree = Tree(
+                f"[bold cyan]{root.name}[/bold cyan]@{root.version} ({root.object_type.value})"
+            )
             _build_tree(tree, root, resolver, set(), depth, 0)
             console.print(tree)
             console.print()
@@ -85,7 +87,9 @@ def tree_command(name: str | None, depth: int, as_json: bool, show_all: bool) ->
 @deps.command("list")
 @click.argument("name")
 @click.option("--transitive", "-t", is_flag=True, help="Include transitive dependencies")
-@click.option("--reverse", "-r", is_flag=True, help="Show reverse dependencies (who depends on this)")
+@click.option(
+    "--reverse", "-r", is_flag=True, help="Show reverse dependencies (who depends on this)"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None:
     """List dependencies for an object."""
@@ -102,6 +106,7 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
     if not obj:
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error(f"Object not found: {name}", code="E_NOT_FOUND")
             return
         console.print(f"[red]Object not found:[/red] {name}")
@@ -116,9 +121,13 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
                     dependents.append((other_name, str(dep_spec)))
         if as_json:
             from o3de_cli.core.json_output import emit_response
-            emit_response(data={"object": name, "reverse_deps": [
-                {"name": n, "constraint": c} for n, c in dependents
-            ]})
+
+            emit_response(
+                data={
+                    "object": name,
+                    "reverse_deps": [{"name": n, "constraint": c} for n, c in dependents],
+                }
+            )
             return
         if dependents:
             console.print(f"[bold]Objects depending on {name}:[/bold]")
@@ -172,15 +181,18 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
 
     if as_json:
         from o3de_cli.core.json_output import emit_response
+
         deps_data = []
         for dep_spec in obj.dependencies:
             candidate = resolver.objects.get(dep_spec.name)
-            deps_data.append({
-                "name": dep_spec.name,
-                "specifier": str(dep_spec.specifier or "*"),
-                "resolved_version": candidate.version if candidate else None,
-                "status": "resolved" if candidate else "missing",
-            })
+            deps_data.append(
+                {
+                    "name": dep_spec.name,
+                    "specifier": str(dep_spec.specifier or "*"),
+                    "resolved_version": candidate.version if candidate else None,
+                    "status": "resolved" if candidate else "missing",
+                }
+            )
         data = {"object": name, "dependencies": deps_data}
         if transitive:
             data["transitive"] = resolver.locked_dependencies.get(name, {})
@@ -201,6 +213,7 @@ def why_command(name: str, dependency: str, as_json: bool) -> None:
     if not manifest_path.exists():
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error("No manifest found", code="E_NO_MANIFEST")
             return
         console.print("[red]No manifest found.[/red]")
@@ -214,6 +227,7 @@ def why_command(name: str, dependency: str, as_json: bool) -> None:
     if not obj:
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error(f"Object not found: {name}", code="E_NOT_FOUND")
             return
         console.print(f"[red]Object not found:[/red] {name}")
@@ -223,6 +237,7 @@ def why_command(name: str, dependency: str, as_json: bool) -> None:
     path = _find_dep_path(resolver, name, dependency)
     if as_json:
         from o3de_cli.core.json_output import emit_response
+
         emit_response(data={"from": name, "to": dependency, "chain": path or []})
         return
     if path:
@@ -315,6 +330,7 @@ def _find_dep_path(resolver: Resolver, start: str, target: str) -> list[str] | N
 
 def _output_json(resolver: Resolver, name: str | None, depth: int, show_all: bool) -> None:
     """Output dependency tree as JSON."""
+
     def _obj_to_dict(obj, visited: set, current_depth: int) -> dict:
         result = {
             "name": obj.name,

@@ -147,24 +147,19 @@ def _object_entry(
         "id": hdr.get("id", ""),
         "copyright_year": hdr.get("copyright_year", ""),
         "copyright_text": hdr.get("copyright_text", ""),
-
         "canonical_tags": canonical_tags,
         "user_tags": user_tags,
         "platforms": data.get("platforms", []),
-
         "child_engine_json_paths": children.get("engines", []),
         "child_project_json_paths": children.get("projects", []),
         "child_gem_json_paths": children.get("gems", []),
         "child_template_json_paths": children.get("templates", []),
         "child_repo_json_paths": [],
-
         "parent_json_paths": [],
-
         "dependent_engines": dep["engines"],
         "dependent_projects": dep["projects"],
         "dependent_gems": dep["gems"],
         "dependent_templates": dep["templates"],
-
         # Artifact form chosen for this object (workspace override):
         # "source" (default) - build from the linked source tree
         # "local-binary" / "remote-binary" - consume a prebuilt install
@@ -175,30 +170,36 @@ def _object_entry(
     }
 
     if type_key == "engine":
-        entry.update({
-            "O3DEVersion": data.get("O3DEVersion", ""),
-            "O3DEBuildNumber": data.get("O3DEBuildNumber", ""),
-            "display_version": data.get("display_version", ""),
-            "file_version": data.get("file_version", ""),
-            "build": data.get("build", ""),
-            "api_version_editor": api.get("editor", ""),
-            "api_version_framework": api.get("framework", ""),
-            "api_version_launcher": api.get("launcher", ""),
-            "api_version_tools": api.get("tools", ""),
-        })
+        entry.update(
+            {
+                "O3DEVersion": data.get("O3DEVersion", ""),
+                "O3DEBuildNumber": data.get("O3DEBuildNumber", ""),
+                "display_version": data.get("display_version", ""),
+                "file_version": data.get("file_version", ""),
+                "build": data.get("build", ""),
+                "api_version_editor": api.get("editor", ""),
+                "api_version_framework": api.get("framework", ""),
+                "api_version_launcher": api.get("launcher", ""),
+                "api_version_tools": api.get("tools", ""),
+            }
+        )
     if type_key == "project":
-        entry.update({
-            "product_name": data.get("product_name", ""),
-            "executable_name": data.get("executable_name", ""),
-            "engine": data.get("engine", ""),
-        })
+        entry.update(
+            {
+                "product_name": data.get("product_name", ""),
+                "executable_name": data.get("executable_name", ""),
+                "engine": data.get("engine", ""),
+            }
+        )
     if type_key == "overlay":
-        entry.update({
-            "extends": data.get("extends", ""),
-            "precedence": data.get("precedence", 0),
-            "platform_maps": data.get("platform_maps", []),
-            "platform_wart_maps": data.get("platform_wart_maps", []),
-        })
+        entry.update(
+            {
+                "extends": data.get("extends", ""),
+                "precedence": data.get("precedence", 0),
+                "platform_maps": data.get("platform_maps", []),
+                "platform_wart_maps": data.get("platform_wart_maps", []),
+            }
+        )
     return entry
 
 
@@ -223,10 +224,18 @@ def generate_cmake_manifest(
     ws_path = Path(ws_path)
 
     paths: dict[str, list[str]] = {
-        "engine": [], "project": [], "gem": [], "template": [], "overlay": [],
+        "engine": [],
+        "project": [],
+        "gem": [],
+        "template": [],
+        "overlay": [],
     }
     names: dict[str, list[str]] = {
-        "engine": [], "project": [], "gem": [], "template": [], "overlay": [],
+        "engine": [],
+        "project": [],
+        "gem": [],
+        "template": [],
+        "overlay": [],
     }
     entries: dict[str, dict] = {}
 
@@ -267,11 +276,13 @@ def generate_cmake_manifest(
             if overrides and name in overrides:
                 override = overrides[name]
                 artifact = (
-                    override.get("artifact") if isinstance(override, dict)
+                    override.get("artifact")
+                    if isinstance(override, dict)
                     else getattr(override, "artifact", "source")
                 ) or "source"
                 override_path = (
-                    override.get("path") if isinstance(override, dict)
+                    override.get("path")
+                    if isinstance(override, dict)
                     else getattr(override, "path", None)
                 )
                 entry["artifact"] = artifact
@@ -300,14 +311,12 @@ def generate_cmake_manifest(
         "default_repos_path": "",
         "default_overlays_path": (ws_path / "Overlays").as_posix(),
         "default_third_party_path": third_party_path,
-
         "all_engine_paths": paths["engine"],
         "all_project_paths": paths["project"],
         "all_gem_paths": paths["gem"],
         "all_template_paths": paths["template"],
         "all_repo_paths": [],
         "all_overlay_paths": paths["overlay"],
-
         "all_engine_names": names["engine"],
         "all_project_names": names["project"],
         "all_gem_names": names["gem"],
@@ -320,8 +329,5 @@ def generate_cmake_manifest(
     out_path = ws_path / CMAKE_MANIFEST_FILENAME
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(resolved, f, indent=2)
-    logger.info(
-        f"Wrote workspace cmake manifest: {out_path} "
-        f"({len(entries)} objects)"
-    )
+    logger.info(f"Wrote workspace cmake manifest: {out_path} ({len(entries)} objects)")
     return out_path

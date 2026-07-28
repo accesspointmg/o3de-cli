@@ -70,6 +70,7 @@ _ENGINE_SKIP_TOPDIRS: set[str] = {"Gems", "Templates", "AutomatedTesting"}
 
 class WorkspaceError(Exception):
     """Error during workspace creation."""
+
     pass
 
 
@@ -135,13 +136,19 @@ class Workspace:
     # -- public API ----------------------------------------------------------
 
     def add_resolved_object(
-        self, name: str, path: Path, object_type: ObjectType,
+        self,
+        name: str,
+        path: Path,
+        object_type: ObjectType,
     ) -> None:
         """Add a resolved object to include in the workspace."""
         self.resolved_objects[name] = (Path(path), object_type)
 
     def add_overlay(
-        self, path: Path, precedence: int = 0, extends: str | None = None,
+        self,
+        path: Path,
+        precedence: int = 0,
+        extends: str | None = None,
     ) -> None:
         """Add an overlay to apply during workspace creation.
 
@@ -169,9 +176,7 @@ class Workspace:
                 logger.info(f"Cleaning existing workspace: {self.root_path}")
                 shutil.rmtree(self.root_path)
             else:
-                raise WorkspaceError(
-                    f"Workspace path already exists: {self.root_path}"
-                )
+                raise WorkspaceError(f"Workspace path already exists: {self.root_path}")
 
         # Create root and top-level type folders
         self.root_path.mkdir(parents=True, exist_ok=True)
@@ -201,10 +206,7 @@ class Workspace:
                 current=current,
                 total=total_files,
                 progress_callback=progress_callback,
-                skip_topdirs=(
-                    _ENGINE_SKIP_TOPDIRS
-                    if obj_type == ObjectType.ENGINE else None
-                ),
+                skip_topdirs=(_ENGINE_SKIP_TOPDIRS if obj_type == ObjectType.ENGINE else None),
             )
 
         # Apply overlays in precedence order
@@ -212,7 +214,8 @@ class Workspace:
             if progress_callback:
                 progress_callback(
                     f"Applying overlay (precedence {precedence})",
-                    current, total_files,
+                    current,
+                    total_files,
                 )
             overlay_name = _object_name_from_path(overlay_path, overlay_path.name)
 
@@ -243,10 +246,7 @@ class Workspace:
         if progress_callback:
             progress_callback("Complete", total_files, total_files)
 
-        logger.info(
-            f"Workspace created: {self.root_path} "
-            f"({len(self.linked_files)} files)"
-        )
+        logger.info(f"Workspace created: {self.root_path} ({len(self.linked_files)} files)")
         return self
 
     # -- internal helpers ----------------------------------------------------
@@ -286,10 +286,7 @@ class Workspace:
             if not nested_roots:
                 return False
             resolved = path.resolve()
-            return any(
-                resolved == root or root in resolved.parents
-                for root in nested_roots
-            )
+            return any(resolved == root or root in resolved.parents for root in nested_roots)
 
         for entry in source_root.rglob("*"):
             relative = entry.relative_to(source_root)
@@ -419,9 +416,7 @@ class Workspace:
                 os.link(source, target)
                 self.linked_files[target] = source
             else:
-                raise WorkspaceError(
-                    f"Failed to create link {target} -> {source}: {e}"
-                )
+                raise WorkspaceError(f"Failed to create link {target} -> {source}: {e}")
 
     def _force_link(self, source: Path, target: Path) -> None:
         """Create a symbolic link, removing any existing file first."""
@@ -441,9 +436,7 @@ class Workspace:
                 os.link(source, target)
                 self.linked_files[target] = source
             else:
-                raise WorkspaceError(
-                    f"Failed to create link {target} -> {source}: {e}"
-                )
+                raise WorkspaceError(f"Failed to create link {target} -> {source}: {e}")
 
     def should_exclude(self, relative_path: Path) -> bool:
         """Check if a file should be excluded from workspace."""
@@ -456,6 +449,7 @@ class Workspace:
     def _matches_pattern(self, path: str, pattern: str) -> bool:
         """Simple pattern matching (supports * and **)."""
         import fnmatch
+
         if "**" in pattern:
             parts = pattern.split("**")
             if len(parts) == 2:
@@ -470,9 +464,7 @@ class Workspace:
     def update(self) -> None:
         """Re-check links and re-apply overlays."""
         if not self.root_path.exists():
-            raise WorkspaceError(
-                f"Workspace does not exist: {self.root_path}"
-            )
+            raise WorkspaceError(f"Workspace does not exist: {self.root_path}")
         broken = []
         for link_path, source_path in self.linked_files.items():
             if link_path.is_symlink() and not link_path.resolve().exists():
@@ -501,7 +493,8 @@ class Workspace:
                 continue
 
             self._apply_overlay(
-                overlay_path, owner_name=overlay_name,
+                overlay_path,
+                owner_name=overlay_name,
                 base_dest_root=base_dest_root,
                 attributions=self.attributions,
             )
@@ -528,13 +521,19 @@ class Workspace:
     def get_sources_dict(self) -> dict[str, dict[str, str]]:
         """Return categorised ``{type: {name: path}}`` from resolved_objects + overlays."""
         from o3de_cli.core.models import ObjectType as OT
+
         _type_key = {
-            OT.ENGINE: "engines", OT.PROJECT: "projects",
-            OT.GEM: "gems", OT.TEMPLATE: "templates",
+            OT.ENGINE: "engines",
+            OT.PROJECT: "projects",
+            OT.GEM: "gems",
+            OT.TEMPLATE: "templates",
         }
         cats: dict[str, dict[str, str]] = {
-            "engines": {}, "projects": {}, "gems": {},
-            "templates": {}, "overlays": {},
+            "engines": {},
+            "projects": {},
+            "gems": {},
+            "templates": {},
+            "overlays": {},
         }
         for name, (path, obj_type) in self.resolved_objects.items():
             key = _type_key.get(obj_type, "gems")
@@ -620,13 +619,17 @@ def detect_root_type(path: Path) -> ObjectType:
     # Schema 2.0 sidecars (preferred), then legacy/native JSON files.
     # gem.json/overlay.json may be either 2.0.0-native or legacy.
     for suffix in ("2-0-0.json", "json"):
-        for obj_type in (ObjectType.ENGINE, ObjectType.PROJECT, ObjectType.GEM,
-                         ObjectType.TEMPLATE, ObjectType.OVERLAY, ObjectType.REPO):
+        for obj_type in (
+            ObjectType.ENGINE,
+            ObjectType.PROJECT,
+            ObjectType.GEM,
+            ObjectType.TEMPLATE,
+            ObjectType.OVERLAY,
+            ObjectType.REPO,
+        ):
             if (path / f"{obj_type.value}.{suffix}").exists():
                 return obj_type
-    raise WorkspaceError(
-        f"Cannot determine root object type at: {path}"
-    )
+    raise WorkspaceError(f"Cannot determine root object type at: {path}")
 
 
 def create_workspace(
@@ -655,8 +658,7 @@ def create_workspace(
     """
     root_type = detect_root_type(root_object_path)
 
-    ws = Workspace(target_path, root_object_path, root_type,
-                   attributions=attributions)
+    ws = Workspace(target_path, root_object_path, root_type, attributions=attributions)
 
     # Determine a name for the root object (read from its object JSON;
     # the directory name may be a version folder like "1.0.0")
@@ -690,6 +692,7 @@ def _register_in_manifest(ws_path: Path) -> None:
     """Append *ws_path* to the manifest's ``workspaces`` list (idempotent)."""
     try:
         from .paths import get_manifest_path
+
         manifest_path = get_manifest_path()
         with open(manifest_path) as f:
             manifest = json.load(f)

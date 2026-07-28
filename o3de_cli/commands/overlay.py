@@ -32,9 +32,7 @@ def list_overlays(as_json: bool) -> None:
 
         items = []
         for name, obj in overlays.items():
-            items.append(
-                {"name": obj.name, "version": obj.version, "path": str(obj.path)}
-            )
+            items.append({"name": obj.name, "version": obj.version, "path": str(obj.path)})
         click.echo(json_mod.dumps(items, indent=2))
         return
 
@@ -66,6 +64,7 @@ def create_overlay(name: str, path: str | None, template_name: str | None) -> No
     import json
 
     from o3de_cli.core.paths import get_default_overlays_path
+
     overlay_path = Path(path) if path else get_default_overlays_path() / name
 
     console.print(f"[bold]Creating overlay:[/bold] {name}")
@@ -148,8 +147,7 @@ def register_overlay(path_or_url: str, remote: bool) -> None:
         overlay_path = Path(path_or_url).resolve()
         console.print(f"[bold]Registering overlay:[/bold] {overlay_path}")
         is_overlay = any(
-            (overlay_path / f).exists()
-            for f in ["overlay.2-0-0.json", "overlay.json"]
+            (overlay_path / f).exists() for f in ["overlay.2-0-0.json", "overlay.json"]
         )
         if not is_overlay:
             console.print("[red]No overlay JSON found at this path.[/red]")

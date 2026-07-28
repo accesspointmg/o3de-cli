@@ -33,9 +33,21 @@ from .paths import (
     find_object_json,
 )
 from .models import (
-    O3DEObject, ObjectType, Manifest, Engine, Project, Gem, Template, Repo, Overlay,
-    Children, LocalObjects, Remote,
-    get_object_type, get_object_name, get_object_version,
+    O3DEObject,
+    ObjectType,
+    Manifest,
+    Engine,
+    Project,
+    Gem,
+    Template,
+    Repo,
+    Overlay,
+    Children,
+    LocalObjects,
+    Remote,
+    get_object_type,
+    get_object_name,
+    get_object_version,
 )
 from .upgrade import (
     get_schema_version,
@@ -53,10 +65,10 @@ logger = logging.getLogger("o3de_cli.resolver")
 def compute_file_hash(path: Path) -> str:
     """
     Compute SHA-256 hash of a file.
-    
+
     Args:
         path: Path to the file
-        
+
     Returns:
         Hex digest of the file's SHA-256 hash, or empty string if file not readable
     """
@@ -69,12 +81,13 @@ def compute_file_hash(path: Path) -> str:
 
 class ResolverError(Exception):
     """Error during resolution."""
+
     pass
 
 
 class DependencyConflict:
     """Represents a version conflict between two dependency requirements."""
-    
+
     def __init__(
         self,
         dependency_name: str,
@@ -90,7 +103,7 @@ class DependencyConflict:
         self.requirer_b = requirer_b
         self.constraint_b = constraint_b
         self.resolved_version = resolved_version
-    
+
     def __repr__(self) -> str:
         return (
             f"DependencyConflict({self.dependency_name}: "
@@ -101,7 +114,7 @@ class DependencyConflict:
 
 class ObjectNameVersion:
     """Parsed object name with optional version constraint."""
-    
+
     def __init__(self, specifier: str):
         """
         Parse a specifier like:
@@ -111,17 +124,16 @@ class ObjectNameVersion:
         - "org.o3de.gem.physx>=1.0.0<2.0.0" (range)
         """
         self.original = specifier
-        
+
         # Try to parse version constraint
         match = re.match(
-            r"^([a-z][a-z0-9_.]+)((?:==|>=|>|<=|<)[0-9.]+(?:(?:<=|<)[0-9.]+)?)?$",
-            specifier
+            r"^([a-z][a-z0-9_.]+)((?:==|>=|>|<=|<)[0-9.]+(?:(?:<=|<)[0-9.]+)?)?$", specifier
         )
-        
+
         if match:
             self.name = match.group(1)
             version_part = match.group(2) or ""
-            
+
             if version_part:
                 # Convert to packaging specifier format
                 # >=1.0.0<2.0.0 -> >=1.0.0,<2.0.0
@@ -132,17 +144,17 @@ class ObjectNameVersion:
         else:
             self.name = specifier
             self.specifier = SpecifierSet()
-    
+
     def matches(self, version: str) -> bool:
         """Check if a version matches this constraint."""
         if not self.specifier:
             return True
-        
+
         try:
             return Version(version) in self.specifier
         except Exception:
             return True  # If version is invalid, accept it
-    
+
     def __repr__(self) -> str:
         if self.specifier:
             return f"{self.name}{self.specifier}"
@@ -151,7 +163,7 @@ class ObjectNameVersion:
 
 class ResolvedObject:
     """A resolved O3DE object with full path and parsed data."""
-    
+
     def __init__(
         self,
         path: Path,
@@ -165,29 +177,29 @@ class ResolvedObject:
         self.name = name
         self.version = version
         self.data = data
-        
+
         # Children discovered from this object
         self.children: list["ResolvedObject"] = []
-        
+
         # Dependencies (parsed from data)
         self.dependencies: list[ObjectNameVersion] = []
-        
+
         # Optional dependencies (nice-to-have, not required)
         self.optional_dependencies: list[ObjectNameVersion] = []
-        
+
         # Peer dependencies (must be provided by consumer, warning if missing)
         self.peer_dependencies: list[ObjectNameVersion] = []
-        
+
         # Overlays that extend this object
         self.overlays: list["ResolvedObject"] = []
-        
+
         # Parent object that contains this one (set during resolution)
         self.parent: Optional["ResolvedObject"] = None
-        
+
         # Properties inherited from parent (property_name -> parent_name)
         # Only set for properties the child did NOT define and got from a parent.
         self.inherited_from: dict[str, str] = {}
-    
+
     def __repr__(self) -> str:
         return f"ResolvedObject({self.object_type.value}:{self.name}@{self.version})"
 
@@ -195,27 +207,27 @@ class ResolvedObject:
 class Resolver:
     """
     Resolves the O3DE manifest into a complete, flattened view.
-    
+
     Usage:
         resolver = Resolver()
         resolved = resolver.resolve()
         resolver.save()
     """
-    
+
     def __init__(self, manifest_path: Optional[Path] = None, dry_run: bool = False):
         self.manifest_path = manifest_path or get_manifest_path()
         self.resolved_path = get_resolved_manifest_path()
         self.dry_run = dry_run
-        
+
         # All resolved objects by name
         self.objects: dict[str, ResolvedObject] = {}
-        
+
         # ALL versions of every object encountered on disk:
         # name -> {version -> ResolvedObject}. Unlike `objects` (which keeps
         # only the newest version per name), this retains alternates so the
         # solver/UI can offer them as override candidates.
         self.objects_all: dict[str, dict[str, ResolvedObject]] = {}
-        
+
         # Objects by type
         self.engines: dict[str, ResolvedObject] = {}
         self.projects: dict[str, ResolvedObject] = {}
@@ -223,47 +235,47 @@ class Resolver:
         self.templates: dict[str, ResolvedObject] = {}
         self.repos: dict[str, ResolvedObject] = {}
         self.overlays: dict[str, ResolvedObject] = {}
-        
+
         # Manifest data
         self.manifest_data: Optional[dict] = None
-        
+
         # File hashes for change detection: path -> hash
         self.file_hashes: dict[str, str] = {}
-        
+
         # Dependency graph: object_name -> list of (dep_name, dep_version) tuples
         self.dependency_graph: dict[str, list[tuple[str, str]]] = {}
-        
+
         # Detected conflicts
         self.conflicts: list[DependencyConflict] = []
-        
+
         # Locked (pinned) transitive dependencies
         self.locked_dependencies: dict[str, dict] = {}
-        
+
         # Remote repo URLs from the manifest (not local paths)
         self.manifest_remotes: list[str] = []
-        
+
         # Crawled remote repos: url -> {repo_name, summary, repos: [...], gems: [...], ...}
         self._crawled_remotes: dict[str, dict] = {}
-    
+
     def resolve(
         self,
         progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> dict[str, ResolvedObject]:
         """
         Resolve the manifest.
-        
+
         1. Load manifest JSON
         2. Descend all local object paths
         3. Resolve children recursively
         4. Parse dependencies
         5. Match overlays to base objects
-        
+
         Returns:
             Dict of object_name -> ResolvedObject
         """
         if not self.manifest_path.exists():
             raise ResolverError(f"Manifest not found: {self.manifest_path}")
-        
+
         # Load manifest and compute hash
         with open(self.manifest_path, "r") as f:
             self.manifest_data = json.load(f)
@@ -288,11 +300,11 @@ class Resolver:
                             Path(dir_str).mkdir(parents=True, exist_ok=True)
                 except IOError as e:
                     logger.warning(f"Failed to write manifest sidecar: {e}")
-        
+
         # Handle both Schema 2.0.0 (local.engines) and legacy (engines at root) formats
         local = self.manifest_data.get("local", {})
         remote = self.manifest_data.get("remote", {})
-        
+
         # Sanitize manifest: deduplicate and validate type assignments
         dirty = self._sanitize_manifest(local)
         if dirty:
@@ -302,10 +314,10 @@ class Resolver:
                 logger.info("Sanitized manifest (dedup / type fix)")
             except IOError as e:
                 logger.warning(f"Failed to save sanitized manifest: {e}")
-        
+
         # Note: We do NOT convert "restricteds" to "overlays"
         # They are different concepts with no upgrade path
-        
+
         # Collect all root paths to resolve
         root_paths = []
         stale_paths = []  # Track paths that don't exist
@@ -332,54 +344,54 @@ class Resolver:
                     logger.warning(f"Removing stale path from manifest: {path_str}")
                 else:
                     root_paths.append((p, obj_type))
-        
+
         # Schema 2.0.0: remote.repos contains repo URLs
         for url in remote.get("repos", []):
             if url not in self.manifest_remotes:
                 self.manifest_remotes.append(url)
-        
+
         # Remove stale paths from manifest
         if stale_paths:
             self._remove_stale_paths(stale_paths)
-        
+
         total = len(root_paths)
         current = 0
-        
+
         # Resolve each root object
         for path, obj_type_str in root_paths:
             current += 1
-            
+
             if progress_callback:
                 progress_callback(f"Resolving {path.name}", current, total)
-            
+
             self._resolve_object(path, ObjectType(obj_type_str.rstrip("s")))
-        
+
         # Inherit properties from parents to children
         self._apply_inheritance()
-        
+
         # Match overlays to base objects
         self._match_overlays()
-        
+
         # Build dependency DAG and detect conflicts
         self._build_dependency_graph()
         self._detect_conflicts()
-        
+
         if self.conflicts:
             conflict_msgs = [repr(c) for c in self.conflicts]
             logger.warning(f"Dependency conflicts detected: {conflict_msgs}")
-        
+
         # Check for deprecated objects
         self._check_deprecations()
-        
+
         # Check for missing peer dependencies
         self._check_peer_dependencies()
-        
+
         if progress_callback:
             progress_callback("Complete", total, total)
-        
+
         logger.info(f"Resolved {len(self.objects)} objects")
         return self.objects
-    
+
     # ------------------------------------------------------------------
     # Remote repo crawling
     # ------------------------------------------------------------------
@@ -387,12 +399,12 @@ class Resolver:
     def _crawl_remote_repos(self, urls: list[str]) -> dict[str, dict]:
         """
         Crawl remote repo URLs transitively, returning {url: repo_data}.
-        
+
         Follows legacy top-level ``repos`` lists, Schema 2.0.0
         ``remote.repos`` (absolute URLs to other repos), and Schema 2.0.0
         ``children.*`` (paths relative to the repo JSON's own location).
         Already-visited URLs are skipped to avoid infinite loops.
-        
+
         Uses wave-based parallel fetching for speed.
         """
         import httpx
@@ -400,15 +412,17 @@ class Resolver:
 
         visited: dict[str, dict] = {}
         wave = list(urls)
-        
+
         with httpx.Client(timeout=10) as client:
-            
+
             def _fetch(url: str) -> tuple[str, Optional[dict], Optional[str]]:
                 try:
                     resp = client.get(url, follow_redirects=True)
-                    if resp.status_code != 200 or 'json' not in resp.headers.get('content-type', ''):
-                        if not url.endswith('.json'):
-                            alt_url = url.rstrip('/') + '/repo.json'
+                    if resp.status_code != 200 or "json" not in resp.headers.get(
+                        "content-type", ""
+                    ):
+                        if not url.endswith(".json"):
+                            alt_url = url.rstrip("/") + "/repo.json"
                             alt_resp = client.get(alt_url, follow_redirects=True)
                             if alt_resp.status_code == 200:
                                 resp = alt_resp
@@ -416,17 +430,17 @@ class Resolver:
                     return (url, resp.json(), None)
                 except Exception as e:
                     return (url, None, str(e))
-            
+
             while wave:
                 # De-duplicate against already-visited
                 pending = [u for u in wave if u not in visited]
                 if not pending:
                     break
-                
+
                 # Mark all as visited (reserve slots)
                 for u in pending:
                     visited[u] = {}
-                
+
                 # Parallel fetch
                 url_to_result: dict[str, tuple[Optional[dict], Optional[str]]] = {}
                 with ThreadPoolExecutor(max_workers=min(32, len(pending))) as executor:
@@ -434,7 +448,7 @@ class Resolver:
                     for future in as_completed(futures):
                         url, data, error = future.result()
                         url_to_result[url] = (data, error)
-                
+
                 # Process results, discover next wave
                 next_wave: list[str] = []
                 for url in pending:
@@ -443,9 +457,9 @@ class Resolver:
                         logger.warning(f"Failed to crawl remote repo {url}: {error}")
                         visited[url] = {"repo_name": url, "_error": error or "unknown"}
                         continue
-                    
+
                     visited[url] = data
-                    
+
                     # Legacy: top-level repos list
                     for sub_url in data.get("repos", []):
                         if isinstance(sub_url, str) and sub_url not in visited:
@@ -453,7 +467,14 @@ class Resolver:
                     # Schema 2.0.0: remote.*
                     remote = data.get("remote", {})
                     if isinstance(remote, dict):
-                        for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                        for key in [
+                            "engines",
+                            "projects",
+                            "gems",
+                            "templates",
+                            "repos",
+                            "overlays",
+                        ]:
                             for sub_url in remote.get(key, []):
                                 if isinstance(sub_url, str) and sub_url not in visited:
                                     next_wave.append(sub_url)
@@ -461,36 +482,47 @@ class Resolver:
                     children = data.get("children", {})
                     if isinstance(children, dict):
                         base_dir = url.rsplit("/", 1)[0] + "/"
-                        for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
+                        for key in [
+                            "engines",
+                            "projects",
+                            "gems",
+                            "templates",
+                            "repos",
+                            "overlays",
+                        ]:
                             for rel in children.get(key, []):
                                 if not isinstance(rel, str) or not rel:
                                     continue
-                                child_url = rel if rel.startswith(("http://", "https://")) else base_dir + rel.lstrip("/")
+                                child_url = (
+                                    rel
+                                    if rel.startswith(("http://", "https://"))
+                                    else base_dir + rel.lstrip("/")
+                                )
                                 if child_url not in visited:
                                     next_wave.append(child_url)
                     logger.info(f"Crawled remote repo: {url}")
-                
+
                 wave = next_wave
-        
+
         return visited
 
     def _build_remote_objects(self) -> dict[str, dict]:
         """
         Build resolved-object-style entries for all crawled remote repos.
-        
+
         Each remote repo becomes a first-class object in the cache with:
         - type: "repo"
         - children: gems/templates/projects/engines advertised by the repo
         - remotes: sub-repos listed in the repo
-        
+
         Also creates entries for remotely-advertised objects (gems, etc.)
         that aren't locally resolved, so drill-down can display them.
-        
+
         Returns:
             Dict of object_name -> resolved object dict
         """
         remote_objects: dict[str, dict] = {}
-        
+
         # First pass: index every successfully crawled document by URL so
         # 2.0.0 children (fetched as their own documents) resolve to
         # canonical names.
@@ -508,12 +540,12 @@ class Resolver:
                 name = data.get("repo_name", url)
                 version = ""
             url_index[url] = {"name": name, "type": obj_type.value, "version": version}
-        
+
         def _resolve_child_url(base_url: str, rel: str) -> str:
             if rel.startswith(("http://", "https://")):
                 return rel
             return base_url.rsplit("/", 1)[0] + "/" + rel.lstrip("/")
-        
+
         for url, data in self._crawled_remotes.items():
             if data.get("_error"):
                 repo_name = url
@@ -528,15 +560,17 @@ class Resolver:
                     "display_metadata": {"summary": f"Error: {data['_error']}"},
                 }
                 continue
-            
+
             idx = url_index[url]
             obj_name = idx["name"]
-            
+
             # Non-repo documents (2.0.0 children fetched during the crawl):
             # surface as remote objects for drill-down.
             if idx["type"] != "repo":
                 if obj_name not in remote_objects and obj_name not in self.objects:
-                    header = data.get(idx["type"], {}) if isinstance(data.get(idx["type"]), dict) else {}
+                    header = (
+                        data.get(idx["type"], {}) if isinstance(data.get(idx["type"]), dict) else {}
+                    )
                     dm = {}
                     if header.get("display_name"):
                         dm["display_name"] = header["display_name"]
@@ -553,12 +587,12 @@ class Resolver:
                         "display_metadata": dm or None,
                     }
                 continue
-            
+
             repo_name = obj_name
-            
+
             # Collect children
             children: list[str] = []
-            
+
             # Schema 2.0.0: children.* relative paths -> crawled documents
             children_2 = data.get("children", {})
             if isinstance(children_2, dict):
@@ -570,7 +604,7 @@ class Resolver:
                         child_idx = url_index.get(child_url)
                         if child_idx:
                             children.append(child_idx["name"])
-            
+
             for obj_type in ["engines", "projects", "gems", "templates"]:
                 # Standard format: list of URLs
                 for obj_url in data.get(obj_type, []):
@@ -579,8 +613,13 @@ class Resolver:
                         # the filename is generic (gem.json, template.json, etc.)
                         parts = obj_url.rstrip("/").split("/")
                         filename = parts[-1] if parts else obj_url
-                        generic = {"gem.json", "template.json", "project.json",
-                                   "engine.json", "repo.json"}
+                        generic = {
+                            "gem.json",
+                            "template.json",
+                            "project.json",
+                            "engine.json",
+                            "repo.json",
+                        }
                         if filename.lower() in generic and len(parts) >= 2:
                             child_name = parts[-2]
                         else:
@@ -598,7 +637,7 @@ class Resolver:
                                 "repo": repo_name,
                             }
                         children.append(child_name)
-                
+
                 # Legacy format: gems_data, projects_data, etc.
                 for item in data.get(f"{obj_type}_data", []):
                     if isinstance(item, dict):
@@ -608,7 +647,11 @@ class Resolver:
                             or item.get("name")
                             or item.get("display_name", "")
                         )
-                        if child_name and child_name not in remote_objects and child_name not in self.objects:
+                        if (
+                            child_name
+                            and child_name not in remote_objects
+                            and child_name not in self.objects
+                        ):
                             remote_objects[child_name] = {
                                 "url": item.get("repo_uri", item.get("origin_uri", "")),
                                 "type": type_singular,
@@ -621,11 +664,13 @@ class Resolver:
                                 "display_metadata": {
                                     "display_name": item.get("display_name", ""),
                                     "summary": item.get("summary", ""),
-                                } if item.get("display_name") or item.get("summary") else None,
+                                }
+                                if item.get("display_name") or item.get("summary")
+                                else None,
                             }
                         if child_name:
                             children.append(child_name)
-            
+
             # Collect remotes: repos this repo itself advertises
             remotes: list[str] = []
             for sub_url in data.get("repos", []):
@@ -642,11 +687,11 @@ class Resolver:
                     rname = sub_idx["name"] if sub_idx else sub_url
                     if rname not in remotes:
                         remotes.append(rname)
-            
+
             repo_header = data.get("repo", {}) if isinstance(data.get("repo"), dict) else {}
             display_name = repo_header.get("display_name") or data.get("repo_name", "")
             summary = repo_header.get("description") or data.get("summary", "")
-            
+
             remote_objects[repo_name] = {
                 "url": url,
                 "type": "repo",
@@ -658,15 +703,17 @@ class Resolver:
                 "display_metadata": {
                     "summary": summary,
                     "display_name": display_name,
-                } if (summary or display_name) else None,
+                }
+                if (summary or display_name)
+                else None,
             }
-        
+
         return remote_objects
 
     def get_missing_dependencies(self) -> list[tuple[str, ObjectNameVersion]]:
         """
         Find all dependencies that reference objects not present in the manifest.
-        
+
         Returns:
             List of (requirer_name, dep_spec) tuples for each missing dep
         """
@@ -755,9 +802,7 @@ class Resolver:
             for candidate in candidates:
                 if candidate.name == dep_name:
                     if dep_spec.matches(candidate.version):
-                        if best is None or store._is_newer_version(
-                            candidate.version, best.version
-                        ):
+                        if best is None or store._is_newer_version(candidate.version, best.version):
                             best = candidate
 
             if best:
@@ -766,9 +811,7 @@ class Resolver:
                 not_found.append(dep_name)
 
         if not install_plan and not_found:
-            logger.warning(
-                f"Could not find remote objects for: {', '.join(not_found)}"
-            )
+            logger.warning(f"Could not find remote objects for: {', '.join(not_found)}")
             return []
 
         # Build the install summary
@@ -789,10 +832,7 @@ class Resolver:
             raise ResolverError(
                 f"Missing {len(install_plan)} dependencies. "
                 f"Use --yes to auto-install or --dry-run to preview.\n"
-                + "\n".join(
-                    f"  {p['name']}@{p['version']} ({p['type']})"
-                    for p in plan_summary
-                )
+                + "\n".join(f"  {p['name']}@{p['version']} ({p['type']})" for p in plan_summary)
             )
 
         # Actually download and register each missing dep
@@ -801,9 +841,7 @@ class Resolver:
 
         for idx, (dep_spec, remote) in enumerate(install_plan, 1):
             if progress_callback:
-                progress_callback(
-                    f"Installing {remote.name}@{remote.version}", idx, total
-                )
+                progress_callback(f"Installing {remote.name}@{remote.version}", idx, total)
 
             target_path = get_default_path_for_type(remote.object_type)
 
@@ -818,13 +856,15 @@ class Resolver:
             # Register in the manifest
             self._add_to_manifest(download_path, remote.object_type)
 
-            installed.append({
-                "name": remote.name,
-                "version": remote.version,
-                "type": remote.object_type.value,
-                "path": str(download_path),
-                "source": remote.effective_source_control_url or remote.download_url or "",
-            })
+            installed.append(
+                {
+                    "name": remote.name,
+                    "version": remote.version,
+                    "type": remote.object_type.value,
+                    "path": str(download_path),
+                    "source": remote.effective_source_control_url or remote.download_url or "",
+                }
+            )
 
         if installed:
             logger.info(f"Auto-installed {len(installed)} dependencies")
@@ -853,7 +893,7 @@ class Resolver:
             with open(self.manifest_path, "w") as f:
                 _json.dump(manifest_data, f, indent=2)
             logger.info(f"Registered {obj_type.value}: {obj_path.name}")
-    
+
     def _parse_object_dependencies(
         self,
         resolved: "ResolvedObject",
@@ -896,7 +936,9 @@ class Resolver:
                     resolved.dependencies.append(ObjectNameVersion(dep))
 
         # Parse optional_dependent (nice-to-have deps, not required)
-        optional_dep = type_data.get("optional_dependent", {}) if isinstance(type_data, dict) else {}
+        optional_dep = (
+            type_data.get("optional_dependent", {}) if isinstance(type_data, dict) else {}
+        )
         if not optional_dep:
             optional_dep = data.get("optional_dependent", {})
         if isinstance(optional_dep, dict):
@@ -920,14 +962,14 @@ class Resolver:
         if not path.exists():
             logger.warning(f"Object path does not exist: {path}")
             return None
-        
+
         # Handle paths pointing directly to JSON files
-        if path.is_file() and path.suffix == '.json':
+        if path.is_file() and path.suffix == ".json":
             original_json_path = path
-            is_versioned = '.2-0-0.' in path.name or '-2-0-0.' in path.name
+            is_versioned = ".2-0-0." in path.name or "-2-0-0." in path.name
             # Use parent directory as the object root
             path = path.parent
-            
+
             # If legacy file, check if versioned file exists and prefer it
             if not is_versioned:
                 try:
@@ -956,11 +998,11 @@ class Resolver:
                         break
                     except FileNotFoundError:
                         continue
-                
+
                 if json_path is None:
                     logger.warning(f"No object JSON found in: {path}")
                     return None
-        
+
         # Load JSON
         try:
             with open(json_path, "r") as f:
@@ -969,7 +1011,7 @@ class Resolver:
             file_hash = compute_file_hash(json_path)
             if file_hash:
                 self.file_hashes[json_path.as_posix()] = file_hash
-            
+
             # Also hash the legacy file if we're using the versioned one
             # This detects if someone edits the legacy file
             if is_versioned:
@@ -982,7 +1024,7 @@ class Resolver:
         except (json.JSONDecodeError, IOError) as e:
             logger.warning(f"Failed to load {json_path}: {e}")
             return None
-        
+
         # If legacy file, check if upgrade is needed
         if not is_versioned and needs_upgrade(data):
             logger.info(f"Upgrading legacy schema in {json_path}")
@@ -993,7 +1035,7 @@ class Resolver:
                 # skip it and keep going (e.g. an empty/invalid json)
                 logger.warning(f"Skipping unupgradeable object {json_path}: {e}")
                 return None
-            
+
             # Write to versioned file (legacy file remains untouched)
             versioned_filename = get_versioned_object_json_filename(expected_type.value, "2.0.0")
             versioned_path = path / versioned_filename
@@ -1005,11 +1047,11 @@ class Resolver:
             except IOError as e:
                 logger.warning(f"Failed to write versioned file {versioned_path}: {e}")
                 # Continue with upgraded data in memory even if write failed
-        
+
         # Get name and version
         name = get_object_name(data)
         version = get_object_version(data)
-        
+
         # Enrich empty template type by inferring from name
         if expected_type == ObjectType.TEMPLATE:
             tpl_header = data.get("template", {})
@@ -1021,11 +1063,11 @@ class Resolver:
                         inferred = kw
                         break
                 tpl_header["type"] = inferred
-        
+
         if not name:
             logger.warning(f"No name in {json_path}")
             return None
-        
+
         # Check if already resolved (can happen when object is both a root path
         # and a child of another object, or when multiple versions of the
         # same object exist on disk, e.g. PhysX 4.x and 5.x directories).
@@ -1038,6 +1080,7 @@ class Resolver:
             # (latest-compatible strategy, consistent with the solver)
             try:
                 from packaging.version import Version
+
                 is_newer = Version(version) > Version(existing.version)
             except Exception:
                 is_newer = False
@@ -1058,15 +1101,12 @@ class Resolver:
                     self._parse_object_dependencies(alternate, data, expected_type)
                     self.objects_all.setdefault(name, {})[version] = alternate
                 return existing
-            logger.debug(
-                f"Replacing {name}@{existing.version} with newer "
-                f"{version} at {path}"
-            )
+            logger.debug(f"Replacing {name}@{existing.version} with newer {version} at {path}")
             # fall through to create the newer object, which will
             # overwrite the registry entries below
             # (the existing object stays available in objects_all)
             self.objects_all.setdefault(name, {})[existing.version] = existing
-        
+
         # Create resolved object
         resolved = ResolvedObject(
             path=path,
@@ -1075,14 +1115,14 @@ class Resolver:
             version=version,
             data=data,
         )
-        
+
         # Parse dependencies
         self._parse_object_dependencies(resolved, data, expected_type)
-        
+
         # Store in appropriate collection
         self.objects[name] = resolved
         self.objects_all.setdefault(name, {})[version] = resolved
-        
+
         type_dict = {
             ObjectType.ENGINE: self.engines,
             ObjectType.PROJECT: self.projects,
@@ -1091,10 +1131,10 @@ class Resolver:
             ObjectType.REPO: self.repos,
             ObjectType.OVERLAY: self.overlays,
         }.get(expected_type)
-        
+
         if type_dict is not None:
             type_dict[name] = resolved
-        
+
         # Resolve children
         # Schema 2.0.0: children is a dict with type keys, paths include JSON filename
         # e.g., {"gems": ["Gems/MyGem/gem.json"], "projects": ["MyProject/project.json"]}
@@ -1103,14 +1143,14 @@ class Resolver:
             for child_type_str, child_paths in children.items():
                 if not isinstance(child_paths, list):
                     continue
-                
+
                 # Skip unknown object types (e.g., "restricted" from legacy O3DE)
                 try:
                     child_type = ObjectType(child_type_str.rstrip("s"))
                 except ValueError:
                     logger.debug(f"Skipping unknown object type: {child_type_str}")
                     continue
-                
+
                 for child_rel_path in child_paths:
                     # Schema 2.0.0 paths include JSON filename, extract directory
                     rel_path = Path(child_rel_path)
@@ -1124,7 +1164,7 @@ class Resolver:
                     if child_resolved:
                         child_resolved.parent = resolved
                         resolved.children.append(child_resolved)
-        
+
         # Legacy format: external_subdirectories is a list of paths
         # These SHOULD be CMake-only directories (not O3DE objects), but people often
         # mistakenly put gem paths here. We try to detect actual O3DE objects.
@@ -1134,7 +1174,7 @@ class Resolver:
                 child_path = path / child_rel_path
                 if not child_path.exists():
                     continue
-                
+
                 # Try to detect O3DE object type from existing JSON
                 detected_type = None
                 for type_name in ["gem", "project", "engine", "template"]:
@@ -1144,7 +1184,7 @@ class Resolver:
                         break
                     except FileNotFoundError:
                         continue
-                
+
                 if detected_type:
                     # It's an O3DE object (probably a gem mistakenly in external_subdirectories)
                     child_resolved = self._resolve_object(child_path, detected_type)
@@ -1155,9 +1195,9 @@ class Resolver:
                     # True external subdirectory - just CMakeLists.txt, not an O3DE object
                     # Skip for object resolution (CMake will pick it up during build)
                     logger.debug(f"Skipping non-O3DE external subdirectory: {child_path}")
-        
+
         return resolved
-    
+
     # Type-key → expected JSON filename inside the registered directory
     _TYPE_JSON = {
         "engines": "engine.json",
@@ -1204,7 +1244,7 @@ class Resolver:
                     obj_dir = obj_dir.parent
 
                 if not obj_dir.is_dir():
-                    keep.append(p)   # leave stale-path removal to existing code
+                    keep.append(p)  # leave stale-path removal to existing code
                     continue
 
                 if (obj_dir / expected_json).exists():
@@ -1222,8 +1262,7 @@ class Resolver:
                         if p not in correct_list:
                             correct_list.append(p)
                         logger.warning(
-                            f"Moved {p} from {type_key} to {correct_key} "
-                            f"(found {correct_json})"
+                            f"Moved {p} from {type_key} to {correct_key} (found {correct_json})"
                         )
                         dirty = True
                         moved = True
@@ -1243,44 +1282,44 @@ class Resolver:
     def _remove_stale_paths(self, stale_paths: list[tuple[str, str]]) -> None:
         """
         Remove stale paths from the manifest file.
-        
+
         Args:
             stale_paths: List of (path_str, obj_type) tuples to remove
         """
         if not stale_paths or not self.manifest_path.exists():
             return
-        
+
         try:
             with open(self.manifest_path, "r") as f:
                 manifest = json.load(f)
-            
+
             local = manifest.get("local", {})
             modified = False
-            
+
             for path_str, obj_type in stale_paths:
                 type_list = local.get(obj_type, [])
                 if path_str in type_list:
                     type_list.remove(path_str)
                     modified = True
                     logger.info(f"Removed stale {obj_type.rstrip('s')}: {path_str}")
-            
+
             if modified:
                 with open(self.manifest_path, "w") as f:
                     json.dump(manifest, f, indent=2)
                 logger.info(f"Updated manifest: {self.manifest_path}")
         except Exception as e:
             logger.warning(f"Failed to remove stale paths from manifest: {e}")
-    
+
     def _match_overlays(self) -> None:
         """Match overlays to their base objects."""
         for overlay in self.overlays.values():
             extends = overlay.data.get("extends", "")
             if not extends:
                 continue
-            
+
             # Parse version constraint from extends
             extends_spec = ObjectNameVersion(extends)
-            
+
             # Find matching base object
             base = self.objects.get(extends_spec.name)
             if base:
@@ -1294,32 +1333,32 @@ class Resolver:
                     )
             else:
                 logger.warning(f"Overlay {overlay.name} extends unknown object: {extends}")
-    
+
     def _build_dependency_graph(self) -> None:
         """
         Build the full dependency DAG with transitive dependencies.
-        
+
         For each object, compute the full list of transitive dependencies
         (direct deps + deps of deps, ...) and pin them with resolved versions.
         """
         self.dependency_graph = {}
         self.locked_dependencies = {}
-        
+
         for name, obj in self.objects.items():
             # Walk the full transitive dependency tree
             visited: set[str] = set()
             pinned: list[tuple[str, str]] = []
-            
+
             self._walk_dependencies(obj, visited, pinned)
-            
+
             self.dependency_graph[name] = pinned
-            
+
             # Build locked deps entry (pinned transitive versions)
             if pinned:
                 self.locked_dependencies[name] = {
                     dep_name: dep_version for dep_name, dep_version in pinned
                 }
-    
+
     def _walk_dependencies(
         self,
         obj: ResolvedObject,
@@ -1331,7 +1370,7 @@ class Resolver:
             if dep_spec.name in visited:
                 continue
             visited.add(dep_spec.name)
-            
+
             # Find matching resolved object
             candidate = self.objects.get(dep_spec.name)
             if candidate and dep_spec.matches(candidate.version):
@@ -1350,58 +1389,60 @@ class Resolver:
             if candidate and dep_spec.matches(candidate.version):
                 pinned.append((candidate.name, candidate.version))
                 self._walk_dependencies(candidate, visited, pinned)
-    
+
     def _detect_conflicts(self) -> None:
         """
         Detect version conflicts in the dependency graph.
-        
+
         A conflict occurs when two objects require different incompatible
         versions of the same dependency (e.g., A wants X>=2.0.0 and B wants X<2.0.0).
         """
         self.conflicts = []
-        
+
         # Collect all constraints per dependency: dep_name -> [(requirer, spec)]
         all_constraints: dict[str, list[tuple[str, ObjectNameVersion]]] = {}
-        
+
         for name, obj in self.objects.items():
             for dep_spec in obj.dependencies:
                 if dep_spec.name not in all_constraints:
                     all_constraints[dep_spec.name] = []
                 all_constraints[dep_spec.name].append((name, dep_spec))
-        
+
         # Check each dependency that has multiple requirers
         for dep_name, constraints in all_constraints.items():
             if len(constraints) < 2:
                 continue
-            
+
             resolved = self.objects.get(dep_name)
             resolved_version = resolved.version if resolved else None
-            
+
             # Check all pairs for incompatibility
             for i in range(len(constraints)):
                 for j in range(i + 1, len(constraints)):
                     requirer_a, spec_a = constraints[i]
                     requirer_b, spec_b = constraints[j]
-                    
+
                     # Both must have version constraints to conflict
                     if not spec_a.specifier and not spec_b.specifier:
                         continue
-                    
+
                     # Check if there's any version that satisfies both
                     if resolved_version:
                         a_satisfied = spec_a.matches(resolved_version)
                         b_satisfied = spec_b.matches(resolved_version)
-                        
+
                         if not (a_satisfied and b_satisfied):
-                            self.conflicts.append(DependencyConflict(
-                                dependency_name=dep_name,
-                                requirer_a=requirer_a,
-                                constraint_a=str(spec_a.specifier) or "*",
-                                requirer_b=requirer_b,
-                                constraint_b=str(spec_b.specifier) or "*",
-                                resolved_version=resolved_version,
-                            ))
-    
+                            self.conflicts.append(
+                                DependencyConflict(
+                                    dependency_name=dep_name,
+                                    requirer_a=requirer_a,
+                                    constraint_a=str(spec_a.specifier) or "*",
+                                    requirer_b=requirer_b,
+                                    constraint_b=str(spec_b.specifier) or "*",
+                                    resolved_version=resolved_version,
+                                )
+                            )
+
     def _check_deprecations(self) -> None:
         """Emit warnings for any resolved objects with deprecated status."""
         for name, obj in self.objects.items():
@@ -1409,11 +1450,11 @@ class Resolver:
             type_key = obj.object_type.value
             type_data = obj.data.get(type_key, {})
             deprecated = type_data.get("deprecated")
-            
-            # Legacy: deprecated at root level  
+
+            # Legacy: deprecated at root level
             if not deprecated:
                 deprecated = obj.data.get("deprecated")
-            
+
             if deprecated:
                 if isinstance(deprecated, dict):
                     msg = deprecated.get("message", "This object is deprecated.")
@@ -1424,7 +1465,7 @@ class Resolver:
                 else:
                     warning = f"DEPRECATED: {name} — {deprecated}"
                 logger.warning(warning)
-    
+
     def _check_peer_dependencies(self) -> None:
         """Emit warnings for missing peer dependencies."""
         for name, obj in self.objects.items():
@@ -1440,7 +1481,7 @@ class Resolver:
                         f"PEER DEPENDENCY: {name} requires peer '{peer_spec}' "
                         f"but found version {candidate.version}"
                     )
-    
+
     # ------------------------------------------------------------------
     # Property inheritance
     # ------------------------------------------------------------------
@@ -1492,9 +1533,7 @@ class Resolver:
                     # rather than the relay ancestor.
                     source = ancestor.inherited_from.get(prop, ancestor.name)
                     obj.inherited_from[prop] = source
-                    logger.debug(
-                        f"Inherited '{prop}' for {obj.name} from {source}"
-                    )
+                    logger.debug(f"Inherited '{prop}' for {obj.name} from {source}")
                     break
                 ancestor = ancestor.parent
 
@@ -1518,6 +1557,7 @@ class Resolver:
         another.
         """
         import copy
+
         return copy.deepcopy(obj.data.get(prop))
 
     def get_dependencies_for(self, obj_name: str) -> list[ResolvedObject]:
@@ -1525,7 +1565,7 @@ class Resolver:
         obj = self.objects.get(obj_name)
         if not obj:
             return []
-        
+
         resolved_deps = []
         for dep_spec in obj.dependencies:
             # Find matching object
@@ -1534,9 +1574,9 @@ class Resolver:
                     if dep_spec.matches(candidate.version):
                         resolved_deps.append(candidate)
                         break
-        
+
         return resolved_deps
-    
+
     def get_objects_for_layout(
         self,
         root_name: str,
@@ -1544,51 +1584,51 @@ class Resolver:
     ) -> tuple[list[ResolvedObject], list[ResolvedObject]]:
         """
         Get all objects needed for a layout.
-        
+
         Args:
             root_name: Name of root object (engine or project)
             include_overlays: Include matching overlays
-        
+
         Returns:
             Tuple of (objects, overlays)
         """
         root = self.objects.get(root_name)
         if not root:
             raise ResolverError(f"Object not found: {root_name}")
-        
+
         # Collect all dependencies recursively
         visited = set()
         objects = []
-        
+
         def collect(obj: ResolvedObject):
             if obj.name in visited:
                 return
             visited.add(obj.name)
             objects.append(obj)
-            
+
             for dep in self.get_dependencies_for(obj.name):
                 collect(dep)
-            
+
             for child in obj.children:
                 collect(child)
-        
+
         collect(root)
-        
+
         # Collect overlays
         overlays = []
         if include_overlays:
             for obj in objects:
                 overlays.extend(obj.overlays)
-            
+
             # Sort by precedence
             overlays.sort(key=lambda o: o.data.get("precedence", 0))
-        
+
         return objects, overlays
-    
+
     def save(self) -> Path:
         """
         Save resolved manifest to resolved_o3de_manifest.json.
-        
+
         Computes and stores:
         - dependents: reverse dependencies (objects that depend on each object)
         - display_metadata: display_name, summary, icon_path from object data
@@ -1596,16 +1636,16 @@ class Resolver:
         - parent: reference to parent object that contains this one
         - locked_dependencies: pinned transitive dependency versions
         - conflicts: detected version conflicts (if any)
-        
+
         In dry-run mode, computes everything but skips writing to disk.
-        
+
         Returns:
             Path to saved file (even in dry-run mode)
         """
         # Use default data as-is; we do NOT convert restricteds_path to overlays_path
         # because restricted and overlay are different concepts
         default_data = dict(self.manifest_data.get("default", {}))
-        
+
         # First pass: compute dependents by inverting dependencies
         dependents_map: dict[str, list[str]] = {}  # object_name -> list of names that depend on it
         for name, obj in self.objects.items():
@@ -1617,22 +1657,18 @@ class Resolver:
                         dependents_map[dep_name] = []
                     if name not in dependents_map[dep_name]:
                         dependents_map[dep_name].append(name)
-        
+
         resolved_data = {
             "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-resolved-manifest-2.0.0.json",
             "$schemaVersion": "2.0.0",
             "resolved_at": __import__("datetime").datetime.now().isoformat(),
             "manifest_path": self.manifest_path.as_posix(),
-            
             # Defaults from manifest (normalized)
             "default": default_data,
-            
             # File hashes for change detection
             "file_hashes": self.file_hashes,
-            
             # All resolved objects with full paths
             "objects": {},
-            
             # By-type lists for convenience
             "engines": [],
             "projects": [],
@@ -1641,7 +1677,7 @@ class Resolver:
             "repos": [],
             "overlays": [],
         }
-        
+
         # Crawl all remote repo URLs discovered from manifest and objects
         all_remote_urls: set[str] = set(self.manifest_remotes)
         for name, obj in self.objects.items():
@@ -1649,13 +1685,13 @@ class Resolver:
             if isinstance(obj_remote, dict):
                 for url in obj_remote.get("repos", []):
                     all_remote_urls.add(url)
-        
+
         # Pre-crawl and build remote objects
         if all_remote_urls:
             crawled = self._crawl_remote_repos(list(all_remote_urls))
             self._crawled_remotes.update(crawled)
         remote_objects = self._build_remote_objects()
-        
+
         # Build URL->repo_name mapping for resolving object remotes
         url_to_name: dict[str, str] = {}
         for url, data in self._crawled_remotes.items():
@@ -1666,25 +1702,25 @@ class Resolver:
                     url_to_name[url] = data.get("repo_name", url)
             else:
                 url_to_name[url] = url
-        
+
         for name, obj in self.objects.items():
             # Extract display metadata from object data
             # Schema 2.0.0: display_name/description are inside the type dict (e.g., gem.display_name)
             # Legacy: display_name/summary at root level
             display_metadata = {}
-            
+
             type_key = obj.object_type.value  # "gem", "engine", etc.
             type_data = obj.data.get(type_key, {})
-            
+
             # Try Schema 2.0.0 location first, then legacy
             display_name = type_data.get("display_name") or obj.data.get("display_name")
             description = type_data.get("description") or obj.data.get("summary")
-            
+
             if display_name:
                 display_metadata["display_name"] = display_name
             if description:
                 display_metadata["summary"] = description
-            
+
             # Icon: Schema 2.0.0 has icon.relative_path, legacy has icon_path
             icon_data = obj.data.get("icon", {})
             icon_path = icon_data.get("relative_path") if isinstance(icon_data, dict) else None
@@ -1692,7 +1728,7 @@ class Resolver:
                 icon_path = obj.data.get("icon_path")
             if icon_path:
                 display_metadata["icon_path"] = icon_path
-            
+
             # Get git info for cloned repos
             git_info = {}
             remote_url = get_local_git_remote(str(obj.path))
@@ -1701,18 +1737,20 @@ class Resolver:
                 branch = get_local_git_branch(str(obj.path))
                 if branch:
                     git_info["branch"] = branch
-            
+
             # Compute full ancestry chain (immediate parent to root)
             # Each entry has name and path for navigation
             parents = []
             current = obj.parent
             while current:
-                parents.append({
-                    "name": current.name,
-                    "path": current.path.as_posix(),
-                })
+                parents.append(
+                    {
+                        "name": current.name,
+                        "path": current.path.as_posix(),
+                    }
+                )
                 current = current.parent
-            
+
             # Extract releases (version names only for caching)
             releases_list = obj.data.get("releases", [])
             release_versions = []
@@ -1722,7 +1760,7 @@ class Resolver:
                         version = release.get("name") or release.get("version")
                         if version:
                             release_versions.append(version)
-            
+
             resolved_data["objects"][name] = {
                 "path": obj.path.as_posix(),
                 "type": obj.object_type.value,
@@ -1732,9 +1770,9 @@ class Resolver:
                 "optional_dependencies": [str(d) for d in obj.optional_dependencies] or None,
                 "peer_dependencies": [str(d) for d in obj.peer_dependencies] or None,
                 "all_dependencies": [
-                    {"name": dn, "version": dv}
-                    for dn, dv in self.dependency_graph.get(name, [])
-                ] or None,
+                    {"name": dn, "version": dv} for dn, dv in self.dependency_graph.get(name, [])
+                ]
+                or None,
                 "dependents": dependents_map.get(name, []),
                 "overlays": [o.name for o in obj.overlays],
                 "parent": obj.parent.name if obj.parent else None,
@@ -1814,35 +1852,39 @@ class Resolver:
                             queue.append(sub)
                 if all_remote_set:
                     resolved_data["objects"][name]["all_remotes"] = all_remote_set
-            
+
             # Add to type list
             type_key = obj.object_type.value + "s"
             if type_key in resolved_data:
-                resolved_data[type_key].append({
-                    "name": name,
-                    "path": obj.path.as_posix(),
-                    "version": obj.version,
-                })
-        
+                resolved_data[type_key].append(
+                    {
+                        "name": name,
+                        "path": obj.path.as_posix(),
+                        "version": obj.version,
+                    }
+                )
+
         # Add remote objects to the cache (repos and their advertised objects)
         for rname, rdata in remote_objects.items():
             if rname not in resolved_data["objects"]:
                 resolved_data["objects"][rname] = rdata
                 # Add repos to the repos type list
                 if rdata.get("type") == "repo":
-                    resolved_data["repos"].append({
-                        "name": rname,
-                        "url": rdata.get("url", ""),
-                        "version": rdata.get("version", ""),
-                    })
-        
+                    resolved_data["repos"].append(
+                        {
+                            "name": rname,
+                            "url": rdata.get("url", ""),
+                            "version": rdata.get("version", ""),
+                        }
+                    )
+
         # Create manifest root entry — the tree root
         manifest_name = "o3de_manifest"
         # Root children = all root-level objects (no parent)
         root_children = [n for n, o in self.objects.items() if o.parent is None]
         # Root remotes = manifest-level repo names
         root_remotes = [url_to_name.get(u, u) for u in self.manifest_remotes]
-        
+
         # Compute all_children (transitive closure) for manifest root
         root_all_children: list[dict] = []
         ac_seen: set[str] = set()
@@ -1859,7 +1901,7 @@ class Resolver:
                 for cc in cobj.children:
                     if cc.name not in ac_seen:
                         ac_queue.append(cc.name)
-        
+
         # Compute all_remotes for manifest root:
         # Aggregate from manifest's own remotes PLUS all descendants' remotes
         all_obj_remote_names: set[str] = set(root_remotes)
@@ -1867,7 +1909,7 @@ class Resolver:
             obj_remotes = resolved_data["objects"][name].get("remotes", [])
             for rn in obj_remotes:
                 all_obj_remote_names.add(rn)
-        
+
         root_all_remotes: list[dict] = []
         if all_obj_remote_names:
             seen: set[str] = set()
@@ -1891,7 +1933,7 @@ class Resolver:
                 for sub in robj.get("remotes", []):
                     if sub not in seen:
                         queue.append(sub)
-        
+
         resolved_data["manifest_root"] = {
             "name": manifest_name,
             "path": self.manifest_path.as_posix(),
@@ -1900,11 +1942,11 @@ class Resolver:
             "remotes": root_remotes,
             "all_remotes": root_all_remotes if root_all_remotes else None,
         }
-        
+
         # Include locked transitive dependencies for reproducibility
         if self.locked_dependencies:
             resolved_data["locked_dependencies"] = self.locked_dependencies
-        
+
         # Include detected conflicts as warnings
         if self.conflicts:
             resolved_data["conflicts"] = [
@@ -1918,22 +1960,22 @@ class Resolver:
                 }
                 for c in self.conflicts
             ]
-        
+
         if self.dry_run:
             logger.info(f"Dry-run: would save resolved manifest to {self.resolved_path}")
             return self.resolved_path
-        
+
         with open(self.resolved_path, "w") as f:
             json.dump(resolved_data, f, indent=2)
-        
+
         logger.info(f"Saved resolved manifest: {self.resolved_path}")
         return self.resolved_path
-    
+
     def load_resolved(self) -> dict:
         """Load existing resolved manifest."""
         if not self.resolved_path.exists():
             raise ResolverError("No resolved manifest. Run resolve() first.")
-        
+
         with open(self.resolved_path, "r") as f:
             return json.load(f)
 
@@ -1941,44 +1983,44 @@ class Resolver:
 def check_files_changed(resolved_path: Optional[Path] = None) -> tuple[bool, list[str]]:
     """
     Check if any tracked files have changed since last resolution.
-    
+
     Reads the file_hashes from the resolved manifest and compares against
     current file hashes.
-    
+
     Args:
         resolved_path: Path to resolved manifest (default: ~/.o3de/resolved_o3de_manifest.json)
-        
+
     Returns:
         Tuple of (has_changes, list_of_changed_files)
     """
     if resolved_path is None:
         resolved_path = get_resolved_manifest_path()
-    
+
     if not resolved_path.exists():
         return True, ["resolved manifest not found"]
-    
+
     try:
         with open(resolved_path, "r") as f:
             resolved_data = json.load(f)
     except (json.JSONDecodeError, IOError):
         return True, ["failed to read resolved manifest"]
-    
+
     stored_hashes = resolved_data.get("file_hashes", {})
     if not stored_hashes:
         return True, ["no hashes stored"]
-    
+
     changed_files = []
-    
+
     for file_path, stored_hash in stored_hashes.items():
         path = Path(file_path)
         if not path.exists():
             changed_files.append(f"deleted: {file_path}")
             continue
-        
+
         current_hash = compute_file_hash(path)
         if current_hash != stored_hash:
             changed_files.append(file_path)
-    
+
     return bool(changed_files), changed_files
 
 
@@ -1990,22 +2032,22 @@ def resolve_manifest(
 ) -> Resolver:
     """
     Convenience function to resolve the manifest.
-    
+
     Args:
         manifest_path: Path to manifest (default: ~/.o3de/o3de_manifest.json)
         save: Whether to save resolved manifest
         dry_run: If True, resolve but don't write to disk
         progress_callback: Progress callback
-    
+
     Returns:
         Resolver with resolved objects
     """
     resolver = Resolver(manifest_path, dry_run=dry_run)
     resolver.resolve(progress_callback)
-    
+
     if save:
         resolver.save()
-    
+
     return resolver
 
 
@@ -2015,26 +2057,26 @@ def load_resolved_manifest(
 ) -> dict:
     """
     Load the resolved manifest, using cached version if files haven't changed.
-    
+
     This is the recommended way for GUIs and tools to get resolved data - it
     avoids re-resolving when nothing has changed, dramatically improving
     startup time.
-    
+
     The returned dict contains precomputed fields for each object:
     - display_metadata: {display_name, summary, icon_path}
     - git_info: {remote_url, branch}
     - parents: [{name, path}, ...] ancestry chain to root
     - dependents: reverse dependencies
-    
+
     Args:
         force_refresh: If True, re-resolve even if files haven't changed
         progress_callback: Progress callback for resolution
-        
+
     Returns:
         Dict with resolved manifest data including precomputed fields
     """
     resolved_path = get_resolved_manifest_path()
-    
+
     # Check if we can use cached version
     if not force_refresh and resolved_path.exists():
         has_changes, changed_files = check_files_changed(resolved_path)
@@ -2045,10 +2087,10 @@ def load_resolved_manifest(
                 return json.load(f)
         else:
             logger.info(f"Re-resolving due to {len(changed_files)} changed files")
-    
+
     # Resolve fresh
     resolver = resolve_manifest(progress_callback=progress_callback)
-    
+
     # Return the saved data
     with open(resolved_path, "r") as f:
         return json.load(f)

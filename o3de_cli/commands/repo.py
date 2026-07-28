@@ -88,6 +88,7 @@ def create_repo(name: str, path: str | None, template_name: str | None) -> None:
     import json
 
     from o3de_cli.core.paths import get_default_repos_path
+
     repo_path = Path(path) if path else get_default_repos_path() / name
 
     console.print(f"[bold]Creating repo:[/bold] {name}")
@@ -170,9 +171,7 @@ def register_repo(path_or_url: str, remote: bool) -> None:
     else:
         repo_path = Path(path_or_url).resolve()
         console.print(f"[bold]Registering repo:[/bold] {repo_path}")
-        is_repo = any(
-            (repo_path / f).exists() for f in ["repo.2-0-0.json", "repo.json"]
-        )
+        is_repo = any((repo_path / f).exists() for f in ["repo.2-0-0.json", "repo.json"])
         if not is_repo:
             console.print("[red]No repo JSON found at this path.[/red]")
             raise SystemExit(1)

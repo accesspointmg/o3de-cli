@@ -22,31 +22,32 @@ def engine() -> None:
 def list_engines(as_json: bool) -> None:
     """List all registered engines."""
     from o3de_cli.core.resolver import Resolver
-    
+
     resolver = Resolver()
     resolver.resolve()
     engines = resolver.engines
-    
+
     if as_json:
         import json
+
         items = []
         for name, obj in engines.items():
             items.append({"name": obj.name, "version": obj.version, "path": str(obj.path)})
         click.echo(json.dumps(items, indent=2))
         return
-    
+
     if not engines:
         console.print("[yellow]No engines registered.[/yellow]")
         return
-    
+
     table = Table(title="Registered Engines")
     table.add_column("Name", style="cyan")
     table.add_column("Version", style="green")
     table.add_column("Path", style="dim")
-    
+
     for name, obj in engines.items():
         table.add_row(obj.name, obj.version or "unknown", str(obj.path))
-    
+
     console.print(table)
 
 
@@ -64,6 +65,7 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
     import json
 
     from o3de_cli.core.paths import get_default_engines_path
+
     engine_path = Path(path) if path else get_default_engines_path() / name
 
     if not as_json:
@@ -72,6 +74,7 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
     if engine_path.exists():
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error(f"Path already exists: {engine_path}", code="E_EXISTS")
             return
         console.print(f"[red]Path already exists:[/red] {engine_path}")
@@ -124,6 +127,7 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
 
     if as_json:
         from o3de_cli.core.json_output import emit_response
+
         emit_response(data={"name": name, "path": str(engine_path)})
         return
     console.print(f"[green]Created engine:[/green] {engine_path}")
@@ -143,6 +147,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
     if not manifest_path.exists():
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error("No manifest found", code="E_NO_MANIFEST")
             return
         console.print("[red]No manifest found.[/red]")
@@ -159,6 +164,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
         if path_or_url in engines_list:
             if as_json:
                 from o3de_cli.core.json_output import emit_response
+
                 emit_response(data={"engine": path_or_url, "already_registered": True})
                 return
             console.print("[yellow]Remote engine already registered.[/yellow]")
@@ -172,6 +178,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
         if not is_engine:
             if as_json:
                 from o3de_cli.core.json_output import emit_error
+
                 emit_error("No engine JSON found at this path", code="E_NOT_AN_ENGINE")
                 return
             console.print("[red]No engine JSON found at this path.[/red]")
@@ -182,6 +189,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
         if path_str in engines_list:
             if as_json:
                 from o3de_cli.core.json_output import emit_response
+
                 emit_response(data={"engine": path_str, "already_registered": True})
                 return
             console.print("[yellow]Engine already registered.[/yellow]")
@@ -193,6 +201,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
 
     if as_json:
         from o3de_cli.core.json_output import emit_response
+
         emit_response(data={"engine": path_or_url, "registered": True})
         return
     console.print(f"[green]Registered engine:[/green] {path_or_url}")
@@ -211,6 +220,7 @@ def unregister(name: str, remote: bool, as_json: bool) -> None:
     if not manifest_path.exists():
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error("No manifest found", code="E_NO_MANIFEST")
             return
         console.print("[red]No manifest found.[/red]")
@@ -233,6 +243,7 @@ def unregister(name: str, remote: bool, as_json: bool) -> None:
     if len(engines_list) == original_len:
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error(f"Engine '{name}' not found in {section_key} manifest", code="E_NOT_FOUND")
             return
         console.print(f"[yellow]Engine '{name}' not found in {section_key} manifest.[/yellow]")
@@ -246,6 +257,7 @@ def unregister(name: str, remote: bool, as_json: bool) -> None:
 
     if as_json:
         from o3de_cli.core.json_output import emit_response
+
         emit_response(data={"engine": name, "unregistered": True})
         return
     console.print(f"[green]Unregistered {label}:[/green] {name}")

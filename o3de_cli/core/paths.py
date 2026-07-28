@@ -24,14 +24,14 @@ import json
 def to_posix_path(path: Union[Path, str]) -> str:
     """
     Convert a path to POSIX format (forward slashes).
-    
+
     This ensures cross-platform compatibility when writing paths
     to JSON files. Windows paths like C:\\Users\\foo become
     C:/Users/foo.
-    
+
     Args:
         path: A Path object or path string
-        
+
     Returns:
         POSIX-style path string with forward slashes
     """
@@ -90,17 +90,17 @@ def get_pilot_config_path() -> Path:
 def get_manifest_path() -> Path:
     """
     Get path to o3de_manifest.json.
-    
+
     Prefers the versioned Schema 2.0.0 file (o3de_manifest.2-0-0.json)
     over the legacy file (o3de_manifest.json) if it exists.
     """
     dot_o3de = get_dot_o3de_path()
-    
+
     # Check for versioned 2.0.0 manifest first
     versioned = dot_o3de / "o3de_manifest.2-0-0.json"
     if versioned.exists():
         return versioned
-    
+
     # Fall back to legacy
     return dot_o3de / "o3de_manifest.json"
 
@@ -154,7 +154,7 @@ get_default_layouts_path = get_default_workspaces_path
 def get_default_path_for_type(object_type: "ObjectType") -> Path:
     """Get the default install path for an object type."""
     from .models import ObjectType
-    
+
     paths = {
         ObjectType.ENGINE: get_default_engines_path,
         ObjectType.PROJECT: get_default_projects_path,
@@ -175,11 +175,11 @@ def ensure_directory(path: Path) -> Path:
 def initialize_user_directories() -> dict[str, Path]:
     """
     Initialize all user directories on first run.
-    
+
     Creates:
     - ~/.o3de/ and subdirectories
     - ~/O3DE/ and subdirectories
-    
+
     Returns dict of created paths.
     """
     paths = {
@@ -191,7 +191,6 @@ def initialize_user_directories() -> dict[str, Path]:
         "download": ensure_directory(get_download_path()),
         "third_party": ensure_directory(get_third_party_path()),
         "pilot_config_dir": ensure_directory(get_pilot_config_path().parent),
-        
         # ~/O3DE structure
         "o3de": ensure_directory(get_o3de_path()),
         "engines": ensure_directory(get_default_engines_path()),
@@ -202,7 +201,7 @@ def initialize_user_directories() -> dict[str, Path]:
         "overlays": ensure_directory(get_default_overlays_path()),
         "workspaces": ensure_directory(get_default_workspaces_path()),
     }
-    
+
     # Create default manifest if it doesn't exist
     manifest_path = get_manifest_path()
     if not manifest_path.exists():
@@ -210,24 +209,22 @@ def initialize_user_directories() -> dict[str, Path]:
         with open(manifest_path, "w") as f:
             json.dump(default_manifest, f, indent=4)
         paths["manifest"] = manifest_path
-    
+
     return paths
 
 
 def get_default_manifest_data() -> dict:
     """
     Get default manifest data for new users.
-    
+
     Schema 2.0.0 format.
     """
     user = os.environ.get("USER", os.environ.get("USERNAME", "user"))
-    
+
     return {
         "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
         "$schemaVersion": "2.0.0",
-        "o3de_manifest": {
-            "name": f"me.home.{user}.manifest"
-        },
+        "o3de_manifest": {"name": f"me.home.{user}.manifest"},
         "default": {
             "engines_path": get_default_engines_path().as_posix(),
             "projects_path": get_default_projects_path().as_posix(),
@@ -255,7 +252,7 @@ def get_default_manifest_data() -> dict:
                 "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json"
             ],
             "overlays": [],
-        }
+        },
     }
 
 
@@ -267,7 +264,7 @@ def is_first_run() -> bool:
 def get_object_json_filename(object_type: str) -> str:
     """
     Get the JSON filename for an object type.
-    
+
     engine -> engine.json
     project -> project.json
     gem -> gem.json
@@ -281,9 +278,9 @@ def get_object_json_filename(object_type: str) -> str:
 def get_versioned_object_json_filename(object_type: str, version: str = "2.0.0") -> str:
     """
     Get the versioned JSON filename for an object type.
-    
+
     The versioned file uses dashes instead of dots in the version.
-    
+
     engine, 2.0.0 -> engine.2-0-0.json
     project, 2.0.0 -> project.2-0-0.json
     """
@@ -294,32 +291,32 @@ def get_versioned_object_json_filename(object_type: str, version: str = "2.0.0")
 def find_object_json(path: "Path", object_type: str) -> tuple["Path", bool]:
     """
     Find the best object JSON file in a directory.
-    
+
     Prioritizes versioned 2.0.0 file over legacy file.
-    
+
     Args:
         path: Directory to search
         object_type: Object type (engine, project, gem, etc.)
-    
+
     Returns:
         Tuple of (json_path, is_versioned)
         is_versioned indicates if the 2.0.0 version was found
-    
+
     Raises:
         FileNotFoundError if no suitable JSON file exists
     """
     # First check for versioned 2.0.0 file
     versioned_name = get_versioned_object_json_filename(object_type, "2.0.0")
     versioned_path = path / versioned_name
-    
+
     if versioned_path.exists():
         return (versioned_path, True)
-    
+
     # Fall back to legacy file
     legacy_name = get_object_json_filename(object_type)
     legacy_path = path / legacy_name
-    
+
     if legacy_path.exists():
         return (legacy_path, False)
-    
+
     raise FileNotFoundError(f"No {object_type}.json or {versioned_name} in {path}")

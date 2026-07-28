@@ -37,6 +37,7 @@ SCHEMA_BASE_URL = "https://canonical.o3de.org"
 
 class ObjectType(str, Enum):
     """O3DE object types."""
+
     ENGINE = "engine"
     PROJECT = "project"
     GEM = "gem"
@@ -48,12 +49,14 @@ class ObjectType(str, Enum):
 
 class GemType(str, Enum):
     """Gem content type."""
+
     CODE = "code"
     ASSET = "asset"
 
 
 class EngineType(str, Enum):
     """Engine type."""
+
     FULL = "full"
     SLIM = "slim"
 
@@ -74,6 +77,7 @@ VERSION_SPEC_PATTERN = re.compile(
 
 class Origin(BaseModel):
     """Object origin/ownership information."""
+
     name: str = Field(default="", description="Creator/maintainer name")
     url: Optional[str] = Field(default=None, description="Creator website URL")
     email: Optional[str] = Field(default=None, description="Contact email")
@@ -81,24 +85,28 @@ class Origin(BaseModel):
 
 class License(BaseModel):
     """License information."""
+
     name: str = Field(description="License name (e.g., 'Apache-2.0')")
     url: Optional[str] = Field(default=None, description="License text URL")
 
 
 class Icon(BaseModel):
     """Icon for display in UI."""
+
     relative_path: Optional[str] = Field(default=None, description="Path relative to object root")
     uri: Optional[str] = Field(default=None, description="Remote icon URL")
 
 
 class Documentation(BaseModel):
     """Documentation reference."""
+
     relative_path: Optional[str] = Field(default=None, description="Path relative to object root")
     uri: Optional[str] = Field(default=None, description="Remote documentation URL")
 
 
 class SourceControl(BaseModel):
     """Source control information for cloning."""
+
     uri: str = Field(description="Git clone URL")
     branch: Optional[str] = Field(default=None, description="Default branch")
     tag: Optional[str] = Field(default=None, description="Specific tag")
@@ -107,43 +115,64 @@ class SourceControl(BaseModel):
 
 class Deprecated(BaseModel):
     """Marks an object version as deprecated."""
+
     message: str = Field(description="Human-readable deprecation reason")
-    replacement: Optional[str] = Field(default=None, description="Replacement object name with version constraint")
+    replacement: Optional[str] = Field(
+        default=None, description="Replacement object name with version constraint"
+    )
 
 
 class Hooks(BaseModel):
     """Optional scripts that run at key lifecycle points."""
-    post_install: Optional[str] = Field(default=None, description="Script to run after install (relative path)")
-    pre_build: Optional[str] = Field(default=None, description="Script to run before build (relative path)")
+
+    post_install: Optional[str] = Field(
+        default=None, description="Script to run after install (relative path)"
+    )
+    pre_build: Optional[str] = Field(
+        default=None, description="Script to run before build (relative path)"
+    )
 
 
 class Download(BaseModel):
     """Download information for release archives."""
+
     source: Optional[str] = Field(default=None, description="Source code archive URL")
     lfs: Optional[str] = Field(default=None, description="LFS/assets archive URL")
-    relative_path: Optional[str] = Field(default=None, description="Relative path to object root within archive")
+    relative_path: Optional[str] = Field(
+        default=None, description="Relative path to object root within archive"
+    )
     source_sha256: Optional[str] = Field(default=None, description="SHA-256 hash of source archive")
     lfs_sha256: Optional[str] = Field(default=None, description="SHA-256 hash of LFS archive")
 
 
 class Binary(BaseModel):
     """Pre-built binary download option."""
-    platform: str = Field(description="Target platform token <OS>.<ARCH> (e.g. 'Windows.AMD64'); legacy bare-OS tokens accepted")
+
+    platform: str = Field(
+        description="Target platform token <OS>.<ARCH> (e.g. 'Windows.AMD64'); legacy bare-OS tokens accepted"
+    )
     binary: str = Field(description="Binary archive URL")
     sha256: Optional[str] = Field(default=None, description="SHA-256 hash of binary archive")
-    abi: Optional[dict[str, str]] = Field(default=None, description="ABI constraints, e.g. {'glibc': '2.28'} = built against glibc 2.28, runs on >= 2.28")
+    abi: Optional[dict[str, str]] = Field(
+        default=None,
+        description="ABI constraints, e.g. {'glibc': '2.28'} = built against glibc 2.28, runs on >= 2.28",
+    )
 
 
 class Release(BaseModel):
     """A specific release."""
+
     name: str = Field(description="Release name (date, codename, hash, etc.)")
     downloads: list[Download] = Field(default_factory=list, description="Download archives")
     binaries: list[Binary] = Field(default_factory=list, description="Pre-built binaries")
-    source_controls: list[SourceControl] = Field(default_factory=list, description="Source control options")
+    source_controls: list[SourceControl] = Field(
+        default_factory=list, description="Source control options"
+    )
 
 
 class Children(BaseModel):
     """Child objects embedded within this object (relative paths only)."""
+
     engines: list[str] = Field(default_factory=list)
     projects: list[str] = Field(default_factory=list)
     gems: list[str] = Field(default_factory=list)
@@ -154,10 +183,11 @@ class Children(BaseModel):
 
 class Dependencies(BaseModel):
     """Dependencies on other objects with optional version constraints.
-    
+
     Matches the schema 2.0.0 objectNameAndVersionLists definition.
     Each list contains object names with optional version constraints.
     """
+
     engines: list[str] = Field(default_factory=list, description="Engine dependencies")
     projects: list[str] = Field(default_factory=list, description="Project dependencies")
     gems: list[str] = Field(default_factory=list, description="Gem dependencies")
@@ -169,6 +199,7 @@ class Dependencies(BaseModel):
 
 class Remote(BaseModel):
     """Remote object references (URLs to object JSON files)."""
+
     engines: list[str] = Field(default_factory=list)
     projects: list[str] = Field(default_factory=list)
     gems: list[str] = Field(default_factory=list)
@@ -179,20 +210,22 @@ class Remote(BaseModel):
 
 class BaseO3DEObject(BaseModel):
     """Base class for all O3DE objects."""
+
     model_config = ConfigDict(
         populate_by_name=True,
         extra="allow",  # Allow extra fields for forward compatibility
     )
-    
+
     schema_: str = Field(alias="$schema", default="")
     schema_version: str = Field(alias="$schemaVersion", default=SCHEMA_VERSION)
-    
+
     # Path to this object on disk (not persisted, set at load time)
     _path: Optional[Path] = None
 
 
 class EngineHeader(BaseModel):
     """Engine object header (the 'engine' property in engine.json)."""
+
     name: str = Field(description="Reverse domain name: org.o3de.engine.o3de")
     version: str = Field(default="0.0.0")
     display_name: str = Field(default="")
@@ -205,6 +238,7 @@ class EngineHeader(BaseModel):
 
 class Engine(BaseO3DEObject):
     """O3DE Engine object."""
+
     engine: EngineHeader
     origin: Optional[Origin] = None
     licenses: list[License] = Field(default_factory=list)
@@ -224,7 +258,7 @@ class Engine(BaseO3DEObject):
     download: Optional[Download] = None
     releases: list[Release] = Field(default_factory=list)
     remote: Remote = Field(default_factory=Remote)
-    
+
     # Engine-specific
     api_versions: dict[str, str] = Field(default_factory=dict)
     O3DEVersion: str = Field(default="")
@@ -233,6 +267,7 @@ class Engine(BaseO3DEObject):
 
 class ProjectHeader(BaseModel):
     """Project object header."""
+
     name: str = Field(description="Reverse domain name: org.o3de.project.myproject")
     version: str = Field(default="0.0.0")
     display_name: str = Field(default="")
@@ -244,6 +279,7 @@ class ProjectHeader(BaseModel):
 
 class Project(BaseO3DEObject):
     """O3DE Project object."""
+
     project: ProjectHeader
     engine: Optional[str] = Field(default=None, description="Engine dependency with version")
     origin: Optional[Origin] = None
@@ -267,6 +303,7 @@ class Project(BaseO3DEObject):
 
 class GemHeader(BaseModel):
     """Gem object header."""
+
     name: str = Field(description="Reverse domain name: org.o3de.gem.mygem")
     version: str = Field(default="0.0.0")
     display_name: str = Field(default="")
@@ -276,6 +313,7 @@ class GemHeader(BaseModel):
 
 class Gem(BaseO3DEObject):
     """O3DE Gem object."""
+
     gem: GemHeader
     origin: Optional[Origin] = None
     licenses: list[License] = Field(default_factory=list)
@@ -300,15 +338,19 @@ class Gem(BaseO3DEObject):
 
 class TemplateHeader(BaseModel):
     """Template object header."""
+
     name: str = Field(description="Reverse domain name: org.o3de.template.mytemplate")
     version: str = Field(default="0.0.0")
     display_name: str = Field(default="")
     description: str = Field(default="")
-    template_type: str = Field(default="", description="Type of object this creates: engine, project, gem")
+    template_type: str = Field(
+        default="", description="Type of object this creates: engine, project, gem"
+    )
 
 
 class Template(BaseO3DEObject):
     """O3DE Template object."""
+
     template: TemplateHeader
     origin: Optional[Origin] = None
     licenses: list[License] = Field(default_factory=list)
@@ -327,7 +369,7 @@ class Template(BaseO3DEObject):
     source_control: Optional[SourceControl] = None
     download: Optional[Download] = None
     releases: list[Release] = Field(default_factory=list)
-    
+
     # Template-specific
     copy_files: list[dict] = Field(default_factory=list, alias="copyFiles")
     create_directories: list[str] = Field(default_factory=list, alias="createDirectories")
@@ -335,6 +377,7 @@ class Template(BaseO3DEObject):
 
 class RepoHeader(BaseModel):
     """Repo object header."""
+
     name: str = Field(description="Reverse domain name: org.o3de.repo.community")
     version: str = Field(default="0.0.0")
     display_name: str = Field(default="")
@@ -343,22 +386,24 @@ class RepoHeader(BaseModel):
 
 class Repo(BaseO3DEObject):
     """O3DE Repo object (registry of objects)."""
+
     repo: RepoHeader
     origin: Optional[Origin] = None
     icon: Optional[Icon] = None
     documentation: Optional[Documentation] = None
     canonical_tags: list[str] = Field(default_factory=list)
     user_tags: list[str] = Field(default_factory=list)
-    
+
     deprecated: Optional[Deprecated] = None
     hooks: Optional[Hooks] = None
-    
+
     # Repos primarily contain remote references
     remote: Remote = Field(default_factory=Remote)
 
 
 class OverlayHeader(BaseModel):
     """Overlay object header."""
+
     name: str = Field(description="Reverse domain name: org.o3de.overlay.console")
     version: str = Field(default="0.0.0")
     display_name: str = Field(default="")
@@ -368,22 +413,23 @@ class OverlayHeader(BaseModel):
 class Overlay(BaseO3DEObject):
     """
     O3DE Overlay object.
-    
+
     An overlay applies file-level modifications to a base object.
     Files in the overlay with the same path as the base replace them.
     New files are added.
-    
+
     During layout creation, overlays are applied after linking base files.
     """
+
     overlay: OverlayHeader
-    
+
     # What object(s) this overlay extends
     extends: str = Field(description="Object name this extends: org.o3de.engine.o3de")
     extends_version: Optional[str] = Field(default=None, description="Version constraint")
-    
+
     # Priority when multiple overlays apply (higher = applied later)
     precedence: int = Field(default=0)
-    
+
     origin: Optional[Origin] = None
     licenses: list[License] = Field(default_factory=list)
     icon: Optional[Icon] = None
@@ -401,6 +447,7 @@ class Overlay(BaseO3DEObject):
 
 class WorkspaceHeader(BaseModel):
     """Workspace object header."""
+
     name: str = Field(description="Human-readable workspace name")
     version: str = Field(default="0.0.0")
     display_name: str = Field(default="")
@@ -414,6 +461,7 @@ class ResolvedCandidate(BaseModel):
         Replaced by categorised ``WorkspaceSources``.  Kept for backward-compat
         reading of old workspace.json files.
     """
+
     name: str = Field(description="Object name (reverse domain)")
     version: str = Field(default="0.0.0", description="Resolved version")
     object_type: str = Field(description="Object type (engine, project, gem, etc.)")
@@ -428,6 +476,7 @@ class WorkspaceSources(BaseModel):
     Names are scoped by type, so a gem and a project may share a name
     without collision.
     """
+
     engines: dict[str, str] = Field(default_factory=dict, description="engine name → path")
     projects: dict[str, str] = Field(default_factory=dict, description="project name → path")
     gems: dict[str, str] = Field(default_factory=dict, description="gem name → path")
@@ -444,6 +493,7 @@ class ObjectOverride(BaseModel):
     - ``local-binary``  — use a locally built install layout (*Config.cmake)
     - ``remote-binary`` — download the prebuilt release binary
     """
+
     version: str = Field(description="Exact pinned version")
     artifact: str = Field(
         default="source",
@@ -462,6 +512,7 @@ class WorkspaceMeta(BaseO3DEObject):
     assembled from source objects and overlays.  Not an ObjectType;
     kept separate as a local-only construct.
     """
+
     workspace: WorkspaceHeader
     created: str = Field(description="ISO 8601 creation timestamp")
     root_object: Optional[str] = Field(default=None, description="Root object path")
@@ -472,14 +523,13 @@ class WorkspaceMeta(BaseO3DEObject):
     )
     attributions: Optional[str] = Field(
         default=None,
-        description="Overlay attribution mode: workspace, object, or off "
-                    "(None = workspace)",
+        description="Overlay attribution mode: workspace, object, or off (None = workspace)",
     )
     overlay_order: Optional[dict[str, list[str]]] = Field(
         default=None,
         description="Explicit overlay apply order per extended object "
-                    "(base name → overlay names, first applied first); "
-                    "overrides authored precedence",
+        "(base name → overlay names, first applied first); "
+        "overrides authored precedence",
     )
     sources: WorkspaceSources = Field(
         default_factory=WorkspaceSources,
@@ -506,8 +556,11 @@ class WorkspaceMeta(BaseO3DEObject):
 
         # Build categorised sources from resolved_candidates + overlays
         cats: dict[str, dict[str, str]] = {
-            "engines": {}, "projects": {}, "gems": {},
-            "templates": {}, "overlays": {},
+            "engines": {},
+            "projects": {},
+            "gems": {},
+            "templates": {},
+            "overlays": {},
         }
         for cand in data.get("resolved_candidates", []):
             if isinstance(cand, dict):
@@ -564,11 +617,13 @@ class WorkspaceMeta(BaseO3DEObject):
 
 class ManifestHeader(BaseModel):
     """Manifest header."""
+
     name: str = Field(description="Manifest name: me.home.username.manifest")
 
 
 class ManifestDefaults(BaseModel):
     """Default paths for object storage."""
+
     engines_path: str
     projects_path: str
     gems_path: str
@@ -580,6 +635,7 @@ class ManifestDefaults(BaseModel):
 
 class LocalObjects(BaseModel):
     """Local object paths (full paths to object roots)."""
+
     engines: list[str] = Field(default_factory=list)
     projects: list[str] = Field(default_factory=list)
     gems: list[str] = Field(default_factory=list)
@@ -590,6 +646,7 @@ class LocalObjects(BaseModel):
 
 class Manifest(BaseO3DEObject):
     """O3DE Manifest (user's registry of local/remote objects)."""
+
     o3de_manifest: ManifestHeader
     country: dict = Field(default_factory=lambda: {"code": "US"})
     default: ManifestDefaults
@@ -603,7 +660,7 @@ O3DEObject = Engine | Project | Gem | Template | Repo | Overlay | Manifest
 
 def get_object_type(obj: O3DEObject | dict) -> ObjectType:
     """Determine object type from object or dict.
-    
+
     Handles both legacy (schema 0/1.0) and 2.0.0 formats.
     """
     if isinstance(obj, Engine):
@@ -636,7 +693,7 @@ def get_object_type(obj: O3DEObject | dict) -> ObjectType:
             return ObjectType.OVERLAY
         elif "o3de_manifest" in obj:
             return ObjectType.MANIFEST
-        
+
         # Legacy format: has "engine_name", "project_name", etc.
         if "engine_name" in obj:
             return ObjectType.ENGINE
@@ -648,14 +705,14 @@ def get_object_type(obj: O3DEObject | dict) -> ObjectType:
             return ObjectType.TEMPLATE
         elif "repo_name" in obj or "repo_uri" in obj:
             return ObjectType.REPO
-        
+
         # Guess from origin.type if present
         origin = obj.get("origin", {})
         if isinstance(origin, dict):
             origin_type = origin.get("type", "")
             if origin_type in ["engine", "project", "gem", "template", "repo", "overlay"]:
                 return ObjectType(origin_type)
-        
+
         raise ValueError(f"Cannot determine object type from dict keys: {list(obj.keys())[:10]}")
     else:
         raise ValueError(f"Unknown object type: {type(obj)}")
@@ -663,7 +720,7 @@ def get_object_type(obj: O3DEObject | dict) -> ObjectType:
 
 def get_object_name(obj: O3DEObject | dict) -> str:
     """Get the canonical name from an object.
-    
+
     Handles both legacy and 2.0.0 formats.
     """
     if isinstance(obj, dict):
@@ -671,19 +728,19 @@ def get_object_name(obj: O3DEObject | dict) -> str:
         for key in ["engine", "project", "gem", "template", "repo", "overlay"]:
             if key in obj and isinstance(obj[key], dict):
                 return obj[key].get("name", "")
-        
+
         # Legacy format: engine_name, project_name, etc.
         for key in ["engine_name", "project_name", "gem_name", "template_name", "repo_name"]:
             if key in obj:
                 return obj[key]
-        
+
         # Origin-based (schema 1.0)
         origin = obj.get("origin", {})
         if isinstance(origin, dict) and "name" in origin:
             return origin["name"]
-        
+
         return ""
-    
+
     # Pydantic model
     obj_type = get_object_type(obj)
     if obj_type == ObjectType.ENGINE:
@@ -700,13 +757,13 @@ def get_object_name(obj: O3DEObject | dict) -> str:
         return obj.overlay.name
     elif obj_type == ObjectType.MANIFEST:
         return obj.o3de_manifest.name
-    
+
     return ""
 
 
 def get_object_version(obj: O3DEObject | dict) -> str:
     """Get the version from an object.
-    
+
     Handles both legacy and 2.0.0 formats.
     """
     if isinstance(obj, dict):
@@ -714,18 +771,18 @@ def get_object_version(obj: O3DEObject | dict) -> str:
         for key in ["engine", "project", "gem", "template", "repo", "overlay"]:
             if key in obj and isinstance(obj[key], dict):
                 return obj[key].get("version", "0.0.0")
-        
+
         # Legacy format: version at top level
         if "version" in obj:
             return obj["version"]
-        
+
         # Origin-based (schema 1.0)
         origin = obj.get("origin", {})
         if isinstance(origin, dict) and "version" in origin:
             return origin["version"]
-        
+
         return "0.0.0"
-    
+
     # Pydantic model
     obj_type = get_object_type(obj)
     if obj_type == ObjectType.ENGINE:
@@ -740,5 +797,5 @@ def get_object_version(obj: O3DEObject | dict) -> str:
         return obj.repo.version
     elif obj_type == ObjectType.OVERLAY:
         return obj.overlay.version
-    
+
     return "0.0.0"

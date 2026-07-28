@@ -25,16 +25,16 @@ console = Console()
 def ensure_first_run_setup() -> None:
     """Initialize user directories on first run."""
     from o3de_cli.core import get_manifest_path, initialize_user_directories
-    
+
     manifest_path = get_manifest_path()
     if not manifest_path.exists():
         # First run - initialize everything
         paths = initialize_user_directories()
-        
+
         # Create default manifest
         from o3de_cli.core.paths import get_default_manifest_data
         import json
-        
+
         manifest_data = get_default_manifest_data()
         with open(manifest_path, "w") as f:
             json.dump(manifest_data, f, indent=2)
@@ -50,7 +50,7 @@ def cli(ctx: click.Context) -> None:
     with npm-style package management and AI assistance.
     """
     ctx.ensure_object(dict)
-    
+
     # Ensure first-run setup (except for help commands)
     if ctx.invoked_subcommand not in (None, "help"):
         ensure_first_run_setup()
@@ -80,24 +80,32 @@ cli.add_command(object_cmd.object_group)
 @cli.command("mcp")
 def mcp_command() -> None:
     """Start MCP (Model Context Protocol) server on stdio.
-    
+
     Exposes o3de-pilot CLI commands as MCP tools for AI agents,
     VS Code Copilot, and other MCP-compliant clients.
     """
     from o3de_cli.mcp_server import serve
+
     serve()
 
 
 # Convenience aliases at top level
 @cli.command()
 @click.argument("query")
-@click.option("--type", "-t", "obj_type", type=click.Choice(["gem", "template", "project", "engine", "all"]), default="all")
+@click.option(
+    "--type",
+    "-t",
+    "obj_type",
+    type=click.Choice(["gem", "template", "project", "engine", "all"]),
+    default="all",
+)
 @click.option("--remote", "-r", is_flag=True, help="Search remote repos only")
 @click.option("--local", "-l", is_flag=True, help="Search local objects only")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def search(query: str, obj_type: str, remote: bool, local: bool, as_json: bool) -> None:
     """Search the registry for packages."""
     from o3de_cli.commands.registry import search_registry
+
     search_registry(query, obj_type, remote, local, as_json)
 
 
@@ -108,6 +116,7 @@ def search(query: str, obj_type: str, remote: bool, local: bool, as_json: bool) 
 def install(package: str, version: str | None, path: str | None) -> None:
     """Install a gem, template, or other package."""
     from o3de_cli.commands.registry import install_package
+
     install_package(package, version, path)
 
 
@@ -118,6 +127,7 @@ def install(package: str, version: str | None, path: str | None) -> None:
 def init(name: str, path: str | None, template_name: str | None) -> None:
     """Initialize a new O3DE project."""
     from o3de_cli.commands.project import init_project
+
     init_project(name, path, template_name)
 
 
@@ -127,6 +137,7 @@ def init(name: str, path: str | None, template_name: str | None) -> None:
 def list_objects(obj_type: str, as_json: bool) -> None:
     """List registered objects."""
     from o3de_cli.commands.registry import list_objects
+
     list_objects(obj_type, as_json)
 
 

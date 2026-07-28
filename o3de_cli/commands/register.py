@@ -3,7 +3,7 @@
 
 """Object registration commands.
 
-Registers O3DE objects (engines, projects, gems, templates, repos, overlays) 
+Registers O3DE objects (engines, projects, gems, templates, repos, overlays)
 in the o3de_manifest.json. Handles schema upgrades transparently.
 """
 
@@ -135,15 +135,15 @@ def is_directly_registered(obj_path: Path, manifest_data: dict) -> bool:
 def check_and_upgrade_object(obj_path: Path, obj_type: str, force: bool = False) -> bool:
     """
     Check if an object needs schema upgrade and upgrade if necessary.
-    
+
     The upgrade is non-destructive — creates a sidecar file (e.g. gem.2-0-0.json)
     and leaves the original untouched.
-    
+
     Args:
         obj_path: Path to the object directory
         obj_type: Object type (engine, project, gem, etc.)
         force: Force upgrade even if already at target version
-        
+
     Returns:
         True if object is at schema 2.0.0 (or was upgraded), False on error
     """
@@ -151,37 +151,38 @@ def check_and_upgrade_object(obj_path: Path, obj_type: str, force: bool = False)
     if not json_file:
         console.print(f"[red]Unknown object type:[/red] {obj_type}")
         return False
-    
+
     # Check for existing sidecar first
     from o3de_cli.core.paths import get_versioned_object_json_filename
+
     versioned_name = get_versioned_object_json_filename(obj_type, "2.0.0")
     versioned_path = obj_path / versioned_name
     if versioned_path.exists() and not force:
         return True
-    
+
     json_path = obj_path / json_file
     if not json_path.exists():
         console.print(f"[red]Object JSON not found:[/red] {json_path}")
         return False
-    
+
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
         console.print(f"[red]Invalid JSON in {json_path}:[/red] {e}")
         return False
-    
+
     # Check schema version
     detected_type, version = get_schema_version(data)
-    
+
     if version == "2.0.0" and not force:
         # Already at target version
         return True
-    
+
     if needs_upgrade(data, "2.0.0"):
         console.print(f"[yellow]Object needs upgrade to schema 2.0.0:[/yellow] {obj_path.name}")
         console.print(f"  Current version: {version}")
-        
+
         try:
             # Perform upgrade (non-destructive - creates backup)
             result = upgrade_file(json_path, backup=True)
@@ -195,13 +196,14 @@ def check_and_upgrade_object(obj_path: Path, obj_type: str, force: bool = False)
         except Exception as e:
             console.print(f"[red]Upgrade error:[/red] {e}")
             return False
-    
+
     return True
 
 
 def get_manifest_2_path() -> Path:
     """Get path to the 2.0.0 manifest file."""
     from o3de_cli.core.paths import get_dot_o3de_path
+
     return get_dot_o3de_path() / "o3de_manifest.2-0-0.json"
 
 
@@ -222,19 +224,19 @@ def _ensure_default_dirs(manifest_path: Path) -> None:
 def ensure_manifest_2() -> Path:
     """
     Ensure o3de_manifest.2-0-0.json exists.
-    
+
     If only legacy manifest exists, upgrade it non-destructively.
     If neither exists, create a new 2.0.0 manifest.
-    
+
     Returns:
         Path to the 2.0.0 manifest
     """
     from o3de_cli.core.paths import get_dot_o3de_path
-    
+
     dot_o3de = get_dot_o3de_path()
     versioned = dot_o3de / "o3de_manifest.2-0-0.json"
     legacy = dot_o3de / "o3de_manifest.json"
-    
+
     if versioned.exists():
         return versioned
 
@@ -271,12 +273,13 @@ def ensure_manifest_2() -> Path:
 
     # Create new 2.0.0 manifest
     from o3de_cli.core.paths import get_default_manifest_data
+
     manifest_data = get_default_manifest_data()
-    
+
     dot_o3de.mkdir(parents=True, exist_ok=True)
     with open(versioned, "w", encoding="utf-8") as f:
         json.dump(manifest_data, f, indent=2)
-    
+
     console.print(f"[green]Created manifest:[/green] {versioned}")
     return versioned
 
@@ -329,13 +332,19 @@ def register_object_path(
 
 @click.command()
 @click.argument("path_or_url")
-@click.option("--type", "-t", "obj_type",
-              type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay", "workspace"]),
-              help="Object type (auto-detected if not specified)")
+@click.option(
+    "--type",
+    "-t",
+    "obj_type",
+    type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay", "workspace"]),
+    help="Object type (auto-detected if not specified)",
+)
 @click.option("--remote", is_flag=True, help="Register a remote URL instead of a local path")
 @click.option("--force", "-f", is_flag=True, help="Force re-upgrade even if at target version")
 @click.option("--no-upgrade", is_flag=True, help="Skip schema upgrade check")
-def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, no_upgrade: bool) -> None:
+def register(
+    path_or_url: str, obj_type: str | None, remote: bool, force: bool, no_upgrade: bool
+) -> None:
     """Register an O3DE object in the manifest.
 
     PATH_OR_URL is the path to an O3DE JSON file (e.g. gem.json,
@@ -348,10 +357,10 @@ def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, 
     if not manifest_path.exists():
         # Try to create the 2.0.0 manifest
         manifest_path = ensure_manifest_2()
-    
+
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest_data = json.load(f)
-    
+
     if remote:
         # Remote registration — add URL to remote section
         if not obj_type:
@@ -364,19 +373,19 @@ def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, 
             if not obj_type:
                 obj_type = "gem"  # Default to gem for remote
                 console.print(f"[dim]Defaulting to type: {obj_type}[/dim]")
-        
+
         section = manifest_data.setdefault("remote", {})
         type_list = section.setdefault(f"{obj_type}s", [])
         if path_or_url in type_list:
             console.print(f"[yellow]Already registered:[/yellow] {path_or_url}")
             return
         type_list.append(path_or_url)
-        
+
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest_data, f, indent=2)
         console.print(f"[green]Registered remote {obj_type}:[/green] {path_or_url}")
         return
-    
+
     # Local registration — resolve to a concrete JSON file path
     raw_path = Path(path_or_url).resolve()
 
@@ -388,10 +397,15 @@ def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, 
     _is_workspace = (
         obj_type == "workspace"
         or (not obj_type and raw_path.is_dir() and (raw_path / "workspace.json").exists())
-        or (not obj_type and raw_path.is_file() and raw_path.name in ("workspace.json", ".workspace.json"))
+        or (
+            not obj_type
+            and raw_path.is_file()
+            and raw_path.name in ("workspace.json", ".workspace.json")
+        )
     )
     if _is_workspace:
         from o3de_cli.commands.workspace import _register_workspace, _get_registered_workspaces
+
         ws_path = raw_path if raw_path.is_dir() else raw_path.parent
         already = [str(p.resolve()) for p in _get_registered_workspaces()]
         if str(ws_path.resolve()) in already:
@@ -404,7 +418,9 @@ def register(path_or_url: str, obj_type: str | None, remote: bool, force: bool, 
     result = resolve_to_json(raw_path, obj_type)
     if result is None:
         console.print("[red]Could not find an O3DE JSON file.[/red]")
-        console.print("Please select an engine.json, gem.json, project.json, template.json, repo.json, or overlay.json.")
+        console.print(
+            "Please select an engine.json, gem.json, project.json, template.json, repo.json, or overlay.json."
+        )
         raise SystemExit(1)
 
     json_file_path, obj_type = result
@@ -458,6 +474,7 @@ def _workspaces_using_path(obj_dir: Path) -> list[str]:
         _get_registered_workspaces,
         _read_workspace_meta,
     )
+
     resolved = obj_dir.resolve()
     using: list[str] = []
     for ws_path in _get_registered_workspaces():
@@ -484,14 +501,18 @@ def _workspaces_using_path(obj_dir: Path) -> list[str]:
 
 @click.command()
 @click.argument("path_or_name")
-@click.option("--type", "-t", "obj_type",
-              type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay", "workspace"]),
-              help="Object type (auto-detected if not specified)")
+@click.option(
+    "--type",
+    "-t",
+    "obj_type",
+    type=click.Choice(["engine", "project", "gem", "template", "repo", "overlay", "workspace"]),
+    help="Object type (auto-detected if not specified)",
+)
 @click.option("--remote", is_flag=True, help="Remove from remote section instead of local")
 @click.option("--force", "-f", is_flag=True, help="Force unregister even if used by a workspace")
 def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: bool) -> None:
     """Unregister an O3DE object from the manifest.
-    
+
     Removes the object at PATH_OR_NAME from the manifest.
     Does not delete any files. Use --remote to remove a remote URL.
     """
@@ -499,10 +520,10 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: boo
     if not manifest_path.exists():
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
-    
+
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest_data = json.load(f)
-    
+
     if remote:
         # Remove from remote section
         section = manifest_data.get("remote", {})
@@ -520,7 +541,7 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: boo
         else:
             console.print(f"[yellow]Not found in remote manifest:[/yellow] {path_or_name}")
         return
-    
+
     raw_path = Path(path_or_name).resolve()
 
     # Resolve to directory for guard checks (handles both JSON file and dir args)
@@ -530,10 +551,15 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: boo
     _is_workspace = (
         obj_type == "workspace"
         or (not obj_type and (obj_dir / "workspace.json").exists())
-        or (not obj_type and raw_path.is_file() and raw_path.name in ("workspace.json", ".workspace.json"))
+        or (
+            not obj_type
+            and raw_path.is_file()
+            and raw_path.name in ("workspace.json", ".workspace.json")
+        )
     )
     if _is_workspace:
         from o3de_cli.commands.workspace import _unregister_workspace, _get_registered_workspaces
+
         already = [str(p.resolve()) for p in _get_registered_workspaces()]
         if str(obj_dir.resolve()) not in already:
             console.print(f"[yellow]Not registered:[/yellow] {path_or_name}")
@@ -576,8 +602,11 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: boo
     # of whether the user passed a JSON file or a directory.
     removed = False
     local = manifest_data.get("local", {})
-    for type_key in ([f"{obj_type}s"] if obj_type else
-                     ["engines", "projects", "gems", "templates", "repos", "overlays"]):
+    for type_key in (
+        [f"{obj_type}s"]
+        if obj_type
+        else ["engines", "projects", "gems", "templates", "repos", "overlays"]
+    ):
         type_list = local.get(type_key, [])
         new_list = []
         for p in type_list:
@@ -598,5 +627,3 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: boo
         console.print(f"[green]Unregistered:[/green] {obj_dir.name}")
     else:
         console.print(f"[yellow]Not found in manifest:[/yellow] {path_or_name}")
-
-

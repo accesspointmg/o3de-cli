@@ -21,6 +21,7 @@ _CREDENTIALS_FILE = "credentials.json"
 def get_credentials_path() -> Path:
     """Return the path to the credentials file."""
     from o3de_cli.core.paths import get_o3de_home
+
     return get_o3de_home() / _CREDENTIALS_FILE
 
 
@@ -107,6 +108,7 @@ def _save_credentials(creds: dict) -> None:
     # Restrict file permissions (owner-only on Unix)
     try:
         import os
+
         os.chmod(path, 0o600)
     except OSError:
         pass  # Windows doesn't support chmod the same way

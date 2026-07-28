@@ -73,18 +73,32 @@ def validate_command(path: str, strict: bool, as_json: bool) -> None:
     errors, warnings = validate_object(target)
 
     if as_json:
-        console.print_json(json.dumps({
-            "valid": len(errors) == 0 and (not strict or len(warnings) == 0),
-            "errors": errors,
-            "warnings": warnings,
-        }))
+        console.print_json(
+            json.dumps(
+                {
+                    "valid": len(errors) == 0 and (not strict or len(warnings) == 0),
+                    "errors": errors,
+                    "warnings": warnings,
+                }
+            )
+        )
     else:
         if errors:
-            console.print(Panel("\n".join(f"[red]ERROR:[/red] {e}" for e in errors),
-                                title="Validation Errors", border_style="red"))
+            console.print(
+                Panel(
+                    "\n".join(f"[red]ERROR:[/red] {e}" for e in errors),
+                    title="Validation Errors",
+                    border_style="red",
+                )
+            )
         if warnings:
-            console.print(Panel("\n".join(f"[yellow]WARN:[/yellow] {w}" for w in warnings),
-                                title="Warnings", border_style="yellow"))
+            console.print(
+                Panel(
+                    "\n".join(f"[yellow]WARN:[/yellow] {w}" for w in warnings),
+                    title="Warnings",
+                    border_style="yellow",
+                )
+            )
         if not errors and not warnings:
             console.print("[green]Validation passed — object is 2.0.0 compliant.[/green]")
         elif not errors:
@@ -96,7 +110,12 @@ def validate_command(path: str, strict: bool, as_json: bool) -> None:
 
 @publish.command("pack")
 @click.argument("path", type=click.Path(exists=True))
-@click.option("--output", "-o", type=click.Path(), help="Output tarball path (default: <name>-<version>.tar.gz)")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Output tarball path (default: <name>-<version>.tar.gz)",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output results as JSON")
 def pack_command(path: str, output: str | None, as_json: bool) -> None:
     """Package an O3DE object directory into a distributable tarball.
@@ -114,8 +133,13 @@ def pack_command(path: str, output: str | None, as_json: bool) -> None:
         if as_json:
             console.print_json(json.dumps({"status": "error", "errors": errors}))
         else:
-            console.print(Panel("\n".join(f"[red]ERROR:[/red] {e}" for e in errors),
-                                title="Validation Failed", border_style="red"))
+            console.print(
+                Panel(
+                    "\n".join(f"[red]ERROR:[/red] {e}" for e in errors),
+                    title="Validation Failed",
+                    border_style="red",
+                )
+            )
         raise SystemExit(1)
 
     # Determine name and version from the object JSON
@@ -150,17 +174,21 @@ def pack_command(path: str, output: str | None, as_json: bool) -> None:
     sha256 = compute_sha256(archive_path)
 
     if as_json:
-        console.print_json(json.dumps({
-            "status": "ok",
-            "data": {
-                "archive": str(archive_path),
-                "name": name,
-                "version": version,
-                "type": obj_type.value,
-                "sha256": sha256,
-                "size_bytes": archive_path.stat().st_size,
-            },
-        }))
+        console.print_json(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "data": {
+                        "archive": str(archive_path),
+                        "name": name,
+                        "version": version,
+                        "type": obj_type.value,
+                        "sha256": sha256,
+                        "size_bytes": archive_path.stat().st_size,
+                    },
+                }
+            )
+        )
     else:
         console.print(f"[green]Packed:[/green] {archive_path}")
         console.print(f"  Name:    {name}")
@@ -190,8 +218,13 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
         if as_json:
             console.print_json(json.dumps({"status": "error", "errors": errors}))
         else:
-            console.print(Panel("\n".join(f"[red]ERROR:[/red] {e}" for e in errors),
-                                title="Validation Failed", border_style="red"))
+            console.print(
+                Panel(
+                    "\n".join(f"[red]ERROR:[/red] {e}" for e in errors),
+                    title="Validation Failed",
+                    border_style="red",
+                )
+            )
             console.print("[red]Cannot publish — fix validation errors first.[/red]")
         raise SystemExit(1)
 
@@ -213,11 +246,15 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
     if dry_run:
         msg = f"Validation passed. Would publish {name}@{version} ({obj_type.value})"
         if as_json:
-            console.print_json(json.dumps({
-                "status": "ok",
-                "dry_run": True,
-                "data": {"name": name, "version": version, "type": obj_type.value},
-            }))
+            console.print_json(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "dry_run": True,
+                        "data": {"name": name, "version": version, "type": obj_type.value},
+                    }
+                )
+            )
         else:
             console.print(f"[yellow]Dry-run:[/yellow] {msg}")
         return
@@ -261,15 +298,19 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
         raise SystemExit(1)
 
     if as_json:
-        console.print_json(json.dumps({
-            "status": "ok",
-            "data": {
-                "name": name,
-                "version": version,
-                "type": obj_type.value,
-                "remote": remote,
-            },
-        }))
+        console.print_json(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "data": {
+                        "name": name,
+                        "version": version,
+                        "type": obj_type.value,
+                        "remote": remote,
+                    },
+                }
+            )
+        )
     else:
         console.print(f"[bold]Published to:[/bold] {remote}")
         console.print(f"[green]Published {name}@{version} successfully.[/green]")
@@ -323,17 +364,23 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
     try:
         obj_type = get_object_type(data)
     except Exception:
-        errors.append("Cannot determine object type from JSON — missing type key (engine/project/gem/...)")
+        errors.append(
+            "Cannot determine object type from JSON — missing type key (engine/project/gem/...)"
+        )
         return errors, warnings
 
     # Check $schema field
     schema_ref = data.get("$schema", "")
     if not schema_ref:
-        warnings.append("Missing $schema reference — add '$schema' pointing to the 2.0.0 schema URL")
+        warnings.append(
+            "Missing $schema reference — add '$schema' pointing to the 2.0.0 schema URL"
+        )
     else:
         expected_schema = SCHEMA_TYPE_MAP.get(obj_type, "")
         if expected_schema and expected_schema not in schema_ref:
-            warnings.append(f"$schema references '{schema_ref}' — expected to contain '{expected_schema}'")
+            warnings.append(
+                f"$schema references '{schema_ref}' — expected to contain '{expected_schema}'"
+            )
 
     # Check $schemaVersion
     schema_version = data.get("$schemaVersion", "")
@@ -398,11 +445,14 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
                 if (obj_root / rp).exists():
                     shipped = True
                 else:
-                    errors.append(f"licenses[{i}].relative_path '{rp}' does not exist at the object root")
+                    errors.append(
+                        f"licenses[{i}].relative_path '{rp}' does not exist at the object root"
+                    )
         if not shipped:
             warnings.append(
                 "No license file ships with the object (url-only licenses) — "
-                "standalone redistribution requires the license text in the object")
+                "standalone redistribution requires the license text in the object"
+            )
 
     # Check icon/documentation relative paths exist
     if obj_root is not None:
@@ -445,17 +495,13 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
                         "integrity verification won't work"
                     )
                 if dl.get("lfs") and not dl.get("lfs_sha256"):
-                    warnings.append(
-                        f"Release[{i}].downloads[{j}]: has 'lfs' but no 'lfs_sha256'"
-                    )
+                    warnings.append(f"Release[{i}].downloads[{j}]: has 'lfs' but no 'lfs_sha256'")
             binaries = release.get("binaries", [])
             for j, binary in enumerate(binaries):
                 if not isinstance(binary, dict):
                     continue
                 if binary.get("binary") and not binary.get("sha256"):
-                    warnings.append(
-                        f"Release[{i}].binaries[{j}]: has 'binary' but no 'sha256'"
-                    )
+                    warnings.append(f"Release[{i}].binaries[{j}]: has 'binary' but no 'sha256'")
 
     # Check deprecated field
     deprecated = type_data.get("deprecated") if isinstance(type_data, dict) else None
@@ -470,12 +516,14 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
 def _is_valid_name(name: str) -> bool:
     """Check if name follows canonical naming convention."""
     import re
+
     return bool(re.match(r"^[a-z][a-z0-9_.]*(\.[a-z0-9_.]+)+$", name))
 
 
 def _is_valid_version(version: str) -> bool:
     """Check if version follows semver format."""
     import re
+
     return bool(re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", version))
 
 
@@ -490,9 +538,7 @@ def _find_object_json(obj_dir: Path) -> tuple[Path | None, dict | None]:
     return None, None
 
 
-def _check_version_immutability(
-    remote: str, name: str, version: str, obj_type: ObjectType
-) -> bool:
+def _check_version_immutability(remote: str, name: str, version: str, obj_type: ObjectType) -> bool:
     """Check if a version already exists at the remote.
 
     Returns True if the version exists (immutability violation), False otherwise.
@@ -517,6 +563,7 @@ def _check_version_immutability(
     # For HTTP remotes, use the Store
     try:
         from o3de_cli.core.store import Store
+
         store = Store()
         store.refresh_sync([remote])
         existing = store.get_version(obj_type, name, version)
@@ -548,9 +595,7 @@ def _upload_to_remote(
         return {"error": f"Unsupported remote scheme: {parsed.scheme}"}
 
 
-def _upload_http(
-    remote: str, data: dict, obj_type: ObjectType, name: str, version: str
-) -> dict:
+def _upload_http(remote: str, data: dict, obj_type: ObjectType, name: str, version: str) -> dict:
     """Upload object to an HTTP registry endpoint.
 
     Expected API: PUT {remote}/api/v1/objects/{type}/{name}/{version}
@@ -581,9 +626,7 @@ def _upload_http(
         return {"error": f"Connection failed: {e.reason}"}
 
 
-def _upload_local(
-    remote: str, data: dict, obj_type: ObjectType, name: str, version: str
-) -> dict:
+def _upload_local(remote: str, data: dict, obj_type: ObjectType, name: str, version: str) -> dict:
     """Upload object to a local/file-based repository.
 
     Writes the object JSON into the repo directory structure:
@@ -650,7 +693,8 @@ def _update_repo_index(repo_path: Path, data: dict, obj_type: ObjectType) -> Non
         name = get_object_name(data)
         version = get_object_version(data)
         existing = [
-            obj for obj in index[type_plural]
+            obj
+            for obj in index[type_plural]
             if get_object_name(obj) == name and get_object_version(obj) == version
         ]
         if not existing:

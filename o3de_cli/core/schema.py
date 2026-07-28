@@ -29,6 +29,7 @@ WORKSPACE_SCHEMA_FILENAME = "o3de-workspace-2.0.0.json"
 
 class SchemaValidationError(Exception):
     """Raised when JSON Schema validation fails."""
+
     pass
 
 
@@ -39,6 +40,7 @@ def find_schema_directory() -> Optional[Path]:
     """
     # Check environment variable first
     import os
+
     env_path = os.environ.get("O3DE_SCHEMA_DIR")
     if env_path:
         p = Path(env_path)
@@ -90,7 +92,9 @@ def validate_against_schema(
         schema_dir = find_schema_directory()
 
     if schema_dir is None or not schema_dir.is_dir():
-        return ["Cannot find canonical schema directory — set O3DE_SCHEMA_DIR or install canonical.o3de.org"]
+        return [
+            "Cannot find canonical schema directory — set O3DE_SCHEMA_DIR or install canonical.o3de.org"
+        ]
 
     schema_path = schema_dir / schema_filename
     if not schema_path.exists():
@@ -113,7 +117,8 @@ def validate_against_schema(
                 continue
             schema_id = s.get("$id", f"./{json_file.name}")
             resource = referencing.Resource.from_contents(
-                s, default_specification=referencing.jsonschema.DRAFT7,
+                s,
+                default_specification=referencing.jsonschema.DRAFT7,
             )
             resources.append((schema_id, resource))
         except (json.JSONDecodeError, OSError):

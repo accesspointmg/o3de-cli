@@ -74,6 +74,7 @@ def built_packages_root() -> Path:
 # CMake File API
 # ---------------------------------------------------------------------------
 
+
 def _api_dir(build_dir: Path) -> Path:
     return build_dir / ".cmake" / "api" / "v1"
 
@@ -98,10 +99,7 @@ def _find_codemodel_file(build_dir: Path) -> Optional[Path]:
     with open(indexes[-1], encoding="utf-8") as f:
         index = json.load(f)
     responses = (
-        index.get("reply", {})
-        .get(_FILE_API_CLIENT, {})
-        .get("query.json", {})
-        .get("responses", [])
+        index.get("reply", {}).get(_FILE_API_CLIENT, {}).get("query.json", {}).get("responses", [])
     )
     for resp in responses:
         if resp.get("kind") == "codemodel":
@@ -221,6 +219,7 @@ def filter_gem_targets(targets: list[TargetInfo], gem_dir: Path) -> list[TargetI
 # Gem metadata + alias discovery
 # ---------------------------------------------------------------------------
 
+
 def read_gem_legacy_name(gem_dir: Path) -> str:
     """The legacy ``gem_name`` used as ``${gem_name}`` in the gem's CMake."""
     gem_json = gem_dir / "gem.json"
@@ -269,6 +268,7 @@ def parse_gem_aliases(gem_dir: Path, gem_name: str) -> dict[str, str]:
 # Config.cmake generation
 # ---------------------------------------------------------------------------
 
+
 def generate_config_cmake(
     canonical_name: str,
     targets: list[TargetInfo],
@@ -282,12 +282,12 @@ def generate_config_cmake(
 
     interface_targets = [t for t in targets if t.type == "INTERFACE_LIBRARY"]
     static_targets = [t for t in targets if t.type == "STATIC_LIBRARY"]
-    module_targets = [
-        t for t in targets if t.type in ("MODULE_LIBRARY", "SHARED_LIBRARY")
-    ]
+    module_targets = [t for t in targets if t.type in ("MODULE_LIBRARY", "SHARED_LIBRARY")]
 
-    guard = module_targets[0].name if module_targets else (
-        static_targets[0].name if static_targets else canonical_name
+    guard = (
+        module_targets[0].name
+        if module_targets
+        else (static_targets[0].name if static_targets else canonical_name)
     )
 
     def _runtime_artifact(t: TargetInfo) -> Optional[str]:
@@ -332,9 +332,7 @@ def generate_config_cmake(
         "",
     ]
 
-    map_lines = [
-        f"    MAP_IMPORTED_CONFIG_{oc} {uconf}" for oc in other_configs
-    ]
+    map_lines = [f"    MAP_IMPORTED_CONFIG_{oc} {uconf}" for oc in other_configs]
 
     for t in interface_targets:
         lines += [
@@ -407,9 +405,7 @@ def generate_config_cmake(
         for alias, target in sorted(aliases.items()):
             if target not in defined:
                 continue
-            lines.append(
-                f"o3de_create_alias(NAME {alias} NAMESPACE Gem TARGETS Gem::{target})"
-            )
+            lines.append(f"o3de_create_alias(NAME {alias} NAMESPACE Gem TARGETS Gem::{target})")
         lines.append("")
 
     lines += [
@@ -479,6 +475,7 @@ def install_gem_package(
 
     Returns the package directory.
     """
+
     def progress(msg: str) -> None:
         if on_progress:
             on_progress(msg)
@@ -506,9 +503,7 @@ def install_gem_package(
             else:
                 continue
             if not art.exists():
-                raise FileNotFoundError(
-                    f"Artifact missing (build the gem first): {art}"
-                )
+                raise FileNotFoundError(f"Artifact missing (build the gem first): {art}")
             out.mkdir(parents=True, exist_ok=True)
             shutil.copy2(art, out / art.name)
             copied.append(art.name)
@@ -537,13 +532,19 @@ def install_gem_package(
     gem_name = read_gem_legacy_name(gem_dir)
     aliases = parse_gem_aliases(gem_dir, gem_name)
     config_text = generate_config_cmake(
-        canonical_name, targets, aliases, config, has_include,
+        canonical_name,
+        targets,
+        aliases,
+        config,
+        has_include,
     )
     (dest / f"{canonical_name}Config.cmake").write_text(
-        config_text, encoding="utf-8",
+        config_text,
+        encoding="utf-8",
     )
     (dest / f"{canonical_name}ConfigVersion.cmake").write_text(
-        generate_config_version_cmake(canonical_name, version), encoding="utf-8",
+        generate_config_version_cmake(canonical_name, version),
+        encoding="utf-8",
     )
     progress(f"Generated {canonical_name}Config.cmake")
     return dest
@@ -553,9 +554,8 @@ def install_gem_package(
 # Remote binary download
 # ---------------------------------------------------------------------------
 
-def find_release_binary(
-    data: dict, version: str, platform: str
-) -> Optional[dict]:
+
+def find_release_binary(data: dict, version: str, platform: str) -> Optional[dict]:
     """Find the release binary entry for *version* and *platform*.
 
     Prefers the release whose name matches *version*; falls back to any
@@ -575,9 +575,9 @@ def find_release_binary(
 
     def _platform_binary(release: dict) -> Optional[dict]:
         matches = [
-            b for b in release.get("binaries", []) or []
-            if platform_matches(str(b.get("platform", "")), platform)
-            and abi_compatible(b)
+            b
+            for b in release.get("binaries", []) or []
+            if platform_matches(str(b.get("platform", "")), platform) and abi_compatible(b)
         ]
         if not matches:
             return None
@@ -688,8 +688,7 @@ def download_remote_binary(
     binary = find_release_binary(data, version, platform)
     if binary is None:
         raise LookupError(
-            f"No release binary advertised for {name}@{version} "
-            f"on platform {platform}"
+            f"No release binary advertised for {name}@{version} on platform {platform}"
         )
     url = binary.get("binary", "")
     expected_sha256 = binary.get("sha256")
@@ -697,7 +696,10 @@ def download_remote_binary(
         raise LookupError(f"Release binary entry for {name}@{version} has no URL")
 
     archive_path = _fetch_release_archive(
-        url, expected_sha256, f"{name}-{version}-{platform}.zip", progress,
+        url,
+        expected_sha256,
+        f"{name}-{version}-{platform}.zip",
+        progress,
     )
 
     if dest.exists():
@@ -719,6 +721,7 @@ def download_remote_binary(
 # ---------------------------------------------------------------------------
 # Remote source (code release) download
 # ---------------------------------------------------------------------------
+
 
 def find_release_source(data: dict, version: str) -> Optional[dict]:
     """Find the release source-download entry for *version*.
@@ -777,9 +780,7 @@ def download_remote_source(
 
     entry = find_release_source(data, version)
     if entry is None:
-        raise LookupError(
-            f"No release source archive advertised for {name}@{version}"
-        )
+        raise LookupError(f"No release source archive advertised for {name}@{version}")
     url = entry.get("source", "")
     expected_sha256 = entry.get("source_sha256")
     if not url:
@@ -787,7 +788,10 @@ def download_remote_source(
 
     suffix = ".tar.gz" if url.endswith((".tar.gz", ".tgz")) else ".zip"
     archive_path = _fetch_release_archive(
-        url, expected_sha256, f"{name}-{version}-Source{suffix}", progress,
+        url,
+        expected_sha256,
+        f"{name}-{version}-Source{suffix}",
+        progress,
     )
 
     if dest.exists():
@@ -813,6 +817,7 @@ def download_remote_source(
 # ---------------------------------------------------------------------------
 # Release packaging (zip + sha256 + manifest entry)
 # ---------------------------------------------------------------------------
+
 
 def package_gem_archive(
     package_dir: Path,
@@ -968,8 +973,7 @@ def update_release_manifest(
     # Replace any entry this host's platform token would match (including
     # legacy bare-OS entries being upgraded to <OS>.<ARCH> tokens)
     binaries[:] = [
-        b for b in binaries
-        if not platform_matches(str(b.get("platform", "")), platform)
+        b for b in binaries if not platform_matches(str(b.get("platform", "")), platform)
     ]
     entry: dict = {"platform": platform, "binary": url, "sha256": sha256}
     glibc = host_glibc()

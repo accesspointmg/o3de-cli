@@ -24,38 +24,41 @@ def project() -> None:
 def list_projects(as_json: bool) -> None:
     """List all registered projects."""
     from o3de_cli.core.resolver import Resolver
-    
+
     resolver = Resolver()
     resolver.resolve()
     projects = resolver.projects
-    
+
     if as_json:
         import json
+
         items = []
         for name, obj in projects.items():
-            items.append({
-                "name": obj.name,
-                "path": str(obj.path),
-                "engine": obj.data.get("engine") or obj.data.get("engine_name"),
-                "version": obj.version,
-            })
+            items.append(
+                {
+                    "name": obj.name,
+                    "path": str(obj.path),
+                    "engine": obj.data.get("engine") or obj.data.get("engine_name"),
+                    "version": obj.version,
+                }
+            )
         click.echo(json.dumps(items, indent=2))
         return
-    
+
     if not projects:
         console.print("[yellow]No projects registered.[/yellow]")
         console.print("Use [bold]o3de-pilot init <name>[/bold] to create a new project.")
         return
-    
+
     table = Table(title="Registered Projects")
     table.add_column("Name", style="cyan")
     table.add_column("Path", style="dim")
     table.add_column("Engine", style="green")
-    
+
     for name, obj in projects.items():
         engine = obj.data.get("engine") or obj.data.get("engine_name") or "default"
         table.add_row(obj.name, str(obj.path), engine)
-    
+
     console.print(table)
 
 
@@ -69,28 +72,32 @@ def init_command(name: str, path: str | None, template_name: str | None, as_json
     init_project(name, path, template_name, as_json)
 
 
-def init_project(name: str, path: str | None, template_name: str | None, as_json: bool = False) -> None:
+def init_project(
+    name: str, path: str | None, template_name: str | None, as_json: bool = False
+) -> None:
     """Initialize a new O3DE project."""
     import json
-    
+
     from o3de_cli.core.paths import get_default_projects_path
+
     project_path = Path(path) if path else get_default_projects_path() / name
-    
+
     if not as_json:
         console.print(f"[bold]Creating project:[/bold] {name}")
-    
+
     if project_path.exists():
         if as_json:
             emit_error(f"Path already exists: {project_path}", code="PATH_EXISTS")
             return
         console.print(f"[red]Path already exists:[/red] {project_path}")
         raise SystemExit(1)
-    
+
     # If a template is specified, try to apply it
     template_data = None
     if template_name:
         try:
             from o3de_cli.core.resolver import Resolver
+
             resolver = Resolver()
             resolver.resolve()
             for tpl_name, tpl_obj in resolver.templates.items():
@@ -99,42 +106,46 @@ def init_project(name: str, path: str | None, template_name: str | None, as_json
                     break
         except Exception:
             pass
-    
+
     # Create project directory
     project_path.mkdir(parents=True)
-    
+
     if template_data and template_data.path.exists():
         from o3de_cli.commands.template import instantiate_template
+
         instantiate_template(template_data.path, project_path, name)
         if not as_json:
             console.print(f"[dim]Applied template: {template_name}[/dim]")
-        
+
         # Upgrade the template-generated project.json through each schema version
         legacy_json = project_path / "project.json"
         if legacy_json.exists():
             from o3de_cli.core.upgrade import upgrade_0_to_1, upgrade_1_to_2
+
             with open(legacy_json) as f:
                 legacy_data = json.load(f)
-            
+
             # 0 → 1.0.0
             v1_data = upgrade_0_to_1(legacy_data, "project")
             with open(project_path / "project.1-0-0.json", "w") as f:
                 json.dump(v1_data, f, indent=2)
-            
+
             # 1.0.0 → 2.0.0
             v2_data = upgrade_1_to_2(v1_data, "project", file_path=legacy_json)
             if v2_data:
                 with open(project_path / "project.2-0-0.json", "w") as f:
                     json.dump(v2_data, f, indent=2)
-            
+
             if not as_json:
-                console.print("[dim]Upgraded project.json -> project.1-0-0.json -> project.2-0-0.json[/dim]")
+                console.print(
+                    "[dim]Upgraded project.json -> project.1-0-0.json -> project.2-0-0.json[/dim]"
+                )
     else:
         # No template — create minimal structure
         (project_path / "Code").mkdir()
         (project_path / "Gems").mkdir()
         (project_path / "Assets").mkdir()
-        
+
         # Create project.2-0-0.json
         project_json = {
             "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-project-2.0.0.json",
@@ -144,11 +155,11 @@ def init_project(name: str, path: str | None, template_name: str | None, as_json
                 "display_name": name.split(".")[-1],
                 "version": "1.0.0",
                 "description": f"A new O3DE project: {name}",
-            }
+            },
         }
         with open(project_path / "project.2-0-0.json", "w") as f:
             json.dump(project_json, f, indent=2)
-        
+
         # Create CMakeLists.txt
         short_name = name.split(".")[-1]
         cmake_content = f"""# Auto-generated by o3de-pilot
@@ -159,7 +170,7 @@ o3de_pal_dir(pal_dir ${{CMAKE_CURRENT_LIST_DIR}}/cmake)
 """
         with open(project_path / "CMakeLists.txt", "w") as f:
             f.write(cmake_content)
-    
+
     if as_json:
         emit_response(data={"name": name, "path": str(project_path), "template": template_name})
         return
@@ -194,7 +205,9 @@ def register_project(path_or_url: str, remote: bool) -> None:
     else:
         project_path = Path(path_or_url).resolve()
         console.print(f"[bold]Registering project:[/bold] {project_path}")
-        is_project = any((project_path / f).exists() for f in ["project.2-0-0.json", "project.json"])
+        is_project = any(
+            (project_path / f).exists() for f in ["project.2-0-0.json", "project.json"]
+        )
         if not is_project:
             console.print("[red]No project JSON found at this path.[/red]")
             raise SystemExit(1)
@@ -253,20 +266,22 @@ def unregister_project(name: str, remote: bool) -> None:
 
 @project.command("build")
 @click.option("--path", "-p", type=click.Path(exists=True), help="Project path")
-@click.option("--config", "-c", type=click.Choice(["debug", "profile", "release"]), default="profile")
+@click.option(
+    "--config", "-c", type=click.Choice(["debug", "profile", "release"]), default="profile"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.option("--dry-run", is_flag=True, help="Show build plan without executing")
 def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
     """Build an O3DE project using CMake."""
     import subprocess
-    
+
     project_path = Path(path) if path else Path.cwd()
     build_dir = project_path / "build"
-    
+
     if not as_json:
         console.print(f"[bold]Building project:[/bold] {project_path.name}")
         console.print(f"[dim]Configuration: {config}[/dim]")
-    
+
     # Check for CMakeLists.txt
     if not (project_path / "CMakeLists.txt").exists():
         if as_json:
@@ -274,11 +289,11 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
             return
         console.print("[red]No CMakeLists.txt found in project directory.[/red]")
         raise SystemExit(1)
-    
+
     # Check for CMakePresets.json
     presets_file = project_path / "CMakePresets.json"
     cmake_config = {"debug": "Debug", "profile": "Profile", "release": "Release"}[config]
-    
+
     # Determine commands
     configure_cmd = None
     if not build_dir.exists():
@@ -286,9 +301,9 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
             configure_cmd = ["cmake", "--preset", "default", "-S", str(project_path)]
         else:
             configure_cmd = ["cmake", "-S", str(project_path), "-B", str(build_dir)]
-    
+
     build_cmd = ["cmake", "--build", str(build_dir), "--config", cmake_config, "--parallel"]
-    
+
     if dry_run:
         plan = {"project": str(project_path), "config": cmake_config, "commands": []}
         if configure_cmd:
@@ -302,7 +317,7 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
                 console.print(f"  [dim]configure:[/dim] {' '.join(configure_cmd)}")
             console.print(f"  [dim]build:[/dim] {' '.join(build_cmd)}")
         return
-    
+
     # Configure if build dir doesn't exist
     if configure_cmd:
         if not as_json:
@@ -314,21 +329,23 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
                 return
             console.print(f"[red]CMake configure failed:[/red]\n{result.stderr}")
             raise SystemExit(1)
-    
+
     # Build
     if not as_json:
         console.print(f"[dim]Running: {' '.join(build_cmd)}[/dim]")
     result = subprocess.run(build_cmd, capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         if as_json:
             emit_error(result.stderr[-500:], code="BUILD_FAILED")
             return
         console.print(f"[red]Build failed:[/red]\n{result.stderr[-500:]}")
         raise SystemExit(1)
-    
+
     if as_json:
-        emit_response(data={"project": str(project_path), "config": cmake_config, "result": "success"})
+        emit_response(
+            data={"project": str(project_path), "config": cmake_config, "result": "success"}
+        )
     else:
         console.print(f"[green]Build complete:[/green] {config}")
 
@@ -339,15 +356,15 @@ def run(path: str | None) -> None:
     """Run an O3DE project (launches the game launcher)."""
     import subprocess
     import sys
-    
+
     project_path = Path(path) if path else Path.cwd()
     build_dir = project_path / "build"
-    
+
     console.print(f"[bold]Running project:[/bold] {project_path.name}")
-    
+
     # Find the launcher executable
     project_name = project_path.name
-    
+
     # Check common build output locations
     launcher = None
     search_patterns = [
@@ -356,16 +373,16 @@ def run(path: str | None) -> None:
         build_dir / "bin" / "Profile" / f"{project_name}.GameLauncher.exe",
         build_dir / "bin" / "debug" / f"{project_name}.GameLauncher.exe",
     ]
-    
+
     for p in search_patterns:
         if p.exists():
             launcher = p
             break
-    
+
     if not launcher:
         console.print("[red]No launcher found. Build the project first with 'project build'.[/red]")
         raise SystemExit(1)
-    
+
     console.print(f"[dim]Launching: {launcher}[/dim]")
     subprocess.Popen([str(launcher)], cwd=str(project_path))
     console.print("[green]Launched![/green]")
@@ -379,12 +396,12 @@ def run(path: str | None) -> None:
 def add(obj_type: str, name: str, path: str | None, as_json: bool) -> None:
     """Add a gem dependency to the project."""
     import json
-    
+
     project_path = Path(path) if path else Path.cwd()
-    
+
     if not as_json:
         console.print(f"[bold]Adding {obj_type}:[/bold] {name}")
-    
+
     # Find project JSON
     project_json_path = None
     for candidate in ["project.2-0-0.json", "project.json"]:
@@ -392,35 +409,35 @@ def add(obj_type: str, name: str, path: str | None, as_json: bool) -> None:
         if p.exists():
             project_json_path = p
             break
-    
+
     if not project_json_path:
         if as_json:
             emit_error("No project JSON found in directory", code="NO_PROJECT_JSON")
             return
         console.print("[red]No project JSON found in directory.[/red]")
         raise SystemExit(1)
-    
+
     with open(project_json_path) as f:
         data = json.load(f)
-    
+
     # Add dependency
     # Schema 2.0.0: project.dependent.gems
     project_data = data.get("project", data)
     dependent = project_data.setdefault("dependent", {})
     gems_list = dependent.setdefault("gems", [])
-    
+
     if name in gems_list:
         if as_json:
             emit_response(data={"name": name, "already_present": True})
             return
         console.print(f"[yellow]Gem {name} is already a dependency.[/yellow]")
         return
-    
+
     gems_list.append(name)
-    
+
     with open(project_json_path, "w") as f:
         json.dump(data, f, indent=2)
-    
+
     if as_json:
         emit_response(data={"name": name, "added": True, "project": str(project_path)})
     else:
