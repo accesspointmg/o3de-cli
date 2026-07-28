@@ -25,7 +25,7 @@ def get_credentials_path() -> Path:
     return get_o3de_home() / _CREDENTIALS_FILE
 
 
-def get_token(registry_url: str) -> Optional[str]:
+def get_token(registry_url: str) -> str | None:
     """Get the auth token for a registry URL.
 
     Matches by origin (scheme + host + port). Returns None if no token is stored.

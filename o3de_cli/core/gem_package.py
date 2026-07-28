@@ -27,9 +27,10 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from o3de_cli.core.solver import (
     abi_compatible,
@@ -89,7 +90,7 @@ def write_file_api_query(build_dir: Path) -> None:
     )
 
 
-def _find_codemodel_file(build_dir: Path) -> Optional[Path]:
+def _find_codemodel_file(build_dir: Path) -> Path | None:
     reply_dir = _api_dir(build_dir) / "reply"
     if not reply_dir.is_dir():
         return None
@@ -107,7 +108,7 @@ def _find_codemodel_file(build_dir: Path) -> Optional[Path]:
     return None
 
 
-def _cached_source_dir(build_dir: Path) -> Optional[Path]:
+def _cached_source_dir(build_dir: Path) -> Path | None:
     """Read CMAKE_HOME_DIRECTORY from an existing CMakeCache.txt."""
     cache = build_dir / "CMakeCache.txt"
     try:
@@ -121,9 +122,9 @@ def _cached_source_dir(build_dir: Path) -> Optional[Path]:
 
 def ensure_codemodel(
     build_dir: Path,
-    on_progress: Optional[Callable[[str], None]] = None,
+    on_progress: Callable[[str], None] | None = None,
     force: bool = False,
-) -> Optional[Path]:
+) -> Path | None:
     """Return the codemodel reply path, running a CMake configure to
     produce one if the query was not present during the last configure
     (or unconditionally with *force*, to refresh a stale reply).
@@ -290,13 +291,13 @@ def generate_config_cmake(
         else (static_targets[0].name if static_targets else canonical_name)
     )
 
-    def _runtime_artifact(t: TargetInfo) -> Optional[str]:
+    def _runtime_artifact(t: TargetInfo) -> str | None:
         for a in t.artifacts:
             if a.suffix.lower() in _RUNTIME_EXTS:
                 return a.name
         return None
 
-    def _link_artifact(t: TargetInfo) -> Optional[str]:
+    def _link_artifact(t: TargetInfo) -> str | None:
         for a in t.artifacts:
             if a.suffix.lower() in _LINK_EXTS:
                 return a.name
@@ -469,7 +470,7 @@ def install_gem_package(
     targets: list[TargetInfo],
     config: str,
     force: bool = False,
-    on_progress: Optional[Callable[[str], None]] = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Assemble the install layout + generated package configs.
 
@@ -555,7 +556,7 @@ def install_gem_package(
 # ---------------------------------------------------------------------------
 
 
-def find_release_binary(data: dict, version: str, platform: str) -> Optional[dict]:
+def find_release_binary(data: dict, version: str, platform: str) -> dict | None:
     """Find the release binary entry for *version* and *platform*.
 
     Prefers the release whose name matches *version*; falls back to any
@@ -573,7 +574,7 @@ def find_release_binary(data: dict, version: str, platform: str) -> Optional[dic
         except ValueError:
             return (0,)
 
-    def _platform_binary(release: dict) -> Optional[dict]:
+    def _platform_binary(release: dict) -> dict | None:
         matches = [
             b
             for b in release.get("binaries", []) or []
@@ -611,7 +612,7 @@ def _has_package_config(root: Path) -> bool:
 
 def _fetch_release_archive(
     url: str,
-    expected_sha256: Optional[str],
+    expected_sha256: str | None,
     cache_name: str,
     progress: Callable[[str], None],
 ) -> Path:
@@ -660,9 +661,9 @@ def download_remote_binary(
     name: str,
     version: str,
     data: dict,
-    platform: Optional[str] = None,
+    platform: str | None = None,
     force: bool = False,
-    on_progress: Optional[Callable[[str], None]] = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Download + extract a remote binary package into BuiltPackages.
 
@@ -723,7 +724,7 @@ def download_remote_binary(
 # ---------------------------------------------------------------------------
 
 
-def find_release_source(data: dict, version: str) -> Optional[dict]:
+def find_release_source(data: dict, version: str) -> dict | None:
     """Find the release source-download entry for *version*.
 
     Prefers the release whose name matches *version*; falls back to any
@@ -732,7 +733,7 @@ def find_release_source(data: dict, version: str) -> Optional[dict]:
     """
     releases = data.get("releases", []) or []
 
-    def _source(release: dict) -> Optional[dict]:
+    def _source(release: dict) -> dict | None:
         for d in release.get("downloads", []) or []:
             if d.get("source"):
                 return d
@@ -755,7 +756,7 @@ def download_remote_source(
     version: str,
     data: dict,
     force: bool = False,
-    on_progress: Optional[Callable[[str], None]] = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Download + extract a code (source) release into the default gems path.
 
@@ -824,7 +825,7 @@ def package_gem_archive(
     canonical_name: str,
     version: str,
     output_dir: Path,
-    platform: Optional[str] = None,
+    platform: str | None = None,
 ) -> tuple[Path, str]:
     """Zip an installed package layout into a distributable release archive.
 
@@ -945,7 +946,7 @@ def update_release_manifest(
     version: str,
     url: str,
     sha256: str,
-    platform: Optional[str] = None,
+    platform: str | None = None,
 ) -> Path:
     """Record a release binary in the gem's JSON manifest.
 

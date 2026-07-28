@@ -23,12 +23,13 @@ Objects can have dependencies on other objects with version constraints.
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Literal, Any
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from enum import Enum
-import re
 
+import re
+from enum import Enum
+from pathlib import Path
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Schema version pattern
 SCHEMA_VERSION = "2.0.0"
@@ -79,45 +80,45 @@ class Origin(BaseModel):
     """Object origin/ownership information."""
 
     name: str = Field(default="", description="Creator/maintainer name")
-    url: Optional[str] = Field(default=None, description="Creator website URL")
-    email: Optional[str] = Field(default=None, description="Contact email")
+    url: str | None = Field(default=None, description="Creator website URL")
+    email: str | None = Field(default=None, description="Contact email")
 
 
 class License(BaseModel):
     """License information."""
 
     name: str = Field(description="License name (e.g., 'Apache-2.0')")
-    url: Optional[str] = Field(default=None, description="License text URL")
+    url: str | None = Field(default=None, description="License text URL")
 
 
 class Icon(BaseModel):
     """Icon for display in UI."""
 
-    relative_path: Optional[str] = Field(default=None, description="Path relative to object root")
-    uri: Optional[str] = Field(default=None, description="Remote icon URL")
+    relative_path: str | None = Field(default=None, description="Path relative to object root")
+    uri: str | None = Field(default=None, description="Remote icon URL")
 
 
 class Documentation(BaseModel):
     """Documentation reference."""
 
-    relative_path: Optional[str] = Field(default=None, description="Path relative to object root")
-    uri: Optional[str] = Field(default=None, description="Remote documentation URL")
+    relative_path: str | None = Field(default=None, description="Path relative to object root")
+    uri: str | None = Field(default=None, description="Remote documentation URL")
 
 
 class SourceControl(BaseModel):
     """Source control information for cloning."""
 
     uri: str = Field(description="Git clone URL")
-    branch: Optional[str] = Field(default=None, description="Default branch")
-    tag: Optional[str] = Field(default=None, description="Specific tag")
-    commit: Optional[str] = Field(default=None, description="Specific commit SHA")
+    branch: str | None = Field(default=None, description="Default branch")
+    tag: str | None = Field(default=None, description="Specific tag")
+    commit: str | None = Field(default=None, description="Specific commit SHA")
 
 
 class Deprecated(BaseModel):
     """Marks an object version as deprecated."""
 
     message: str = Field(description="Human-readable deprecation reason")
-    replacement: Optional[str] = Field(
+    replacement: str | None = Field(
         default=None, description="Replacement object name with version constraint"
     )
 
@@ -125,10 +126,10 @@ class Deprecated(BaseModel):
 class Hooks(BaseModel):
     """Optional scripts that run at key lifecycle points."""
 
-    post_install: Optional[str] = Field(
+    post_install: str | None = Field(
         default=None, description="Script to run after install (relative path)"
     )
-    pre_build: Optional[str] = Field(
+    pre_build: str | None = Field(
         default=None, description="Script to run before build (relative path)"
     )
 
@@ -136,13 +137,13 @@ class Hooks(BaseModel):
 class Download(BaseModel):
     """Download information for release archives."""
 
-    source: Optional[str] = Field(default=None, description="Source code archive URL")
-    lfs: Optional[str] = Field(default=None, description="LFS/assets archive URL")
-    relative_path: Optional[str] = Field(
+    source: str | None = Field(default=None, description="Source code archive URL")
+    lfs: str | None = Field(default=None, description="LFS/assets archive URL")
+    relative_path: str | None = Field(
         default=None, description="Relative path to object root within archive"
     )
-    source_sha256: Optional[str] = Field(default=None, description="SHA-256 hash of source archive")
-    lfs_sha256: Optional[str] = Field(default=None, description="SHA-256 hash of LFS archive")
+    source_sha256: str | None = Field(default=None, description="SHA-256 hash of source archive")
+    lfs_sha256: str | None = Field(default=None, description="SHA-256 hash of LFS archive")
 
 
 class Binary(BaseModel):
@@ -152,8 +153,8 @@ class Binary(BaseModel):
         description="Target platform token <OS>.<ARCH> (e.g. 'Windows.AMD64'); legacy bare-OS tokens accepted"
     )
     binary: str = Field(description="Binary archive URL")
-    sha256: Optional[str] = Field(default=None, description="SHA-256 hash of binary archive")
-    abi: Optional[dict[str, str]] = Field(
+    sha256: str | None = Field(default=None, description="SHA-256 hash of binary archive")
+    abi: dict[str, str] | None = Field(
         default=None,
         description="ABI constraints, e.g. {'glibc': '2.28'} = built against glibc 2.28, runs on >= 2.28",
     )
@@ -220,7 +221,7 @@ class BaseO3DEObject(BaseModel):
     schema_version: str = Field(alias="$schemaVersion", default=SCHEMA_VERSION)
 
     # Path to this object on disk (not persisted, set at load time)
-    _path: Optional[Path] = None
+    _path: Path | None = None
 
 
 class EngineHeader(BaseModel):
@@ -232,7 +233,7 @@ class EngineHeader(BaseModel):
     description: str = Field(default="")
     type: EngineType = Field(default=EngineType.FULL)
     id: str = Field(default="")
-    copyright_year: Optional[int] = None
+    copyright_year: int | None = None
     copyright_text: str = Field(default="")
 
 
@@ -240,10 +241,10 @@ class Engine(BaseO3DEObject):
     """O3DE Engine object."""
 
     engine: EngineHeader
-    origin: Optional[Origin] = None
+    origin: Origin | None = None
     licenses: list[License] = Field(default_factory=list)
-    icon: Optional[Icon] = None
-    documentation: Optional[Documentation] = None
+    icon: Icon | None = None
+    documentation: Documentation | None = None
     canonical_tags: list[str] = Field(default_factory=list)
     user_tags: list[str] = Field(default_factory=list)
     platforms: list[str] = Field(default_factory=list)
@@ -252,10 +253,10 @@ class Engine(BaseO3DEObject):
     dependencies: Dependencies = Field(default_factory=Dependencies)
     optional_dependent: Dependencies = Field(default_factory=Dependencies)
     peer_dependent: Dependencies = Field(default_factory=Dependencies)
-    deprecated: Optional[Deprecated] = None
-    hooks: Optional[Hooks] = None
-    source_control: Optional[SourceControl] = None
-    download: Optional[Download] = None
+    deprecated: Deprecated | None = None
+    hooks: Hooks | None = None
+    source_control: SourceControl | None = None
+    download: Download | None = None
     releases: list[Release] = Field(default_factory=list)
     remote: Remote = Field(default_factory=Remote)
 
@@ -281,11 +282,11 @@ class Project(BaseO3DEObject):
     """O3DE Project object."""
 
     project: ProjectHeader
-    engine: Optional[str] = Field(default=None, description="Engine dependency with version")
-    origin: Optional[Origin] = None
+    engine: str | None = Field(default=None, description="Engine dependency with version")
+    origin: Origin | None = None
     licenses: list[License] = Field(default_factory=list)
-    icon: Optional[Icon] = None
-    documentation: Optional[Documentation] = None
+    icon: Icon | None = None
+    documentation: Documentation | None = None
     canonical_tags: list[str] = Field(default_factory=list)
     user_tags: list[str] = Field(default_factory=list)
     platforms: list[str] = Field(default_factory=list)
@@ -294,10 +295,10 @@ class Project(BaseO3DEObject):
     dependencies: Dependencies = Field(default_factory=Dependencies)
     optional_dependent: Dependencies = Field(default_factory=Dependencies)
     peer_dependent: Dependencies = Field(default_factory=Dependencies)
-    deprecated: Optional[Deprecated] = None
-    hooks: Optional[Hooks] = None
-    source_control: Optional[SourceControl] = None
-    download: Optional[Download] = None
+    deprecated: Deprecated | None = None
+    hooks: Hooks | None = None
+    source_control: SourceControl | None = None
+    download: Download | None = None
     releases: list[Release] = Field(default_factory=list)
 
 
@@ -315,10 +316,10 @@ class Gem(BaseO3DEObject):
     """O3DE Gem object."""
 
     gem: GemHeader
-    origin: Optional[Origin] = None
+    origin: Origin | None = None
     licenses: list[License] = Field(default_factory=list)
-    icon: Optional[Icon] = None
-    documentation: Optional[Documentation] = None
+    icon: Icon | None = None
+    documentation: Documentation | None = None
     canonical_tags: list[str] = Field(default_factory=list)
     user_tags: list[str] = Field(default_factory=list)
     platforms: list[str] = Field(default_factory=list)
@@ -329,10 +330,10 @@ class Gem(BaseO3DEObject):
     peer_dependent: Dependencies = Field(default_factory=Dependencies)
     compatibilities: Dependencies = Field(default_factory=Dependencies)
     incompatibilities: Dependencies = Field(default_factory=Dependencies)
-    deprecated: Optional[Deprecated] = None
-    hooks: Optional[Hooks] = None
-    source_control: Optional[SourceControl] = None
-    download: Optional[Download] = None
+    deprecated: Deprecated | None = None
+    hooks: Hooks | None = None
+    source_control: SourceControl | None = None
+    download: Download | None = None
     releases: list[Release] = Field(default_factory=list)
 
 
@@ -352,10 +353,10 @@ class Template(BaseO3DEObject):
     """O3DE Template object."""
 
     template: TemplateHeader
-    origin: Optional[Origin] = None
+    origin: Origin | None = None
     licenses: list[License] = Field(default_factory=list)
-    icon: Optional[Icon] = None
-    documentation: Optional[Documentation] = None
+    icon: Icon | None = None
+    documentation: Documentation | None = None
     canonical_tags: list[str] = Field(default_factory=list)
     user_tags: list[str] = Field(default_factory=list)
     platforms: list[str] = Field(default_factory=list)
@@ -364,10 +365,10 @@ class Template(BaseO3DEObject):
     dependencies: Dependencies = Field(default_factory=Dependencies)
     optional_dependent: Dependencies = Field(default_factory=Dependencies)
     peer_dependent: Dependencies = Field(default_factory=Dependencies)
-    deprecated: Optional[Deprecated] = None
-    hooks: Optional[Hooks] = None
-    source_control: Optional[SourceControl] = None
-    download: Optional[Download] = None
+    deprecated: Deprecated | None = None
+    hooks: Hooks | None = None
+    source_control: SourceControl | None = None
+    download: Download | None = None
     releases: list[Release] = Field(default_factory=list)
 
     # Template-specific
@@ -388,14 +389,14 @@ class Repo(BaseO3DEObject):
     """O3DE Repo object (registry of objects)."""
 
     repo: RepoHeader
-    origin: Optional[Origin] = None
-    icon: Optional[Icon] = None
-    documentation: Optional[Documentation] = None
+    origin: Origin | None = None
+    icon: Icon | None = None
+    documentation: Documentation | None = None
     canonical_tags: list[str] = Field(default_factory=list)
     user_tags: list[str] = Field(default_factory=list)
 
-    deprecated: Optional[Deprecated] = None
-    hooks: Optional[Hooks] = None
+    deprecated: Deprecated | None = None
+    hooks: Hooks | None = None
 
     # Repos primarily contain remote references
     remote: Remote = Field(default_factory=Remote)
@@ -425,23 +426,23 @@ class Overlay(BaseO3DEObject):
 
     # What object(s) this overlay extends
     extends: str = Field(description="Object name this extends: org.o3de.engine.o3de")
-    extends_version: Optional[str] = Field(default=None, description="Version constraint")
+    extends_version: str | None = Field(default=None, description="Version constraint")
 
     # Priority when multiple overlays apply (higher = applied later)
     precedence: int = Field(default=0)
 
-    origin: Optional[Origin] = None
+    origin: Origin | None = None
     licenses: list[License] = Field(default_factory=list)
-    icon: Optional[Icon] = None
-    documentation: Optional[Documentation] = None
+    icon: Icon | None = None
+    documentation: Documentation | None = None
     canonical_tags: list[str] = Field(default_factory=list)
     user_tags: list[str] = Field(default_factory=list)
     platforms: list[str] = Field(default_factory=list)
     requirements: str = Field(default="")
-    deprecated: Optional[Deprecated] = None
-    hooks: Optional[Hooks] = None
-    source_control: Optional[SourceControl] = None
-    download: Optional[Download] = None
+    deprecated: Deprecated | None = None
+    hooks: Hooks | None = None
+    source_control: SourceControl | None = None
+    download: Download | None = None
     releases: list[Release] = Field(default_factory=list)
 
 
@@ -466,7 +467,7 @@ class ResolvedCandidate(BaseModel):
     version: str = Field(default="0.0.0", description="Resolved version")
     object_type: str = Field(description="Object type (engine, project, gem, etc.)")
     status: str = Field(default="local", description="local, remote, or unknown")
-    path: Optional[str] = Field(default=None, description="Local path if available")
+    path: str | None = Field(default=None, description="Local path if available")
 
 
 class WorkspaceSources(BaseModel):
@@ -499,7 +500,7 @@ class ObjectOverride(BaseModel):
         default="source",
         description="Artifact form: source, local-binary, or remote-binary",
     )
-    path: Optional[str] = Field(
+    path: str | None = Field(
         default=None,
         description="Explicit path to the chosen candidate (source tree or binary install)",
     )
@@ -515,17 +516,17 @@ class WorkspaceMeta(BaseO3DEObject):
 
     workspace: WorkspaceHeader
     created: str = Field(description="ISO 8601 creation timestamp")
-    root_object: Optional[str] = Field(default=None, description="Root object path")
-    root_type: Optional[str] = Field(default=None, description="Root object type")
-    platforms: Optional[list[str]] = Field(
+    root_object: str | None = Field(default=None, description="Root object path")
+    root_type: str | None = Field(default=None, description="Root object type")
+    platforms: list[str] | None = Field(
         default=None,
         description="Platform selection used at compose time (None = all platforms)",
     )
-    attributions: Optional[str] = Field(
+    attributions: str | None = Field(
         default=None,
         description="Overlay attribution mode: workspace, object, or off (None = workspace)",
     )
-    overlay_order: Optional[dict[str, list[str]]] = Field(
+    overlay_order: dict[str, list[str]] | None = Field(
         default=None,
         description="Explicit overlay apply order per extended object "
         "(base name → overlay names, first applied first); "

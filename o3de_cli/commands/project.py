@@ -3,12 +3,13 @@
 
 """Project management commands."""
 
-import click
 from pathlib import Path
+
+import click
 from rich.console import Console
 from rich.table import Table
 
-from o3de_cli.core.json_output import emit_response, emit_error
+from o3de_cli.core.json_output import emit_error, emit_response
 
 console = Console()
 
@@ -184,6 +185,7 @@ o3de_pal_dir(pal_dir ${{CMAKE_CURRENT_LIST_DIR}}/cmake)
 def register_project(path_or_url: str, remote: bool) -> None:
     """Register a project by adding its path to the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()
@@ -231,6 +233,7 @@ def register_project(path_or_url: str, remote: bool) -> None:
 def unregister_project(name: str, remote: bool) -> None:
     """Unregister a project by removing it from the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()

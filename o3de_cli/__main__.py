@@ -7,17 +7,17 @@ import click
 from rich.console import Console
 
 from o3de_cli import __version__
-from o3de_cli.commands import project, gem, template, engine, registry, config
-from o3de_cli.commands import manifest as manifest_cmd
-from o3de_cli.commands import workspace as workspace_cmd
-from o3de_cli.commands import gui as gui_cmd
-from o3de_cli.commands import register as register_cmd
-from o3de_cli.commands import publish as publish_cmd
 from o3de_cli.commands import audit as audit_cmd
+from o3de_cli.commands import config, engine, gem, project, registry, template
 from o3de_cli.commands import deps as deps_cmd
-from o3de_cli.commands import repo as repo_cmd
-from o3de_cli.commands import overlay as overlay_cmd
+from o3de_cli.commands import gui as gui_cmd
+from o3de_cli.commands import manifest as manifest_cmd
 from o3de_cli.commands import object as object_cmd
+from o3de_cli.commands import overlay as overlay_cmd
+from o3de_cli.commands import publish as publish_cmd
+from o3de_cli.commands import register as register_cmd
+from o3de_cli.commands import repo as repo_cmd
+from o3de_cli.commands import workspace as workspace_cmd
 
 console = Console()
 
@@ -29,11 +29,12 @@ def ensure_first_run_setup() -> None:
     manifest_path = get_manifest_path()
     if not manifest_path.exists():
         # First run - initialize everything
-        paths = initialize_user_directories()
+        initialize_user_directories()
 
         # Create default manifest
-        from o3de_cli.core.paths import get_default_manifest_data
         import json
+
+        from o3de_cli.core.paths import get_default_manifest_data
 
         manifest_data = get_default_manifest_data()
         with open(manifest_path, "w") as f:

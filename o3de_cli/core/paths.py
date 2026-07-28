@@ -15,13 +15,16 @@ On first run, o3de-pilot creates:
   └── Overlays/               - New in Schema 2.0.0
 """
 
-from pathlib import Path
-from typing import Optional, Union
-import os
 import json
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional, Union
+
+if TYPE_CHECKING:
+    from o3de_cli.core.models import ObjectType
 
 
-def to_posix_path(path: Union[Path, str]) -> str:
+def to_posix_path(path: Path | str) -> str:
     """
     Convert a path to POSIX format (forward slashes).
 

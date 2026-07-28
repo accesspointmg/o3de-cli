@@ -16,6 +16,7 @@ The engine runs these scripts with user confirmation (sandboxing/security).
 import logging
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Optional
 
@@ -57,7 +58,7 @@ class HooksEngine:
         script_path: str,
         object_dir: Path,
         object_name: str,
-        confirm_callback: Optional[callable] = None,
+        confirm_callback: Callable[[str, Path, str], bool] | None = None,
     ) -> bool:
         """Run a single hook script.
 
@@ -100,8 +101,8 @@ class HooksEngine:
         data: dict,
         object_dir: Path,
         object_name: str,
-        hook_filter: Optional[list[str]] = None,
-        confirm_callback: Optional[callable] = None,
+        hook_filter: list[str] | None = None,
+        confirm_callback: Callable[[str, Path, str], bool] | None = None,
     ) -> dict[str, bool]:
         """Run all hooks defined in an object's data.
 

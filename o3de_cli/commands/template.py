@@ -3,14 +3,15 @@
 
 """Template management commands."""
 
-import click
 import os
 import shutil
 from pathlib import Path
+
+import click
 from rich.console import Console
 from rich.table import Table
 
-from o3de_cli.core.json_output import emit_response, emit_error
+from o3de_cli.core.json_output import emit_error, emit_response
 
 console = Console()
 
@@ -128,13 +129,13 @@ def _load_template_manifest(template_path: Path) -> dict | None:
     # Prefer 2.0.0
     manifest_20 = template_path / "template.2-0-0.json"
     if manifest_20.exists():
-        with open(manifest_20, "r", encoding="utf-8") as f:
+        with open(manifest_20, encoding="utf-8") as f:
             return json.load(f)
 
     # Fallback to legacy template.json (schema 0 or 1.0 — same copyFiles structure)
     manifest_legacy = template_path / "template.json"
     if manifest_legacy.exists():
-        with open(manifest_legacy, "r", encoding="utf-8") as f:
+        with open(manifest_legacy, encoding="utf-8") as f:
             return json.load(f)
 
     return None
@@ -472,6 +473,7 @@ def instance_template(
 def register_template(path_or_url: str, remote: bool) -> None:
     """Register a template by adding its path to the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()
@@ -517,6 +519,7 @@ def register_template(path_or_url: str, remote: bool) -> None:
 def unregister_template(name: str, remote: bool) -> None:
     """Unregister a template by removing it from the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()

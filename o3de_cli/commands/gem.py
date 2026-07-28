@@ -3,8 +3,9 @@
 
 """Gem management commands."""
 
-import click
 from pathlib import Path
+
+import click
 from rich.console import Console
 from rich.table import Table
 
@@ -59,10 +60,9 @@ def list_gems(as_json: bool) -> None:
 def create(name: str, path: str | None, template_name: str | None) -> None:
     """Create a new gem from a template."""
     import json
-    from o3de_cli.core.paths import get_manifest_path
-    from o3de_cli.core.resolver import Resolver
 
-    from o3de_cli.core.paths import get_default_gems_path
+    from o3de_cli.core.paths import get_default_gems_path, get_manifest_path
+    from o3de_cli.core.resolver import Resolver
 
     gem_path = Path(path) if path else get_default_gems_path() / name
 
@@ -220,6 +220,7 @@ def info(name: str, as_json: bool) -> None:
 def search(query: str, as_json: bool) -> None:
     """Search for gems in local manifest and remote registries."""
     import json as json_module
+
     from o3de_cli.core.store import Store
 
     store = Store()
@@ -255,6 +256,7 @@ def search(query: str, as_json: bool) -> None:
 def register_gem(path_or_url: str, remote: bool, as_json: bool) -> None:
     """Register a gem by adding its path to the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()
@@ -328,6 +330,7 @@ def register_gem(path_or_url: str, remote: bool, as_json: bool) -> None:
 def unregister_gem(name: str, remote: bool, as_json: bool) -> None:
     """Unregister a gem by removing it from the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()

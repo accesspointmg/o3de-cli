@@ -20,33 +20,34 @@ Cache structure (~/.o3de/Cache/):
     metadata.json   - Cache metadata (timestamp, etag, etc)
 """
 
-from pathlib import Path
-from typing import Optional, Callable, Any, Union
-from urllib.parse import urlparse
 import hashlib
 import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional, Union
+from urllib.parse import urlparse
 
 import httpx
 
-from .paths import get_cache_path, get_download_path
 from .models import (
+    Engine,
+    Gem,
     O3DEObject,
     ObjectType,
-    Repo,
-    Engine,
-    Project,
-    Gem,
-    Template,
     Overlay,
-    get_object_type,
-    get_object_name,
-    get_object_version,
+    Project,
     Remote,
+    Repo,
+    Template,
+    get_object_name,
+    get_object_type,
+    get_object_version,
 )
+from .paths import get_cache_path, get_download_path
 
 logger = logging.getLogger("o3de_cli.store")
 
@@ -137,23 +138,23 @@ class RemoteObject:
         icon_url: str = "",
         icon_relative_path: str = "",
         documentation_url: str = "",
-        source_control_url: Optional[str] = None,
-        source_control_branch: Optional[str] = None,
-        source_control_tag: Optional[str] = None,
-        download_url: Optional[str] = None,
+        source_control_url: str | None = None,
+        source_control_branch: str | None = None,
+        source_control_tag: str | None = None,
+        download_url: str | None = None,
         gem_type: str = "",
-        tags: Optional[list[str]] = None,
-        cached_at: Optional[datetime] = None,
+        tags: list[str] | None = None,
+        cached_at: datetime | None = None,
         # Integrity
-        source_sha256: Optional[str] = None,
+        source_sha256: str | None = None,
         # Parent repo info for inheritance
-        parent_repo_url: Optional[str] = None,
-        inherited_source_control_url: Optional[str] = None,
-        inherited_source_control_branch: Optional[str] = None,
+        parent_repo_url: str | None = None,
+        inherited_source_control_url: str | None = None,
+        inherited_source_control_branch: str | None = None,
         # Path of this object within its containing repo (for subdir extraction)
-        repo_relative_path: Optional[str] = None,
+        repo_relative_path: str | None = None,
         # Dependencies (specifier strings for transitive solving)
-        dependencies: Optional[list[str]] = None,
+        dependencies: list[str] | None = None,
     ):
         self.url = url
         self.object_type = object_type
@@ -187,12 +188,12 @@ class RemoteObject:
         self.dependencies: list[str] = dependencies or []
 
     @property
-    def effective_source_control_url(self) -> Optional[str]:
+    def effective_source_control_url(self) -> str | None:
         """Get source control URL - own or inherited from parent."""
         return self.source_control_url or self.inherited_source_control_url
 
     @property
-    def effective_source_control_branch(self) -> Optional[str]:
+    def effective_source_control_branch(self) -> str | None:
         """Get source control branch - own or inherited from parent."""
         if self.source_control_url:
             return self.source_control_branch
@@ -205,7 +206,7 @@ class RemoteObject:
 class Cache:
     """Local cache for remote JSON files."""
 
-    def __init__(self, cache_dir: Optional[Path] = None):
+    def __init__(self, cache_dir: Path | None = None):
         self.cache_dir = cache_dir or get_cache_path()
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -214,35 +215,35 @@ class Cache:
         url_hash = hashlib.sha256(url.encode()).hexdigest()
         return self.cache_dir / url_hash
 
-    def get(self, url: str) -> Optional[dict]:
+    def get(self, url: str) -> dict | None:
         """Get cached JSON for URL, or None if not cached."""
         cache_path = self._url_to_cache_path(url)
         json_path = cache_path / "object.json"
 
         if json_path.exists():
             try:
-                with open(json_path, "r") as f:
+                with open(json_path) as f:
                     return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
+            except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"Failed to read cache for {url}: {e}")
 
         return None
 
-    def get_metadata(self, url: str) -> Optional[dict]:
+    def get_metadata(self, url: str) -> dict | None:
         """Get cache metadata for URL."""
         cache_path = self._url_to_cache_path(url)
         meta_path = cache_path / "metadata.json"
 
         if meta_path.exists():
             try:
-                with open(meta_path, "r") as f:
+                with open(meta_path) as f:
                     return json.load(f)
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass
 
         return None
 
-    def put(self, url: str, data: dict, etag: Optional[str] = None) -> None:
+    def put(self, url: str, data: dict, etag: str | None = None) -> None:
         """Store JSON in cache."""
         cache_path = self._url_to_cache_path(url)
         cache_path.mkdir(parents=True, exist_ok=True)
@@ -272,7 +273,7 @@ class Cache:
         age = datetime.now(timezone.utc) - cached_at
         return age.total_seconds() > (max_age_hours * 3600)
 
-    def clear(self, url: Optional[str] = None) -> int:
+    def clear(self, url: str | None = None) -> int:
         """Clear cache. If url provided, clear only that entry. Returns count cleared."""
         import shutil
 
@@ -291,7 +292,7 @@ class Cache:
             return count
 
 
-def get_manifest_remote_urls(manifest_path: Optional[Path] = None) -> list[str]:
+def get_manifest_remote_urls(manifest_path: Path | None = None) -> list[str]:
     """Collect remote repo URLs from the user manifest.
 
     Handles Schema 2.0.0 (``remote.repos``), legacy flat ``remotes``,
@@ -303,9 +304,9 @@ def get_manifest_remote_urls(manifest_path: Optional[Path] = None) -> list[str]:
     if not path.exists():
         return []
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             manifest = json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return []
 
     urls: list[str] = []
@@ -352,7 +353,7 @@ class Store:
 
     def __init__(
         self,
-        cache: Optional[Cache] = None,
+        cache: Cache | None = None,
         timeout: float = 30.0,
     ):
         self.cache = cache or Cache()
@@ -458,7 +459,7 @@ class Store:
     async def refresh(
         self,
         repo_urls: list[str],
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> int:
         """
         Refresh store by descending all repo trees.
@@ -531,7 +532,7 @@ class Store:
     def refresh_sync(
         self,
         repo_urls: list[str],
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
         max_concurrency: int = 32,
     ) -> int:
         """Synchronous version of refresh with parallel fetching.
@@ -545,7 +546,7 @@ class Store:
         self.objects.clear()
 
         # Queue items are tuples: (url, parent_repo_url, inherited_sc_url, inherited_sc_branch)
-        wave: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = [
+        wave: list[tuple[str, str | None, str | None, str | None]] = [
             (url, None, None, None) for url in repo_urls
         ]
         total = len(wave)
@@ -553,7 +554,7 @@ class Store:
 
         with httpx.Client(timeout=self.timeout) as client:
 
-            def _fetch_one(url: str) -> tuple[str, Optional[dict]]:
+            def _fetch_one(url: str) -> tuple[str, dict | None]:
                 """Fetch a single URL, returning (url, data_or_None)."""
                 # Check cache first
                 cached = self.cache.get(url)
@@ -576,7 +577,7 @@ class Store:
 
             while wave:
                 # De-duplicate and skip already-visited within this wave
-                pending: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+                pending: list[tuple[str, str | None, str | None, str | None]] = []
                 pending_urls: list[str] = []
                 for item in wave:
                     url = item[0]
@@ -589,7 +590,7 @@ class Store:
                     break
 
                 # Parallel fetch all URLs in this wave
-                url_to_data: dict[str, Optional[dict]] = {}
+                url_to_data: dict[str, dict | None] = {}
                 with ThreadPoolExecutor(
                     max_workers=min(max_concurrency, len(pending_urls))
                 ) as executor:
@@ -599,7 +600,7 @@ class Store:
                         url_to_data[url] = data
 
                 # Process results and build next wave
-                next_wave: list[tuple[str, Optional[str], Optional[str], Optional[str]]] = []
+                next_wave: list[tuple[str, str | None, str | None, str | None]] = []
 
                 for url, parent_repo_url, inherited_sc_url, inherited_sc_branch in pending:
                     processed += 1
@@ -636,9 +637,9 @@ class Store:
                             self.objects[key] = remote_obj
 
                     # Determine source control info to pass to children
-                    child_repo_url: Optional[str] = None
-                    child_sc_url: Optional[str] = None
-                    child_sc_branch: Optional[str] = None
+                    child_repo_url: str | None = None
+                    child_sc_url: str | None = None
+                    child_sc_branch: str | None = None
 
                     if remote_obj and obj_type == ObjectType.REPO:
                         child_repo_url = url
@@ -666,10 +667,10 @@ class Store:
         url: str,
         data: dict,
         obj_type: ObjectType,
-        parent_repo_url: Optional[str] = None,
-        inherited_source_control_url: Optional[str] = None,
-        inherited_source_control_branch: Optional[str] = None,
-    ) -> Optional[RemoteObject]:
+        parent_repo_url: str | None = None,
+        inherited_source_control_url: str | None = None,
+        inherited_source_control_branch: str | None = None,
+    ) -> RemoteObject | None:
         """Parse JSON into RemoteObject."""
         try:
             name = get_object_name(data)
@@ -741,7 +742,7 @@ class Store:
 
             # Compute this object's directory relative to its containing
             # repo (used to extract a contained object from a repo clone)
-            repo_relative_path: Optional[str] = None
+            repo_relative_path: str | None = None
             if parent_repo_url:
                 repo_base = parent_repo_url.rsplit("/", 1)[0] + "/"
                 if url.startswith(repo_base):
@@ -843,8 +844,8 @@ class Store:
     def search(
         self,
         query: str = "",
-        object_type: Optional[ObjectType] = None,
-        tags: Optional[list[str]] = None,
+        object_type: ObjectType | None = None,
+        tags: list[str] | None = None,
     ) -> list[RemoteObject]:
         """
         Search for objects in the store.
@@ -878,7 +879,7 @@ class Store:
 
         return results
 
-    def get_by_name(self, object_type: ObjectType, name: str) -> Optional[RemoteObject]:
+    def get_by_name(self, object_type: ObjectType, name: str) -> RemoteObject | None:
         """Get a specific object by type and name."""
         key = f"{object_type.value}:{name}"
         return self.objects.get(key)
@@ -893,8 +894,8 @@ class Store:
         return versions
 
     def get_version(
-        self, object_type: Union[ObjectType, str], name: str, version: str
-    ) -> Optional[RemoteObject]:
+        self, object_type: ObjectType | str, name: str, version: str
+    ) -> RemoteObject | None:
         """Get a specific version of an object."""
         type_str = object_type.value if isinstance(object_type, ObjectType) else object_type
         key = f"{type_str}:{name}"
@@ -931,8 +932,8 @@ class Store:
         remote_obj: RemoteObject,
         target_path: Path,
         prefer_source_control: bool = True,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
-        expected_sha256: Optional[str] = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+        expected_sha256: str | None = None,
     ) -> Path:
         """
         Download a remote object to local disk.
@@ -1023,9 +1024,9 @@ class Store:
         remote_obj: RemoteObject,
         target_path: Path,
         prefer_source_control: bool = True,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
         use_version_folders: bool = True,
-        expected_sha256: Optional[str] = None,
+        expected_sha256: str | None = None,
     ) -> Path:
         """
         Synchronous version of download.
@@ -1166,9 +1167,9 @@ class Store:
                             if progress_callback:
                                 if total_size > 0:
                                     pct = int(downloaded * 80 / total_size)  # 0-80% for download
-                                    progress_callback(f"Downloading...", pct, 100)
+                                    progress_callback("Downloading...", pct, 100)
                                 else:
-                                    progress_callback(f"Downloading...", -1, 100)  # indeterminate
+                                    progress_callback("Downloading...", -1, 100)  # indeterminate
 
             if progress_callback:
                 progress_callback("Extracting...", 85, 100)

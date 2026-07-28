@@ -33,7 +33,7 @@ class SchemaValidationError(Exception):
     pass
 
 
-def find_schema_directory() -> Optional[Path]:
+def find_schema_directory() -> Path | None:
     """Try to locate the canonical schema directory.
 
     Searches common locations for the canonical.o3de.org/src/ directory.
@@ -64,7 +64,7 @@ def find_schema_directory() -> Optional[Path]:
 def validate_against_schema(
     data: dict,
     obj_type: ObjectType,
-    schema_dir: Optional[Path] = None,
+    schema_dir: Path | None = None,
 ) -> list[str]:
     """Validate object data against its canonical JSON Schema.
 

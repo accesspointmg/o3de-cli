@@ -8,12 +8,13 @@ Provides a way to check if internet is accessible and track online/offline statu
 When offline, the application should use cached data and disable network operations.
 """
 
+import logging
 import socket
 import threading
 import time
-import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 from functools import lru_cache
+from typing import Optional
 
 logger = logging.getLogger("o3de_cli.network")
 
@@ -57,7 +58,7 @@ class NetworkStatus:
     _last_check: float = 0.0
     _listeners: list[Callable[[bool], None]] = []
     _monitoring: bool = False
-    _monitor_thread: Optional[threading.Thread] = None
+    _monitor_thread: threading.Thread | None = None
     _stop_monitoring: bool = False
     _lock = threading.Lock()
 
@@ -83,7 +84,7 @@ class NetworkStatus:
                     logger.debug(f"Connected to {host}:{port} - network is online")
                     return True
 
-            except socket.error as e:
+            except OSError as e:
                 logger.debug(f"Failed to connect to {host}:{port}: {e}")
                 continue
 

@@ -12,12 +12,13 @@ Handles migration between schema versions following O3DE's upgrade_schema.py:
 The upgrade path is always: 0 → 1.0.0 → 2.0.0 (incremental)
 """
 
-from pathlib import Path
-from typing import Optional, Any, Callable
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
 
 logger = logging.getLogger("o3de_cli.upgrade")
 
@@ -53,7 +54,7 @@ def is_url(s: str) -> bool:
     return s.startswith(("http://", "https://", "ftp://", "ftps://"))
 
 
-def get_canonical_tag(tag: str) -> Optional[str]:
+def get_canonical_tag(tag: str) -> str | None:
     """Get canonical tag name or None if invalid."""
     canonical_mapping = {
         "engine": "Engine",
@@ -378,7 +379,7 @@ SCHEMA_HOSTS = {
 }
 
 
-def upgrade_1_to_2(data: dict, object_type: str, *, file_path: Optional[Path] = None) -> dict:
+def upgrade_1_to_2(data: dict, object_type: str, *, file_path: Path | None = None) -> dict:
     """
     Upgrade from version 1.0.0 to version 2.0.0.
 
@@ -724,9 +725,9 @@ def _fetch_releases_from_remote(file_path: Path) -> list[dict]:
     - downloads with lfs archives (from release assets, if present)
     """
     from .git_utils import (
-        get_local_git_upstream,
-        get_local_git_remote,
         get_github_releases_full,
+        get_local_git_remote,
+        get_local_git_upstream,
         parse_github_url,
     )
 
@@ -810,7 +811,7 @@ def _fetch_releases_from_remote(file_path: Path) -> list[dict]:
     return releases
 
 
-def _add_releases(output: dict, data: dict, *, file_path: Optional[Path] = None) -> dict:
+def _add_releases(output: dict, data: dict, *, file_path: Path | None = None) -> dict:
     """Add releases to output.
 
     If the source data contains no ``releases`` or ``versions_data`` AND the
@@ -1022,7 +1023,7 @@ def _upgrade_engine_1_to_2(
     reversed_domain: str,
     is_o3de: bool,
     *,
-    file_path: Optional[Path] = None,
+    file_path: Path | None = None,
 ) -> dict:
     """Upgrade engine from 1.0.0 to 2.0.0."""
     old_name = data.get("engine_name", "")
@@ -1077,7 +1078,7 @@ def _upgrade_project_1_to_2(
     reversed_domain: str,
     is_o3de: bool,
     *,
-    file_path: Optional[Path] = None,
+    file_path: Path | None = None,
 ) -> dict:
     """Upgrade project from 1.0.0 to 2.0.0."""
     old_name = data.get("project_name", "")
@@ -1165,7 +1166,7 @@ def _upgrade_gem_1_to_2(
     reversed_domain: str,
     is_o3de: bool,
     *,
-    file_path: Optional[Path] = None,
+    file_path: Path | None = None,
 ) -> dict:
     """Upgrade gem from 1.0.0 to 2.0.0."""
     old_name = data.get("gem_name", "")
@@ -1223,7 +1224,7 @@ def _upgrade_template_1_to_2(
     reversed_domain: str,
     is_o3de: bool,
     *,
-    file_path: Optional[Path] = None,
+    file_path: Path | None = None,
 ) -> dict:
     """Upgrade template from 1.0.0 to 2.0.0."""
     old_name = data.get("template_name", "")
@@ -1273,7 +1274,7 @@ def _upgrade_repo_1_to_2(
     reversed_domain: str,
     is_o3de: bool,
     *,
-    file_path: Optional[Path] = None,
+    file_path: Path | None = None,
 ) -> dict:
     """Upgrade repo from 1.0.0 to 2.0.0."""
     old_name = data.get("repo_name", "")
@@ -1308,7 +1309,7 @@ def _upgrade_overlay_1_to_2(
     reversed_domain: str,
     is_o3de: bool,
     *,
-    file_path: Optional[Path] = None,
+    file_path: Path | None = None,
 ) -> dict:
     """Upgrade overlay (formerly restricted) from 1.0.0 to 2.0.0."""
     old_name = data.get("restricted_name", "")
@@ -1354,10 +1355,10 @@ def _upgrade_overlay_1_to_2(
 
 def upgrade_to_latest(
     data: dict,
-    object_type: Optional[str] = None,
+    object_type: str | None = None,
     *,
-    file_path: Optional[Path] = None,
-) -> Optional[dict]:
+    file_path: Path | None = None,
+) -> dict | None:
     """
     Upgrade data to latest schema version (2.0.0).
 
@@ -1431,7 +1432,7 @@ def upgrade_file(
     Returns:
         Tuple of (sidecar_path, old_version, new_version), or None if skipped
     """
-    with open(path, "r") as f:
+    with open(path) as f:
         data = json.load(f)
 
     old_type, old_version = get_schema_version(data)
@@ -1462,7 +1463,7 @@ def upgrade_directory(
     root: Path,
     recursive: bool = True,
     backup: bool = True,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> list[tuple[Path, str, str]]:
     """
     Upgrade all O3DE JSON files in a directory.

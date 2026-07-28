@@ -3,8 +3,9 @@
 
 """Repo management commands."""
 
-import click
 from pathlib import Path
+
+import click
 from rich.console import Console
 from rich.table import Table
 
@@ -150,6 +151,7 @@ def create_repo(name: str, path: str | None, template_name: str | None) -> None:
 def register_repo(path_or_url: str, remote: bool) -> None:
     """Register a repo by adding its path to the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()
@@ -195,6 +197,7 @@ def register_repo(path_or_url: str, remote: bool) -> None:
 def unregister_repo(name: str, remote: bool) -> None:
     """Unregister a repo by removing it from the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()

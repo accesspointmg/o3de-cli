@@ -9,8 +9,8 @@ for a workspace, similar to package-lock.json or Cargo.lock.
 File: workspace-lock.json (placed next to workspace.json)
 """
 
-import json
 import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,7 +73,7 @@ def generate_lockfile(
     return lockfile_path
 
 
-def read_lockfile(workspace_path: Path) -> Optional[dict]:
+def read_lockfile(workspace_path: Path) -> dict | None:
     """Read a lockfile from a workspace directory.
 
     Returns None if no lockfile exists.
@@ -153,7 +153,7 @@ def _get_type(candidate) -> str:
     return t.value if hasattr(t, "value") else str(t)
 
 
-def _get_path(candidate) -> Optional[str]:
+def _get_path(candidate) -> str | None:
     """Extract path from a candidate."""
     if isinstance(candidate, dict):
         return candidate.get("path")
@@ -161,14 +161,14 @@ def _get_path(candidate) -> Optional[str]:
     return str(p) if p else None
 
 
-def _get_sha256(candidate) -> Optional[str]:
+def _get_sha256(candidate) -> str | None:
     """Extract SHA-256 from a candidate."""
     if isinstance(candidate, dict):
         return candidate.get("sha256")
     return getattr(candidate, "sha256", None)
 
 
-def _get_source(candidate) -> Optional[str]:
+def _get_source(candidate) -> str | None:
     """Extract source URL from a candidate."""
     if isinstance(candidate, dict):
         return candidate.get("source")
