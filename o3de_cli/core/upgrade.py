@@ -30,6 +30,11 @@ class UpgradeError(Exception):
 # Schema version patterns
 SCHEMA_URL_PATTERN = re.compile(r"https?://[^/]+/o3de-(\w+)-(\d+\.\d+\.\d+)\.json")
 
+# Trailing path separators stripped from manifest paths. Kept out of the
+# f-strings below: a backslash inside an f-string expression is a syntax
+# error before Python 3.12 (PEP 701).
+_TRAILING_SEPARATORS = "/\\"
+
 
 def is_reverse_domain_format(name: str) -> bool:
     """Check if a name is in reverse domain format (e.g., org.o3de.gem.foo)."""
@@ -566,7 +571,7 @@ def _add_children_and_remote(output: dict, data: dict) -> dict:
                 # Ensure paths end with proper JSON file
                 json_file = key.rstrip("s") + ".json"
                 children[key] = [
-                    p if p.endswith(".json") else f"{p.rstrip('/\\')}/{json_file}"
+                    p if p.endswith(".json") else f"{p.rstrip(_TRAILING_SEPARATORS)}/{json_file}"
                     for p in local
                 ]
             if rem:
@@ -579,7 +584,7 @@ def _add_children_and_remote(output: dict, data: dict) -> dict:
     if "external_subdirectories" in data:
         local, rem = _split_local_remote(data["external_subdirectories"])
         for p in local:
-            path = p if p.endswith(".json") else f"{p.rstrip('/\\')}/gem.json"
+            path = p if p.endswith(".json") else f"{p.rstrip(_TRAILING_SEPARATORS)}/gem.json"
             if path not in children["gems"]:
                 children["gems"].append(path)
         remote["gems"].extend(rem)
@@ -932,7 +937,7 @@ def _add_local_and_remote(output: dict, data: dict) -> dict:
             if loc:
                 json_file = key.rstrip("s") + ".json"
                 local[key] = [
-                    p if p.endswith(".json") else f"{p.rstrip('/\\')}/{json_file}"
+                    p if p.endswith(".json") else f"{p.rstrip(_TRAILING_SEPARATORS)}/{json_file}"
                     for p in loc
                 ]
             if rem:
@@ -945,7 +950,7 @@ def _add_local_and_remote(output: dict, data: dict) -> dict:
     if "external_subdirectories" in data:
         loc, rem = _split_local_remote(data["external_subdirectories"])
         for p in loc:
-            path = p if p.endswith(".json") else f"{p.rstrip('/\\')}/gem.json"
+            path = p if p.endswith(".json") else f"{p.rstrip(_TRAILING_SEPARATORS)}/gem.json"
             if path not in local["gems"]:
                 local["gems"].append(path)
         remote["gems"].extend(rem)
@@ -957,7 +962,7 @@ def _add_local_and_remote(output: dict, data: dict) -> dict:
                 loc, rem = _split_local_remote(data["local"][key])
                 json_file = key.rstrip("s") + ".json"
                 for p in loc:
-                    path = p if p.endswith(".json") else f"{p.rstrip('/\\')}/{json_file}"
+                    path = p if p.endswith(".json") else f"{p.rstrip(_TRAILING_SEPARATORS)}/{json_file}"
                     if path not in local[key]:
                         local[key].append(path)
                 remote[key].extend(rem)
