@@ -3,8 +3,9 @@
 
 """Dependency tree visualization and management commands."""
 
-import click
 import json
+
+import click
 from rich.console import Console
 from rich.tree import Tree
 
@@ -153,7 +154,7 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
         console.print("  [dim]none[/dim]")
 
     if obj.optional_dependencies:
-        console.print(f"\n[bold]Optional dependencies:[/bold]")
+        console.print("\n[bold]Optional dependencies:[/bold]")
         for dep_spec in obj.optional_dependencies:
             candidate = resolver.objects.get(dep_spec.name)
             if candidate:
@@ -162,7 +163,7 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
                 console.print(f"  {dep_spec.name} [dim]not installed[/dim]")
 
     if obj.peer_dependencies:
-        console.print(f"\n[bold]Peer dependencies:[/bold]")
+        console.print("\n[bold]Peer dependencies:[/bold]")
         for dep_spec in obj.peer_dependencies:
             candidate = resolver.objects.get(dep_spec.name)
             if candidate:
@@ -171,7 +172,7 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
                 console.print(f"  {dep_spec.name} [yellow]missing[/yellow]")
 
     if transitive:
-        console.print(f"\n[bold]Transitive dependencies:[/bold]")
+        console.print("\n[bold]Transitive dependencies:[/bold]")
         locked = resolver.locked_dependencies.get(name, {})
         if locked:
             for dep_name, dep_version in locked.items():
@@ -241,7 +242,7 @@ def why_command(name: str, dependency: str, as_json: bool) -> None:
         emit_response(data={"from": name, "to": dependency, "chain": path or []})
         return
     if path:
-        console.print(f"[bold]Dependency chain:[/bold]")
+        console.print("[bold]Dependency chain:[/bold]")
         chain = " -> ".join(path)
         console.print(f"  {chain}")
     else:

@@ -3,8 +3,9 @@
 
 """Overlay management commands."""
 
-import click
 from pathlib import Path
+
+import click
 from rich.console import Console
 from rich.table import Table
 
@@ -125,6 +126,7 @@ def create_overlay(name: str, path: str | None, template_name: str | None) -> No
 def register_overlay(path_or_url: str, remote: bool) -> None:
     """Register an overlay by adding its path to the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()
@@ -172,6 +174,7 @@ def register_overlay(path_or_url: str, remote: bool) -> None:
 def unregister_overlay(name: str, remote: bool) -> None:
     """Unregister an overlay by removing it from the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()

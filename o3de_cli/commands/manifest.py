@@ -3,27 +3,28 @@
 
 """Manifest resolution and management commands."""
 
-import click
 import json
 from pathlib import Path
+
+import click
 from rich.console import Console
-from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from o3de_cli.core import (
+    ObjectType,
+    Resolver,
     get_manifest_path,
     get_resolved_manifest_path,
     resolve_manifest,
-    Resolver,
-    ObjectType,
 )
+from o3de_cli.core.json_output import emit_error, emit_response
 from o3de_cli.core.upgrade import (
-    upgrade_file,
-    upgrade_directory,
     get_schema_version,
     needs_upgrade,
+    upgrade_directory,
+    upgrade_file,
 )
-from o3de_cli.core.json_output import emit_response, emit_error
 
 console = Console()
 

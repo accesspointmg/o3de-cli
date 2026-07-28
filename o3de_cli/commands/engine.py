@@ -3,8 +3,9 @@
 
 """Engine management commands."""
 
-import click
 from pathlib import Path
+
+import click
 from rich.console import Console
 from rich.table import Table
 
@@ -141,6 +142,7 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
 def register(path_or_url: str, remote: bool, as_json: bool) -> None:
     """Register an O3DE engine by adding it to the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()
@@ -214,6 +216,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
 def unregister(name: str, remote: bool, as_json: bool) -> None:
     """Unregister an O3DE engine by removing it from the manifest."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     manifest_path = get_manifest_path()

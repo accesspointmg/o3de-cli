@@ -3,12 +3,13 @@
 
 """Dependency tree audit command."""
 
-import click
 import json
 from pathlib import Path
+
+import click
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 from rich.tree import Tree
 
 from o3de_cli.core import (

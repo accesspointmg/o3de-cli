@@ -3,19 +3,20 @@
 
 """Package registry commands."""
 
-import click
 import json
 from pathlib import Path
+
+import click
 from rich.console import Console
-from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from o3de_cli.core import (
-    Store,
     ObjectType,
+    Resolver,
+    Store,
     get_manifest_path,
     get_resolved_manifest_path,
-    Resolver,
 )
 from o3de_cli.core.models import get_object_name, get_object_version
 
@@ -92,7 +93,7 @@ def search_registry(
             console=console,
             transient=True,
         ) as progress:
-            task = progress.add_task("Searching remotes...", total=None)
+            progress.add_task("Searching remotes...", total=None)
 
             # Populate the store from configured remotes (cache-backed)
             remote_urls = get_manifest_remote_urls()
@@ -153,9 +154,8 @@ def install_package(
     as_json: bool = False,
 ) -> None:
     """Install a package from the registry."""
-    from pathlib import Path
-    from o3de_cli.core.paths import get_default_path_for_type
     from o3de_cli.core.models import ObjectType
+    from o3de_cli.core.paths import get_default_path_for_type
 
     version_str = f"@{version}" if version else ""
     if not as_json:
@@ -271,6 +271,7 @@ def install_package(
 def uninstall(package: str, as_json: bool) -> None:
     """Uninstall a package."""
     import json
+
     from o3de_cli.core.paths import get_manifest_path
 
     if not as_json:
@@ -327,8 +328,9 @@ def uninstall(package: str, as_json: bool) -> None:
 @click.argument("package", required=False)
 def update(package: str | None) -> None:
     """Update package(s) to latest version by re-resolving from remotes."""
-    from o3de_cli.core.store import Store, get_manifest_remote_urls
     from rich.progress import Progress, SpinnerColumn, TextColumn
+
+    from o3de_cli.core.store import Store, get_manifest_remote_urls
 
     store = Store()
     remote_urls = get_manifest_remote_urls()
@@ -522,9 +524,6 @@ def list_remotes_command(as_json: bool) -> None:
         else:
             console.print("[dim]No manifest found.[/dim]")
         return
-
-    with open(manifest_path) as f:
-        manifest = json.load(f)
 
     from o3de_cli.core.store import get_manifest_remote_urls
 

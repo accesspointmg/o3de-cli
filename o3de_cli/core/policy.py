@@ -68,12 +68,12 @@ class PolicyConfig:
 
     def __init__(
         self,
-        allowed_licenses: Optional[set[str]] = None,
-        denied_licenses: Optional[set[str]] = None,
+        allowed_licenses: set[str] | None = None,
+        denied_licenses: set[str] | None = None,
         allow_deprecated: bool = True,
         allow_copyleft: bool = True,
         require_license: bool = False,
-        security_advisories: Optional[list[dict]] = None,
+        security_advisories: list[dict] | None = None,
     ):
         self.allowed_licenses = allowed_licenses
         self.denied_licenses = denied_licenses or set()
@@ -117,7 +117,7 @@ class PolicyConfig:
 
 def check_object_policy(
     object_data: dict,
-    policy: Optional[PolicyConfig] = None,
+    policy: PolicyConfig | None = None,
 ) -> list[PolicyViolation]:
     """Check an object against policy rules.
 
@@ -148,7 +148,7 @@ def check_object_policy(
 
 def check_install_policy(
     objects: list[dict],
-    policy: Optional[PolicyConfig] = None,
+    policy: PolicyConfig | None = None,
 ) -> list[PolicyViolation]:
     """Check multiple objects against policy before installation.
 
@@ -176,7 +176,7 @@ def _check_licenses(data: dict, policy: PolicyConfig, obj_name: str) -> list[Pol
                 PolicyViolation(
                     "error",
                     "license",
-                    f"No license specified — required by policy",
+                    "No license specified — required by policy",
                     obj_name,
                 )
             )
@@ -185,7 +185,7 @@ def _check_licenses(data: dict, policy: PolicyConfig, obj_name: str) -> list[Pol
                 PolicyViolation(
                     "warning",
                     "license",
-                    f"No license specified",
+                    "No license specified",
                     obj_name,
                 )
             )

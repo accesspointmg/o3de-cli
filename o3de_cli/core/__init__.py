@@ -13,93 +13,86 @@ Modules:
     upgrade - Schema migration (0 → 1.0 → 2.0.0)
 """
 
-from .paths import (
-    get_dot_o3de_path,
-    get_o3de_path,
-    get_manifest_path,
-    get_resolved_manifest_path,
-    get_cache_path,
-    get_default_workspaces_path,
-    get_default_layouts_path,
-    get_default_path_for_type,
-    get_default_gems_path,
-    initialize_user_directories,
-    to_posix_path,
+from .hooks import (
+    HookError,
+    HooksEngine,
 )
-
 from .models import (
-    ObjectType,
-    O3DEObject,
-    Origin,
+    Binary,
     Children,
     Dependencies,
     Deprecated,
-    Hooks,
     Download,
-    Binary,
-    Release,
     Engine,
-    Project,
     Gem,
-    Template,
-    Repo,
-    Overlay,
+    Hooks,
     Manifest,
-    get_object_type,
+    O3DEObject,
+    ObjectType,
+    Origin,
+    Overlay,
+    Project,
+    Release,
+    Repo,
+    Template,
     get_object_name,
+    get_object_type,
     get_object_version,
 )
-
-from .workspace import (
-    Workspace,
-    create_workspace,
-    detect_root_type,
-    # Backward-compatible aliases
-    Layout,
-    create_layout,
+from .paths import (
+    get_cache_path,
+    get_default_gems_path,
+    get_default_layouts_path,
+    get_default_path_for_type,
+    get_default_workspaces_path,
+    get_dot_o3de_path,
+    get_manifest_path,
+    get_o3de_path,
+    get_resolved_manifest_path,
+    initialize_user_directories,
+    to_posix_path,
 )
-
+from .resolver import (
+    DependencyConflict,
+    ObjectNameVersion,
+    ResolvedObject,
+    Resolver,
+    check_files_changed,
+    resolve_manifest,
+)
+from .solver import (
+    Candidate,
+    CandidateStatus,
+    O3DEProvider,
+    O3DEReporter,
+    OverlayEntry,
+    Requirement,
+    SolveResult,
+    solve_for_workspace,
+)
 from .store import (
     Cache,
+    IntegrityError,
     RemoteObject,
     Store,
     StoreError,
-    IntegrityError,
     compute_sha256,
     verify_integrity,
 )
-
-from .resolver import (
-    Resolver,
-    ResolvedObject,
-    ObjectNameVersion,
-    DependencyConflict,
-    resolve_manifest,
-    check_files_changed,
-)
-
 from .upgrade import (
     get_schema_version,
     needs_upgrade,
-    upgrade_to_latest,
-    upgrade_file,
     upgrade_directory,
+    upgrade_file,
+    upgrade_to_latest,
 )
-
-from .hooks import (
-    HooksEngine,
-    HookError,
-)
-
-from .solver import (
-    solve_for_workspace,
-    SolveResult,
-    Candidate,
-    CandidateStatus,
-    Requirement,
-    OverlayEntry,
-    O3DEProvider,
-    O3DEReporter,
+from .workspace import (
+    # Backward-compatible aliases
+    Layout,
+    Workspace,
+    create_layout,
+    create_workspace,
+    detect_root_type,
 )
 
 __all__ = [

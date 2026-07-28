@@ -3,24 +3,25 @@
 
 """Publish and validation commands for O3DE objects."""
 
-import click
-import json
-import tarfile
 import hashlib
 import io
+import json
+import tarfile
 from pathlib import Path
+
+import click
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 
 from o3de_cli.core import (
     ObjectType,
     get_manifest_path,
     get_resolved_manifest_path,
 )
-from o3de_cli.core.models import get_object_type, get_object_name, get_object_version
-from o3de_cli.core.store import compute_sha256
+from o3de_cli.core.models import get_object_name, get_object_type, get_object_version
 from o3de_cli.core.schema import validate_against_schema
+from o3de_cli.core.store import compute_sha256
 
 console = Console()
 
@@ -331,7 +332,6 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
     # Find the JSON file
     if target.is_file() and target.suffix == ".json":
         json_path = target
-        obj_dir = target.parent
     elif target.is_dir():
         # Search for versioned 2.0.0 JSON first, then legacy
         json_path = None
@@ -347,7 +347,6 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
         if json_path is None:
             errors.append(f"No O3DE object JSON found in {target}")
             return errors, warnings
-        obj_dir = target
     else:
         errors.append(f"Path does not exist or is not a file/directory: {target}")
         return errors, warnings
@@ -600,8 +599,8 @@ def _upload_http(remote: str, data: dict, obj_type: ObjectType, name: str, versi
 
     Expected API: PUT {remote}/api/v1/objects/{type}/{name}/{version}
     """
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     url = f"{remote.rstrip('/')}/api/v1/objects/{obj_type.value}/{name}/{version}"
     payload = json.dumps(data).encode("utf-8")

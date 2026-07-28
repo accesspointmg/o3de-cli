@@ -16,47 +16,52 @@ Resolution also handles:
 - Deduplication of objects found via multiple paths
 """
 
-from pathlib import Path
-from typing import Optional, Callable, Any
-from packaging.version import Version
-from packaging.specifiers import SpecifierSet
+import hashlib
 import json
 import logging
 import re
-import hashlib
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
 
-from .paths import (
-    get_manifest_path,
-    get_resolved_manifest_path,
-    get_object_json_filename,
-    get_versioned_object_json_filename,
-    find_object_json,
+if TYPE_CHECKING:
+    from o3de_cli.core.store import Store
+
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
+
+from .git_utils import (
+    get_local_git_branch,
+    get_local_git_remote,
 )
 from .models import (
+    Children,
+    Engine,
+    Gem,
+    LocalObjects,
+    Manifest,
     O3DEObject,
     ObjectType,
-    Manifest,
-    Engine,
-    Project,
-    Gem,
-    Template,
-    Repo,
     Overlay,
-    Children,
-    LocalObjects,
+    Project,
     Remote,
-    get_object_type,
+    Repo,
+    Template,
     get_object_name,
+    get_object_type,
     get_object_version,
+)
+from .paths import (
+    find_object_json,
+    get_manifest_path,
+    get_object_json_filename,
+    get_resolved_manifest_path,
+    get_versioned_object_json_filename,
 )
 from .upgrade import (
     get_schema_version,
     needs_upgrade,
     upgrade_to_latest,
-)
-from .git_utils import (
-    get_local_git_remote,
-    get_local_git_branch,
 )
 
 logger = logging.getLogger("o3de_cli.resolver")
@@ -75,7 +80,7 @@ def compute_file_hash(path: Path) -> str:
     try:
         with open(path, "rb") as f:
             return hashlib.sha256(f.read()).hexdigest()
-    except (OSError, IOError):
+    except OSError:
         return ""
 
 
@@ -194,7 +199,7 @@ class ResolvedObject:
         self.overlays: list["ResolvedObject"] = []
 
         # Parent object that contains this one (set during resolution)
-        self.parent: Optional["ResolvedObject"] = None
+        self.parent: "ResolvedObject" | None = None
 
         # Properties inherited from parent (property_name -> parent_name)
         # Only set for properties the child did NOT define and got from a parent.
@@ -214,7 +219,7 @@ class Resolver:
         resolver.save()
     """
 
-    def __init__(self, manifest_path: Optional[Path] = None, dry_run: bool = False):
+    def __init__(self, manifest_path: Path | None = None, dry_run: bool = False):
         self.manifest_path = manifest_path or get_manifest_path()
         self.resolved_path = get_resolved_manifest_path()
         self.dry_run = dry_run
@@ -237,7 +242,7 @@ class Resolver:
         self.overlays: dict[str, ResolvedObject] = {}
 
         # Manifest data
-        self.manifest_data: Optional[dict] = None
+        self.manifest_data: dict | None = None
 
         # File hashes for change detection: path -> hash
         self.file_hashes: dict[str, str] = {}
@@ -259,7 +264,7 @@ class Resolver:
 
     def resolve(
         self,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, ResolvedObject]:
         """
         Resolve the manifest.
@@ -277,7 +282,7 @@ class Resolver:
             raise ResolverError(f"Manifest not found: {self.manifest_path}")
 
         # Load manifest and compute hash
-        with open(self.manifest_path, "r") as f:
+        with open(self.manifest_path) as f:
             self.manifest_data = json.load(f)
         manifest_hash = compute_file_hash(self.manifest_path)
         if manifest_hash:
@@ -298,7 +303,7 @@ class Resolver:
                         dir_str = upgraded_manifest.get("default", {}).get(key, "")
                         if dir_str:
                             Path(dir_str).mkdir(parents=True, exist_ok=True)
-                except IOError as e:
+                except OSError as e:
                     logger.warning(f"Failed to write manifest sidecar: {e}")
 
         # Handle both Schema 2.0.0 (local.engines) and legacy (engines at root) formats
@@ -312,7 +317,7 @@ class Resolver:
                 with open(self.manifest_path, "w") as f:
                     json.dump(self.manifest_data, f, indent=2)
                 logger.info("Sanitized manifest (dedup / type fix)")
-            except IOError as e:
+            except OSError as e:
                 logger.warning(f"Failed to save sanitized manifest: {e}")
 
         # Note: We do NOT convert "restricteds" to "overlays"
@@ -407,15 +412,16 @@ class Resolver:
 
         Uses wave-based parallel fetching for speed.
         """
-        import httpx
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        import httpx
 
         visited: dict[str, dict] = {}
         wave = list(urls)
 
         with httpx.Client(timeout=10) as client:
 
-            def _fetch(url: str) -> tuple[str, Optional[dict], Optional[str]]:
+            def _fetch(url: str) -> tuple[str, dict | None, str | None]:
                 try:
                     resp = client.get(url, follow_redirects=True)
                     if resp.status_code != 200 or "json" not in resp.headers.get(
@@ -442,7 +448,7 @@ class Resolver:
                     visited[u] = {}
 
                 # Parallel fetch
-                url_to_result: dict[str, tuple[Optional[dict], Optional[str]]] = {}
+                url_to_result: dict[str, tuple[dict | None, str | None]] = {}
                 with ThreadPoolExecutor(max_workers=min(32, len(pending))) as executor:
                     futures = {executor.submit(_fetch, u): u for u in pending}
                     for future in as_completed(futures):
@@ -751,7 +757,7 @@ class Resolver:
         store: "Store",
         confirm: bool = False,
         dry_run: bool = False,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> list[dict]:
         """
         Automatically fetch and install missing dependencies from the store.
@@ -775,9 +781,9 @@ class Resolver:
             ResolverError: If confirm=False and there are missing deps (contains
                            the list of missing deps for the caller to present)
         """
-        from .store import Store, RemoteObject
-        from .paths import get_default_path_for_type
         from .models import ObjectType
+        from .paths import get_default_path_for_type
+        from .store import RemoteObject, Store
 
         missing = self.get_missing_dependencies()
         if not missing:
@@ -878,7 +884,7 @@ class Resolver:
         if not self.manifest_path.exists():
             return
 
-        with open(self.manifest_path, "r") as f:
+        with open(self.manifest_path) as f:
             manifest_data = _json.load(f)
 
         local = manifest_data.setdefault("local", {})
@@ -957,7 +963,7 @@ class Resolver:
                     for dep in dep_list:
                         resolved.peer_dependencies.append(ObjectNameVersion(dep))
 
-    def _resolve_object(self, path: Path, expected_type: ObjectType) -> Optional[ResolvedObject]:
+    def _resolve_object(self, path: Path, expected_type: ObjectType) -> ResolvedObject | None:
         """Resolve a single object and its children."""
         if not path.exists():
             logger.warning(f"Object path does not exist: {path}")
@@ -1005,7 +1011,7 @@ class Resolver:
 
         # Load JSON
         try:
-            with open(json_path, "r") as f:
+            with open(json_path) as f:
                 data = json.load(f)
             # Compute and store hash for change detection
             file_hash = compute_file_hash(json_path)
@@ -1021,7 +1027,7 @@ class Resolver:
                     legacy_hash = compute_file_hash(legacy_path)
                     if legacy_hash:
                         self.file_hashes[legacy_path.as_posix()] = legacy_hash
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to load {json_path}: {e}")
             return None
 
@@ -1044,7 +1050,7 @@ class Resolver:
                     json.dump(upgraded_data, f, indent=2)
                 logger.info(f"Created versioned file: {versioned_path}")
                 data = upgraded_data
-            except IOError as e:
+            except OSError as e:
                 logger.warning(f"Failed to write versioned file {versioned_path}: {e}")
                 # Continue with upgraded data in memory even if write failed
 
@@ -1290,7 +1296,7 @@ class Resolver:
             return
 
         try:
-            with open(self.manifest_path, "r") as f:
+            with open(self.manifest_path) as f:
                 manifest = json.load(f)
 
             local = manifest.get("local", {})
@@ -1976,11 +1982,11 @@ class Resolver:
         if not self.resolved_path.exists():
             raise ResolverError("No resolved manifest. Run resolve() first.")
 
-        with open(self.resolved_path, "r") as f:
+        with open(self.resolved_path) as f:
             return json.load(f)
 
 
-def check_files_changed(resolved_path: Optional[Path] = None) -> tuple[bool, list[str]]:
+def check_files_changed(resolved_path: Path | None = None) -> tuple[bool, list[str]]:
     """
     Check if any tracked files have changed since last resolution.
 
@@ -2000,9 +2006,9 @@ def check_files_changed(resolved_path: Optional[Path] = None) -> tuple[bool, lis
         return True, ["resolved manifest not found"]
 
     try:
-        with open(resolved_path, "r") as f:
+        with open(resolved_path) as f:
             resolved_data = json.load(f)
-    except (json.JSONDecodeError, IOError):
+    except (OSError, json.JSONDecodeError):
         return True, ["failed to read resolved manifest"]
 
     stored_hashes = resolved_data.get("file_hashes", {})
@@ -2025,10 +2031,10 @@ def check_files_changed(resolved_path: Optional[Path] = None) -> tuple[bool, lis
 
 
 def resolve_manifest(
-    manifest_path: Optional[Path] = None,
+    manifest_path: Path | None = None,
     save: bool = True,
     dry_run: bool = False,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> Resolver:
     """
     Convenience function to resolve the manifest.
@@ -2053,7 +2059,7 @@ def resolve_manifest(
 
 def load_resolved_manifest(
     force_refresh: bool = False,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> dict:
     """
     Load the resolved manifest, using cached version if files haven't changed.
@@ -2083,14 +2089,14 @@ def load_resolved_manifest(
         if not has_changes:
             # Load from cache
             logger.info("Using cached resolved manifest (no file changes)")
-            with open(resolved_path, "r") as f:
+            with open(resolved_path) as f:
                 return json.load(f)
         else:
             logger.info(f"Re-resolving due to {len(changed_files)} changed files")
 
     # Resolve fresh
-    resolver = resolve_manifest(progress_callback=progress_callback)
+    resolve_manifest(progress_callback=progress_callback)
 
     # Return the saved data
-    with open(resolved_path, "r") as f:
+    with open(resolved_path) as f:
         return json.load(f)

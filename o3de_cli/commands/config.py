@@ -4,6 +4,7 @@
 """Configuration management commands."""
 
 import json
+
 import click
 from rich.console import Console
 from rich.table import Table
@@ -29,7 +30,7 @@ def get(key: str | None, as_json: bool) -> None:
     if key:
         value = cfg.get(key)
         if as_json:
-            from o3de_cli.core.json_output import emit_response, emit_error
+            from o3de_cli.core.json_output import emit_error, emit_response
 
             if value is not None:
                 emit_response(data={"key": key, "value": value})

@@ -7,21 +7,22 @@ Registers O3DE objects (engines, projects, gems, templates, repos, overlays)
 in the o3de_manifest.json. Handles schema upgrades transparently.
 """
 
-import click
 import json
 from pathlib import Path
+
+import click
 from rich.console import Console
 
 from o3de_cli.core import (
-    get_manifest_path,
     ObjectType,
-)
-from o3de_cli.core.upgrade import (
-    needs_upgrade,
-    get_schema_version,
-    upgrade_file,
+    get_manifest_path,
 )
 from o3de_cli.core.paths import find_object_json
+from o3de_cli.core.upgrade import (
+    get_schema_version,
+    needs_upgrade,
+    upgrade_file,
+)
 
 console = Console()
 
@@ -166,7 +167,7 @@ def check_and_upgrade_object(obj_path: Path, obj_type: str, force: bool = False)
         return False
 
     try:
-        with open(json_path, "r", encoding="utf-8") as f:
+        with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
         console.print(f"[red]Invalid JSON in {json_path}:[/red] {e}")
@@ -210,7 +211,7 @@ def get_manifest_2_path() -> Path:
 def _ensure_default_dirs(manifest_path: Path) -> None:
     """Create default directories listed in the manifest if they don't exist."""
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
         return
@@ -243,7 +244,7 @@ def ensure_manifest_2() -> Path:
     if legacy.exists():
         corrupt = False
         try:
-            with open(legacy, "r", encoding="utf-8") as f:
+            with open(legacy, encoding="utf-8") as f:
                 data = json.load(f)
         except json.JSONDecodeError:
             # Create fresh manifest if legacy is corrupt
@@ -262,7 +263,7 @@ def ensure_manifest_2() -> Path:
             console.print("[yellow]Upgrading manifest to schema 2.0.0...[/yellow]")
             result = upgrade_file(legacy, target_version="2.0.0", backup=True)
             if result:
-                console.print(f"[green]Manifest upgraded to 2.0.0[/green]")
+                console.print("[green]Manifest upgraded to 2.0.0[/green]")
                 # The upgrade_file should create the versioned file
                 if versioned.exists():
                     _ensure_default_dirs(versioned)
@@ -358,7 +359,7 @@ def register(
         # Try to create the 2.0.0 manifest
         manifest_path = ensure_manifest_2()
 
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest_data = json.load(f)
 
     if remote:
@@ -404,7 +405,7 @@ def register(
         )
     )
     if _is_workspace:
-        from o3de_cli.commands.workspace import _register_workspace, _get_registered_workspaces
+        from o3de_cli.commands.workspace import _get_registered_workspaces, _register_workspace
 
         ws_path = raw_path if raw_path.is_dir() else raw_path.parent
         already = [str(p.resolve()) for p in _get_registered_workspaces()]
@@ -452,7 +453,7 @@ def register(
     manifest_path = ensure_manifest_2()
 
     # Load manifest
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest_data = json.load(f)
 
     # Register the full JSON file path
@@ -521,7 +522,7 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: boo
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest_data = json.load(f)
 
     if remote:
@@ -558,7 +559,7 @@ def unregister(path_or_name: str, obj_type: str | None, remote: bool, force: boo
         )
     )
     if _is_workspace:
-        from o3de_cli.commands.workspace import _unregister_workspace, _get_registered_workspaces
+        from o3de_cli.commands.workspace import _get_registered_workspaces, _unregister_workspace
 
         already = [str(p.resolve()) for p in _get_registered_workspaces()]
         if str(obj_dir.resolve()) not in already:

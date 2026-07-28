@@ -12,38 +12,39 @@ Workspaces are symlinked build directories that combine:
 This allows efficient builds without copying files.
 """
 
-import click
 import json
 import subprocess
 import sys
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+
+import click
 from rich.console import Console
-from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 from rich.tree import Tree
 
 from o3de_cli.core import (
-    get_default_workspaces_path,
-    get_resolved_manifest_path,
-    Resolver,
-    get_manifest_path,
     ObjectType,
+    Resolver,
+    get_default_workspaces_path,
+    get_manifest_path,
+    get_resolved_manifest_path,
 )
-from o3de_cli.core.workspace import Workspace, create_workspace, detect_root_type
 from o3de_cli.core.models import (
+    SCHEMA_BASE_URL,
+    SCHEMA_VERSION,
+    ResolvedCandidate,
     WorkspaceHeader,
     WorkspaceMeta,
-    ResolvedCandidate,
-    SCHEMA_VERSION,
-    SCHEMA_BASE_URL,
 )
 from o3de_cli.core.solver import (
-    solve_for_workspace,
-    SolveResult,
     CandidateStatus,
+    SolveResult,
+    solve_for_workspace,
 )
+from o3de_cli.core.workspace import Workspace, create_workspace, detect_root_type
 
 console = Console()
 
@@ -757,8 +758,8 @@ def create_command(
                     progress.start()
             else:
                 console.print(
-                    f"[dim]Root object not registered in manifest — "
-                    f"skipping dependency resolution[/dim]"
+                    "[dim]Root object not registered in manifest — "
+                    "skipping dependency resolution[/dim]"
                 )
                 progress.start()
 
@@ -920,10 +921,11 @@ def _relink_object(
     meta.file_links in place.
     """
     import shutil
+
     from o3de_cli.core.workspace import (
+        _ENGINE_SKIP_TOPDIRS,
         _TYPE_FOLDERS,
         _short_name,
-        _ENGINE_SKIP_TOPDIRS,
     )
 
     folder = _TYPE_FOLDERS.get(obj_type, "Gems")
@@ -935,7 +937,8 @@ def _relink_object(
     if dest_root.exists():
 
         def _clear_readonly(func, path, _exc_info):
-            import os, stat
+            import os
+            import stat
 
             os.chmod(path, stat.S_IWRITE)
             func(path)
@@ -1007,7 +1010,7 @@ def candidates_command(
     with artifact availability: source path, locally built binary install,
     and remote prebuilt binary for this platform.
     """
-    from o3de_cli.core.json_output import emit_response, emit_error
+    from o3de_cli.core.json_output import emit_error, emit_response
     from o3de_cli.core.solver import list_candidates
 
     ws_path = _resolve_workspace_path(name_or_path)
@@ -1161,7 +1164,7 @@ def override_command(
         o3de workspace override my-ws org.o3de.gem.physx --version 4.0.0
         o3de workspace override my-ws org.o3de.gem.physx --clear
     """
-    from o3de_cli.core.json_output import emit_response, emit_error
+    from o3de_cli.core.json_output import emit_error, emit_response
     from o3de_cli.core.models import ObjectOverride
     from o3de_cli.core.solver import find_local_binary_install
 
@@ -1368,8 +1371,8 @@ def _install_remote_overlay(name: str) -> Path | None:
 
     Returns the installed path, or None if the overlay is unknown remotely.
     """
-    from o3de_cli.core.store import Store, get_manifest_remote_urls
     from o3de_cli.core.paths import get_default_path_for_type
+    from o3de_cli.core.store import Store, get_manifest_remote_urls
 
     urls = get_manifest_remote_urls()
     if not urls:
@@ -1402,6 +1405,7 @@ def _read_overlay_info(path: Path) -> dict:
     ``dependent.overlays``.
     """
     import json as json_mod
+
     from o3de_cli.core.resolver import ObjectNameVersion
 
     info = {"name": path.name, "extends": None, "precedence": 0, "deps": []}
@@ -1412,7 +1416,7 @@ def _read_overlay_info(path: Path) -> dict:
         try:
             with open(candidate, encoding="utf-8-sig") as f:
                 data = json_mod.load(f)
-        except (json_mod.JSONDecodeError, IOError):
+        except (OSError, json_mod.JSONDecodeError):
             continue
         header = data.get("overlay", {}) if isinstance(data.get("overlay"), dict) else {}
         info["name"] = header.get("name") or info["name"]
@@ -1503,7 +1507,7 @@ def update_command(
     affected extended objects are recomposed and attribution records
     migrated.
     """
-    from o3de_cli.core.json_output import emit_response, emit_error
+    from o3de_cli.core.json_output import emit_error, emit_response
 
     # Find workspace
     workspace_path = Path(name_or_path)
@@ -1673,7 +1677,8 @@ def update_command(
                     if attr_dir.exists():
 
                         def _clear_ro(func, path, _exc_info):
-                            import os, stat
+                            import os
+                            import stat
 
                             os.chmod(path, stat.S_IWRITE)
                             func(path)
@@ -1727,7 +1732,8 @@ def update_command(
             if attr_dir.exists():
 
                 def _clear_readonly(func, path, _exc_info):
-                    import os, stat
+                    import os
+                    import stat
 
                     os.chmod(path, stat.S_IWRITE)
                     func(path)
@@ -1972,7 +1978,8 @@ def delete_command(name_or_path: str, force: bool, as_json: bool, dry_run: bool)
     Does not delete the original source files.
     """
     import shutil
-    from o3de_cli.core.json_output import emit_response, emit_error
+
+    from o3de_cli.core.json_output import emit_error, emit_response
 
     # Find workspace
     ws_path = Path(name_or_path)
@@ -2597,7 +2604,7 @@ def build_command(
         o3de workspace build my-workspace --engine-centric --preset windows-default
     """
 
-    from o3de_cli.core.json_output import emit_response, emit_error
+    from o3de_cli.core.json_output import emit_error, emit_response
 
     # Find workspace
     ws_path = Path(name_or_path)
@@ -2894,8 +2901,8 @@ def lock_command(name_or_path: str, as_json: bool) -> None:
     Example:
         o3de-pilot workspace lock my-workspace
     """
+    from o3de_cli.core.json_output import emit_error, emit_response
     from o3de_cli.core.lockfile import generate_lockfile, read_lockfile
-    from o3de_cli.core.json_output import emit_response, emit_error
 
     ws_path = _resolve_workspace_path(name_or_path)
     if not ws_path or not ws_path.exists():
@@ -2958,8 +2965,8 @@ def verify_lock_command(name_or_path: str, as_json: bool) -> None:
     Checks that the resolved dependencies match what's recorded
     in workspace-lock.json.
     """
-    from o3de_cli.core.lockfile import verify_lockfile
     from o3de_cli.core.json_output import emit_error
+    from o3de_cli.core.lockfile import verify_lockfile
 
     ws_path = _resolve_workspace_path(name_or_path)
     if not ws_path or not ws_path.exists():

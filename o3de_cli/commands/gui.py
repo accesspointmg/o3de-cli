@@ -5,8 +5,9 @@
 Launch the O3DE Pilot graphical user interface.
 """
 
-import click
 from pathlib import Path
+
+import click
 
 
 @click.command("gui")

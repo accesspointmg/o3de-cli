@@ -35,12 +35,13 @@ Process:
 5.  ``file_owners`` records  ``workspace-relative POSIX path → object name``.
 """
 
-from pathlib import Path
-from typing import Optional, Callable
 import json
+import logging
 import os
 import shutil
-import logging
+from collections.abc import Callable
+from pathlib import Path
+from typing import Optional
 
 from .models import ObjectType
 
@@ -165,7 +166,7 @@ class Workspace:
     def create(
         self,
         clean: bool = False,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> "Workspace":
         """Create the workspace directory tree with symlinked files.
 
@@ -258,8 +259,8 @@ class Workspace:
         owner_name: str,
         current: int = 0,
         total: int = 0,
-        progress_callback: Optional[Callable] = None,
-        skip_topdirs: Optional[set[str]] = None,
+        progress_callback: Callable | None = None,
+        skip_topdirs: set[str] | None = None,
     ) -> int:
         """Mirror *source_root* into *dest_root*: real dirs, symlinked files.
 
@@ -638,7 +639,7 @@ def create_workspace(
     resolved_objects: dict[str, tuple[Path, ObjectType]],
     overlays: list[tuple[Path, int, str | None]] | list[tuple[Path, int]] | None = None,
     clean: bool = False,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    progress_callback: Callable[[str, int, int], None] | None = None,
     attributions: str = "workspace",
 ) -> Workspace:
     """Convenience function to create a workspace.

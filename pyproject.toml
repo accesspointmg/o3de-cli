@@ -71,6 +71,22 @@ target-version = ["py310", "py311", "py312"]
 line-length = 100
 target-version = "py310"
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = [
+    # Line width is the formatter's concern. What survives `ruff format` is
+    # long string literals and URLs it cannot break.
+    "E501",
+    # Unused imports cannot be auto-removed here: 70+ tests patch module
+    # attributes (e.g. "o3de_cli.commands.registry.Resolver"), so deleting the
+    # import deletes the patch target and the test errors out.
+    "F401",
+    # Quoted annotations are deliberate forward references ("ObjectType",
+    # "Store") that exist to avoid circular imports; unquoting them raises
+    # NameError at import time.
+    "UP037",
+]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true

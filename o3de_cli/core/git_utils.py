@@ -6,8 +6,8 @@ Utility functions for Git operations.
 """
 
 import logging
-import subprocess
 import re
+import subprocess
 from functools import lru_cache
 from typing import Optional
 from urllib.parse import urlparse
@@ -49,7 +49,7 @@ def normalize_git_url(url: str) -> str:
 
 
 @lru_cache(maxsize=256)
-def get_default_branch(git_url: str, timeout: float = 10.0) -> Optional[str]:
+def get_default_branch(git_url: str, timeout: float = 10.0) -> str | None:
     """
     Get the default branch name for a git repository.
 
@@ -146,7 +146,7 @@ def is_git_url(url: str) -> bool:
     return False
 
 
-def get_local_git_remote(path: str, timeout: float = 5.0) -> Optional[str]:
+def get_local_git_remote(path: str, timeout: float = 5.0) -> str | None:
     """
     Get the git remote origin URL for a local directory.
 
@@ -179,7 +179,7 @@ def get_local_git_remote(path: str, timeout: float = 5.0) -> Optional[str]:
         return None
 
 
-def get_local_git_upstream(path: str, timeout: float = 5.0) -> Optional[str]:
+def get_local_git_upstream(path: str, timeout: float = 5.0) -> str | None:
     """
     Get the git upstream remote URL for a local directory.
 
@@ -215,7 +215,7 @@ def get_local_git_upstream(path: str, timeout: float = 5.0) -> Optional[str]:
         return None
 
 
-def get_local_git_branch(path: str, timeout: float = 5.0) -> Optional[str]:
+def get_local_git_branch(path: str, timeout: float = 5.0) -> str | None:
     """
     Get the current git branch for a local directory.
 
@@ -275,7 +275,7 @@ def clear_branch_cache():
     get_default_branch.cache_clear()
 
 
-def parse_github_url(git_url: str) -> Optional[tuple[str, str]]:
+def parse_github_url(git_url: str) -> tuple[str, str] | None:
     """
     Parse a GitHub URL to extract owner and repo.
 
@@ -332,8 +332,8 @@ def get_github_releases(git_url: str, timeout: float = 10.0) -> list[str]:
     owner, repo = parsed
 
     try:
-        import urllib.request
         import json
+        import urllib.request
 
         # Use GitHub API to get releases
         api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
@@ -389,8 +389,8 @@ def get_github_releases_full(git_url: str, timeout: float = 10.0) -> list[dict]:
     owner, repo = parsed
 
     try:
-        import urllib.request
         import json
+        import urllib.request
 
         api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
 

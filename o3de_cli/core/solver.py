@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Callable, Sequence, Any
+from typing import Any, Optional
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -29,8 +30,10 @@ from resolvelib import (
     AbstractProvider,
     AbstractResolver,
     BaseReporter,
-    Resolver as RLResolver,
     RequirementsConflicted,
+)
+from resolvelib import (
+    Resolver as RLResolver,
 )
 from resolvelib.resolvers import ResolutionImpossible
 
@@ -64,15 +67,15 @@ class Candidate:
     status: CandidateStatus = CandidateStatus.UNKNOWN
 
     # Populated for local candidates
-    path: Optional[Path] = None
-    resolved_object: Optional[ResolvedObject] = None
+    path: Path | None = None
+    resolved_object: ResolvedObject | None = None
 
     # Populated for remote candidates
-    remote_object: Optional[RemoteObject] = None
+    remote_object: RemoteObject | None = None
 
     # Artifact availability (populated by annotate_artifacts / list_candidates)
     # Path to a locally built + installed binary layout (contains *Config.cmake)
-    local_binary_path: Optional[Path] = None
+    local_binary_path: Path | None = None
     # True when a release advertises a prebuilt binary for the current platform
     remote_binary: bool = False
 
@@ -125,9 +128,9 @@ class OverlayEntry:
     name: str
     version: str
     extends: str  # Base object name
-    extends_version: Optional[str]  # Version constraint on base
+    extends_version: str | None  # Version constraint on base
     precedence: int = 0
-    path: Optional[Path] = None
+    path: Path | None = None
     status: CandidateStatus = CandidateStatus.LOCAL
     # Platforms this overlay delivers (empty = platform-agnostic)
     platforms: list[str] = field(default_factory=list)
@@ -193,7 +196,7 @@ class O3DEProvider(AbstractProvider):
     def __init__(
         self,
         resolver: Resolver,
-        store: Optional[Store] = None,
+        store: Store | None = None,
     ):
         self._resolver = resolver
         self._store = store
@@ -366,7 +369,7 @@ class O3DEReporter(BaseReporter):
 
     def __init__(
         self,
-        callback: Optional[Callable[[str], None]] = None,
+        callback: Callable[[str], None] | None = None,
     ):
         self._callback = callback
 
@@ -403,9 +406,9 @@ class O3DEReporter(BaseReporter):
 def solve_for_workspace(
     root_name: str,
     resolver: Resolver,
-    store: Optional[Store] = None,
-    progress_callback: Optional[Callable[[str], None]] = None,
-    overrides: Optional[dict[str, str]] = None,
+    store: Store | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> SolveResult:
     """
     Solve the dependency graph for a workspace rooted at *root_name*.
@@ -672,7 +675,7 @@ def current_platform() -> str:
     return f"{os_name}.{current_arch()}"
 
 
-def host_glibc() -> Optional[tuple[int, int]]:
+def host_glibc() -> tuple[int, int] | None:
     """The host's glibc (major, minor) on Linux, else None."""
     if not sys.platform.startswith("linux"):
         return None
@@ -688,7 +691,7 @@ def host_glibc() -> Optional[tuple[int, int]]:
         return None
 
 
-def platform_matches(advertised: str, host: Optional[str] = None) -> bool:
+def platform_matches(advertised: str, host: str | None = None) -> bool:
     """Case-insensitive platform token match with legacy support.
 
     An advertised ``<OS>.<ARCH>`` must equal the host token exactly;
@@ -728,8 +731,8 @@ def abi_compatible(binary) -> bool:
 def find_local_binary_install(
     name: str,
     version: str,
-    source_path: Optional[Path] = None,
-) -> Optional[Path]:
+    source_path: Path | None = None,
+) -> Path | None:
     """Locate a locally built + installed binary layout for an object.
 
     A local binary is an *install layout* containing a CMake package config
@@ -755,7 +758,7 @@ def find_local_binary_install(
     return None
 
 
-def has_remote_binary(candidate: Candidate, platform: Optional[str] = None) -> bool:
+def has_remote_binary(candidate: Candidate, platform: str | None = None) -> bool:
     """True if a release advertises a prebuilt binary for *platform*.
 
     Prefers the release whose name matches the candidate version; falls back
@@ -810,7 +813,7 @@ def annotate_artifacts(candidate: Candidate) -> Candidate:
 def list_candidates(
     name: str,
     resolver: Resolver,
-    store: Optional[Store] = None,
+    store: Store | None = None,
     specifier: str = "",
 ) -> list[Candidate]:
     """Enumerate ALL candidates for *name* that satisfy *specifier*.

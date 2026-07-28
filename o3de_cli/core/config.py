@@ -5,6 +5,7 @@
 
 from pathlib import Path
 from typing import Any
+
 import yaml
 
 _config_instance: "Config | None" = None
