@@ -16,21 +16,72 @@ console = Console()
 
 
 # Binary extensions that should be copied without content replacement
-_BINARY_EXTENSIONS = frozenset({
-    ".pak", ".bin", ".png", ".tga", ".bmp", ".dat", ".trp", ".fbx", ".mb",
-    ".tif", ".tiff", ".dds", ".dds0", ".dds1", ".dds2", ".dds3", ".dds4",
-    ".dds5", ".dds6", ".dds7", ".dds8", ".dds9", ".ctc", ".bnk", ".wav",
-    ".akd", ".cgf", ".wem", ".assetinfo", ".animgraph", ".motionset",
-    ".jpg", ".jpeg", ".gif", ".ico", ".hdr", ".exr", ".psd",
-    ".mp3", ".ogg", ".flac",
-    ".glb", ".gltf", ".obj", ".stl",
-    ".zip", ".7z", ".tar", ".gz",
-    ".dll", ".so", ".dylib", ".exe",
-    ".ttf", ".otf", ".woff", ".woff2",
-})
+_BINARY_EXTENSIONS = frozenset(
+    {
+        ".pak",
+        ".bin",
+        ".png",
+        ".tga",
+        ".bmp",
+        ".dat",
+        ".trp",
+        ".fbx",
+        ".mb",
+        ".tif",
+        ".tiff",
+        ".dds",
+        ".dds0",
+        ".dds1",
+        ".dds2",
+        ".dds3",
+        ".dds4",
+        ".dds5",
+        ".dds6",
+        ".dds7",
+        ".dds8",
+        ".dds9",
+        ".ctc",
+        ".bnk",
+        ".wav",
+        ".akd",
+        ".cgf",
+        ".wem",
+        ".assetinfo",
+        ".animgraph",
+        ".motionset",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".hdr",
+        ".exr",
+        ".psd",
+        ".mp3",
+        ".ogg",
+        ".flac",
+        ".glb",
+        ".gltf",
+        ".obj",
+        ".stl",
+        ".zip",
+        ".7z",
+        ".tar",
+        ".gz",
+        ".dll",
+        ".so",
+        ".dylib",
+        ".exe",
+        ".ttf",
+        ".otf",
+        ".woff",
+        ".woff2",
+    }
+)
 
 
-def _build_replacements(name: str, *, version: str = "1.0.0", project_path: str = "", engine_path: str = "") -> dict[str, str]:
+def _build_replacements(
+    name: str, *, version: str = "1.0.0", project_path: str = "", engine_path: str = ""
+) -> dict[str, str]:
     """Build the token → value map for template instantiation."""
     import uuid
 
@@ -121,9 +172,7 @@ def instantiate_template(
     source_root = template_path / "Template"
 
     if not source_root.is_dir():
-        raise FileNotFoundError(
-            f"Template source directory not found: {source_root}"
-        )
+        raise FileNotFoundError(f"Template source directory not found: {source_root}")
 
     # 1. Create directories (with token replacement in names)
     for entry in manifest.get("createDirectories", []):
@@ -180,32 +229,33 @@ def template() -> None:
 def list_templates(as_json: bool) -> None:
     """List all registered templates."""
     from o3de_cli.core.resolver import Resolver
-    
+
     resolver = Resolver()
     resolver.resolve()
     templates = resolver.templates
-    
+
     if as_json:
         import json
+
         items = []
         for name, obj in templates.items():
             items.append({"name": obj.name, "version": obj.version, "path": str(obj.path)})
         click.echo(json.dumps(items, indent=2))
         return
-    
+
     if not templates:
         console.print("[yellow]No templates registered.[/yellow]")
         return
-    
+
     table = Table(title="Registered Templates")
     table.add_column("Name", style="cyan")
     table.add_column("Type", style="green")
     table.add_column("Path", style="dim")
-    
+
     for name, obj in templates.items():
         tpl_type = obj.data.get("template_type") or "project"
         table.add_row(obj.name, tpl_type, str(obj.path))
-    
+
     console.print(table)
 
 
@@ -215,7 +265,7 @@ def list_templates(as_json: bool) -> None:
 def info(name: str, as_json: bool) -> None:
     """Show information about a template."""
     from o3de_cli.core.resolver import load_resolved_manifest
-    
+
     try:
         resolved = load_resolved_manifest()
     except Exception:
@@ -224,49 +274,52 @@ def info(name: str, as_json: bool) -> None:
             return
         console.print("[yellow]No resolved manifest. Run 'manifest resolve' first.[/yellow]")
         raise SystemExit(1)
-    
+
     obj_data = None
     for obj_name, obj_info in resolved.get("objects", {}).items():
         if obj_info.get("type") == "template" and (name in obj_name or name == obj_name):
             obj_data = obj_info
             obj_data["_name"] = obj_name
             break
-    
+
     if not obj_data:
         if as_json:
             emit_error(f"Template not found: {name}", code="NOT_FOUND")
             return
         console.print(f"[red]Template not found:[/red] {name}")
         raise SystemExit(1)
-    
+
     if as_json:
-        emit_response(data={
-            "name": obj_data["_name"],
-            "version": obj_data.get("version", "unknown"),
-            "path": obj_data.get("path", "unknown"),
-            "display_name": (obj_data.get("display_metadata") or {}).get("display_name"),
-            "summary": (obj_data.get("display_metadata") or {}).get("summary"),
-        })
+        emit_response(
+            data={
+                "name": obj_data["_name"],
+                "version": obj_data.get("version", "unknown"),
+                "path": obj_data.get("path", "unknown"),
+                "display_name": (obj_data.get("display_metadata") or {}).get("display_name"),
+                "summary": (obj_data.get("display_metadata") or {}).get("summary"),
+            }
+        )
         return
-    
+
     console.print(f"\n[bold cyan]{obj_data['_name']}[/bold cyan]")
     console.print(f"  Version:  {obj_data.get('version', 'unknown')}")
     console.print(f"  Path:     {obj_data.get('path', 'unknown')}")
-    
+
     meta = obj_data.get("display_metadata") or {}
     if meta.get("display_name"):
         console.print(f"  Display:  {meta['display_name']}")
     if meta.get("summary"):
         console.print(f"  Summary:  {meta['summary']}")
-    
+
     console.print()
 
 
 @template.command("create")
 @click.argument("name")
 @click.option("--path", "-p", type=click.Path(), help="Template path")
-@click.option("--source", "-s", type=click.Path(exists=True),
-              help="Source directory to create template from")
+@click.option(
+    "--source", "-s", type=click.Path(exists=True), help="Source directory to create template from"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def create_template(name: str, path: str | None, source: str | None, as_json: bool) -> None:
     """Create a new template from a source directory.
@@ -333,7 +386,9 @@ def create_template(name: str, path: str | None, source: str | None, as_json: bo
 @click.option("--path", "-p", type=click.Path(), help="Instance output path")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.option("--dry-run", is_flag=True, help="Show what would be created without doing it")
-def instance_template(template_name: str, name: str, path: str | None, as_json: bool, dry_run: bool) -> None:
+def instance_template(
+    template_name: str, name: str, path: str | None, as_json: bool, dry_run: bool
+) -> None:
     """Instantiate a template to create a new object.
 
     Copies the template contents to a new directory, replacing
@@ -382,8 +437,7 @@ def instance_template(template_name: str, name: str, path: str | None, as_json: 
             raise SystemExit(1)
         replacements = _build_replacements(name)
         files = [
-            _replace_tokens(entry["file"], replacements)
-            for entry in manifest.get("copyFiles", [])
+            _replace_tokens(entry["file"], replacements) for entry in manifest.get("copyFiles", [])
         ]
         plan = {"template": template_name, "instance": name, "path": str(inst_path), "files": files}
         if as_json:
@@ -399,7 +453,14 @@ def instance_template(template_name: str, name: str, path: str | None, as_json: 
     created = instantiate_template(tpl_obj.path, inst_path, name)
 
     if as_json:
-        emit_response(data={"template": template_name, "instance": name, "path": str(inst_path), "files_created": len(created)})
+        emit_response(
+            data={
+                "template": template_name,
+                "instance": name,
+                "path": str(inst_path),
+                "files_created": len(created),
+            }
+        )
     else:
         console.print(f"[green]Created instance:[/green] {inst_path} ({len(created)} files)")
         console.print("[dim]Register it with: o3de-pilot register <path>[/dim]")
@@ -432,10 +493,7 @@ def register_template(path_or_url: str, remote: bool) -> None:
     else:
         tpl_path = Path(path_or_url).resolve()
         console.print(f"[bold]Registering template:[/bold] {tpl_path}")
-        is_tpl = any(
-            (tpl_path / f).exists()
-            for f in ["template.2-0-0.json", "template.json"]
-        )
+        is_tpl = any((tpl_path / f).exists() for f in ["template.2-0-0.json", "template.json"])
         if not is_tpl:
             console.print("[red]No template JSON found at this path.[/red]")
             raise SystemExit(1)

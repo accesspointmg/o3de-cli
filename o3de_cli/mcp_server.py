@@ -83,10 +83,20 @@ _TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "name_or_path": {"type": "string", "description": "Workspace name or path."},
-                "config": {"type": "string", "description": "Build config (debug/profile/release).", "default": "profile"},
-                "generator": {"type": "string", "description": "CMake generator (auto/vs/ninja/xcode)."},
+                "config": {
+                    "type": "string",
+                    "description": "Build config (debug/profile/release).",
+                    "default": "profile",
+                },
+                "generator": {
+                    "type": "string",
+                    "description": "CMake generator (auto/vs/ninja/xcode).",
+                },
                 "configure_only": {"type": "boolean", "description": "Only run configure step."},
-                "build_only": {"type": "boolean", "description": "Only run build step (skip configure)."},
+                "build_only": {
+                    "type": "boolean",
+                    "description": "Only run build step (skip configure).",
+                },
                 "dry_run": {"type": "boolean", "description": "Show commands without executing."},
             },
             "required": ["name_or_path"],
@@ -111,7 +121,11 @@ _TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query."},
-                "type": {"type": "string", "description": "Object type filter.", "enum": ["engine", "gem", "project", "template"]},
+                "type": {
+                    "type": "string",
+                    "description": "Object type filter.",
+                    "enum": ["engine", "gem", "project", "template"],
+                },
             },
             "required": ["query"],
         },
@@ -211,7 +225,10 @@ _TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Root object name (omit for full forest)."},
+                "name": {
+                    "type": "string",
+                    "description": "Root object name (omit for full forest).",
+                },
                 "depth": {"type": "integer", "description": "Max tree depth."},
             },
         },
@@ -234,6 +251,7 @@ _TOOLS: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 # Tool → CLI mapping
 # ---------------------------------------------------------------------------
+
 
 def _tool_to_cli_args(name: str, arguments: dict[str, Any]) -> list[str]:
     """Convert an MCP tool call into CLI arguments (always includes --json)."""
@@ -364,6 +382,7 @@ def _invoke_cli(args: list[str]) -> dict[str, Any]:
 # JSON-RPC stdio transport
 # ---------------------------------------------------------------------------
 
+
 def _read_message() -> dict[str, Any] | None:
     """Read a JSON-RPC message from stdin (Content-Length framing)."""
     headers: dict[str, str] = {}
@@ -439,11 +458,18 @@ def _handle_tools_call(params: dict) -> dict:
         }
     except Exception as exc:
         return {
-            "content": [{"type": "text", "text": json.dumps({
-                "status": "error",
-                "error": str(exc),
-                "code": "E_MCP_INTERNAL",
-            })}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "status": "error",
+                            "error": str(exc),
+                            "code": "E_MCP_INTERNAL",
+                        }
+                    ),
+                }
+            ],
             "isError": True,
         }
 

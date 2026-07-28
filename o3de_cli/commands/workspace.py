@@ -165,7 +165,7 @@ def _build_workspace_meta(
 @click.group()
 def workspace() -> None:
     """Manage build workspaces.
-    
+
     Workspaces are symlinked directory structures that combine
     engine, project, gems, and overlays for building.
     """
@@ -259,12 +259,10 @@ def _select_overlays_for_platforms(
             queue.append(name)
             continue
         plat_match = bool(
-            selected and ov.platforms
-            and {p.lower() for p in ov.platforms} & selected
+            selected and ov.platforms and {p.lower() for p in ov.platforms} & selected
         )
         tag_match = bool(
-            tags and getattr(ov, "user_tags", None)
-            and {t.lower() for t in ov.user_tags} & tags
+            tags and getattr(ov, "user_tags", None) and {t.lower() for t in ov.user_tags} & tags
         )
         if plat_match or tag_match:
             queue.append(name)
@@ -294,48 +292,85 @@ def _select_overlays_for_platforms(
 
 @workspace.command("create")
 @click.argument("name")
-@click.option("--engine", "-e", "engine_path", type=click.Path(exists=True), 
-              help="Engine path")
-@click.option("--project", "-p", "project_path", type=click.Path(exists=True),
-              help="Project path")  
-@click.option("--root", "-r", "root_opt", type=click.Path(exists=True),
-              help="Root object path of any type (gem, template, engine, "
-                   "project) — the object this workspace is for; its "
-                   "dependencies anchor the solve")
+@click.option("--engine", "-e", "engine_path", type=click.Path(exists=True), help="Engine path")
+@click.option("--project", "-p", "project_path", type=click.Path(exists=True), help="Project path")
+@click.option(
+    "--root",
+    "-r",
+    "root_opt",
+    type=click.Path(exists=True),
+    help="Root object path of any type (gem, template, engine, "
+    "project) — the object this workspace is for; its "
+    "dependencies anchor the solve",
+)
 @click.option("--output", "-o", type=click.Path(), help="Output directory")
-@click.option("--overlay", multiple=True, type=click.Path(exists=True),
-              help="Overlay path (can be repeated)")
+@click.option(
+    "--overlay", multiple=True, type=click.Path(exists=True), help="Overlay path (can be repeated)"
+)
 @click.option("--no-overlays", is_flag=True, help="Don't apply overlays")
-@click.option("--platforms", "-P", "platforms_opt", multiple=True,
-              help="Platforms to include when selecting overlays "
-                   "(repeatable or comma-separated; 'host' = this machine, "
-                   "'all' = no filtering). Default: all.")
-@click.option("--tags", "-T", "tags_opt", multiple=True,
-              help="User tags to include when selecting overlays "
-                   "(repeatable or comma-separated; OR-combined with "
-                   "--platforms).")
-@click.option("--include-overlay", "include_overlay", multiple=True,
-              help="Force-include a solved overlay by object name "
-                   "(overrides platform filtering; repeatable)")
-@click.option("--exclude-overlay", "exclude_overlay", multiple=True,
-              help="Exclude a solved overlay by object name (repeatable)")
-@click.option("--overlay-order", "overlay_order_opt", multiple=True,
-              help="Explicit apply order for overlays extending one object: "
-                   "comma-separated overlay names, first applied first "
-                   "(later entries win file conflicts). Overrides authored "
-                   "precedence; repeatable per base.")
-@click.option("--attributions", "attributions",
-              type=click.Choice(["workspace", "object", "off"]),
-              default="workspace", show_default=True,
-              help="Where composed overlays' metadata (overlay.json, "
-                   "licenses, icon) is recorded: workspace ledger, inside "
-                   "the extended object, or not at all")
-@click.option("--no-solve", is_flag=True,
-              help="Skip dependency resolution — only use explicitly provided paths")
-@click.option("--include-store", is_flag=True,
-              help="Include remote store when resolving dependencies")
-@click.option("--auto-install", "-y", is_flag=True,
-              help="Automatically download and install missing remote dependencies")
+@click.option(
+    "--platforms",
+    "-P",
+    "platforms_opt",
+    multiple=True,
+    help="Platforms to include when selecting overlays "
+    "(repeatable or comma-separated; 'host' = this machine, "
+    "'all' = no filtering). Default: all.",
+)
+@click.option(
+    "--tags",
+    "-T",
+    "tags_opt",
+    multiple=True,
+    help="User tags to include when selecting overlays "
+    "(repeatable or comma-separated; OR-combined with "
+    "--platforms).",
+)
+@click.option(
+    "--include-overlay",
+    "include_overlay",
+    multiple=True,
+    help="Force-include a solved overlay by object name (overrides platform filtering; repeatable)",
+)
+@click.option(
+    "--exclude-overlay",
+    "exclude_overlay",
+    multiple=True,
+    help="Exclude a solved overlay by object name (repeatable)",
+)
+@click.option(
+    "--overlay-order",
+    "overlay_order_opt",
+    multiple=True,
+    help="Explicit apply order for overlays extending one object: "
+    "comma-separated overlay names, first applied first "
+    "(later entries win file conflicts). Overrides authored "
+    "precedence; repeatable per base.",
+)
+@click.option(
+    "--attributions",
+    "attributions",
+    type=click.Choice(["workspace", "object", "off"]),
+    default="workspace",
+    show_default=True,
+    help="Where composed overlays' metadata (overlay.json, "
+    "licenses, icon) is recorded: workspace ledger, inside "
+    "the extended object, or not at all",
+)
+@click.option(
+    "--no-solve",
+    is_flag=True,
+    help="Skip dependency resolution — only use explicitly provided paths",
+)
+@click.option(
+    "--include-store", is_flag=True, help="Include remote store when resolving dependencies"
+)
+@click.option(
+    "--auto-install",
+    "-y",
+    is_flag=True,
+    help="Automatically download and install missing remote dependencies",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def create_command(
     name: str,
@@ -357,13 +392,13 @@ def create_command(
     as_json: bool,
 ) -> None:
     """Create a new workspace.
-    
+
     Creates a structured workspace with symlinked files organised by
     object type (Engines/, Projects/, Gems/, etc.).
 
     By default, runs the dependency solver to resolve all transitive
     dependencies from the manifest.  Use --no-solve for explicit-only mode.
-    
+
     Example:
         o3de-pilot workspace create my-build -e ./o3de -p ./my-project
         o3de-pilot workspace create my-build -e ./o3de -p ./my-project --no-solve
@@ -371,26 +406,28 @@ def create_command(
     if not engine_path and not project_path and not root_opt:
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error("Must specify --root, --engine or --project", code="E_INVALID_ARGS")
         else:
             console.print("[red]Must specify --root, --engine or --project[/red]")
         raise SystemExit(1)
-    
+
     # Determine output path
     if output:
         output_path = Path(output).resolve() / name
     else:
         output_path = get_default_workspaces_path() / name
-    
+
     if output_path.exists():
         if as_json:
             from o3de_cli.core.json_output import emit_error
+
             emit_error(f"Workspace already exists: {output_path}", code="E_WS_EXISTS")
         else:
             console.print(f"[red]Workspace already exists:[/red] {output_path}")
             console.print("Use 'workspace update' to update, or delete first.")
         raise SystemExit(1)
-    
+
     # Determine root object.  The root anchors the dependency solve
     # (dependencies radiate from it), so when a project is given it is
     # the root — its dependent.engines/dependent.gems pull everything
@@ -407,9 +444,9 @@ def create_command(
     else:
         root_path = Path(engine_path).resolve()
         root_type = detect_root_type(root_path)
-    
+
     root_type_str = root_type.value
-    
+
     # Expand platform selection (None = all platforms, no filtering)
     selected_platforms = _expand_platform_selection(platforms_opt)
     selected_tags: list[str] | None = None
@@ -423,11 +460,11 @@ def create_command(
         selected_tags = selected_tags or None
     overlay_includes = set(include_overlay)
     overlay_excludes = set(exclude_overlay)
-    
+
     # Build resolved_objects: name → (path, ObjectType)
     resolved_objects: dict[str, tuple[Path, ObjectType]] = {}
     solve_result: SolveResult | None = None
-    
+
     if engine_path and Path(engine_path).resolve() != root_path:
         # Explicit engine alongside a non-engine root — compose it as a
         # secondary object (the root's dependent.engines normally
@@ -437,12 +474,15 @@ def create_command(
         # against)
         eng_path = Path(engine_path).resolve()
         from o3de_cli.core.workspace import _object_name_from_path
+
         eng_name = _object_name_from_path(eng_path, eng_path.name)
         resolved_objects[eng_name] = (eng_path, ObjectType.ENGINE)
-    
+
     # Collect overlays with precedence
-    overlay_tuples = [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)] if not no_overlays else []
-    
+    overlay_tuples = (
+        [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)] if not no_overlays else []
+    )
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -459,9 +499,7 @@ def create_command(
 
             # Force-included overlays that aren't installed locally are
             # acquired from registered remote repos before solving
-            missing_includes = [
-                n for n in overlay_includes if n not in resolver.overlays
-            ]
+            missing_includes = [n for n in overlay_includes if n not in resolver.overlays]
             if missing_includes:
                 progress.update(task, description="Downloading remote overlays...")
                 installed_any = False
@@ -502,6 +540,7 @@ def create_command(
             # path that hasn't been registered yet, skip solving — the
             # explicit --engine / --project paths are sufficient.
             if root_name in resolver.objects:
+
                 def on_progress(msg: str) -> None:
                     progress.update(task, description=msg)
 
@@ -515,8 +554,7 @@ def create_command(
                 if not solve_result.is_resolved:
                     progress.stop()
                     console.print(
-                        f"[red]Dependency resolution failed:[/red] "
-                        f"{solve_result.conflict_message}"
+                        f"[red]Dependency resolution failed:[/red] {solve_result.conflict_message}"
                     )
                     raise SystemExit(1)
 
@@ -538,8 +576,7 @@ def create_command(
                 # secondary engine closure solve below; selection happens
                 # once after all solves.
                 overlay_groups = {
-                    base: list(entries)
-                    for base, entries in solve_result.overlays.items()
+                    base: list(entries) for base, entries in solve_result.overlays.items()
                 }
 
                 # A secondary engine that the root's solve did NOT pull in
@@ -548,7 +585,8 @@ def create_command(
                 # default-enabled gems cannot configure.  Solve it as an
                 # additional root and merge.
                 extra_engines = [
-                    (n, p) for n, (p, t) in resolved_objects.items()
+                    (n, p)
+                    for n, (p, t) in resolved_objects.items()
                     if t == ObjectType.ENGINE
                     and n not in solve_result.candidates
                     and n not in solve_result.children
@@ -557,7 +595,8 @@ def create_command(
                     if eng_name not in resolver.objects:
                         continue
                     progress.update(
-                        task, description=f"Solving engine {eng_name}...",
+                        task,
+                        description=f"Solving engine {eng_name}...",
                     )
                     eng_solve = solve_for_workspace(
                         root_name=eng_name,
@@ -574,29 +613,32 @@ def create_command(
                         raise SystemExit(1)
                     for cmap in (eng_solve.candidates, eng_solve.children):
                         for cand_name, cand in cmap.items():
-                            if (cand.status == CandidateStatus.LOCAL
-                                    and cand.path
-                                    and cand.path.resolve() != root_path
-                                    and cand_name not in resolved_objects):
+                            if (
+                                cand.status == CandidateStatus.LOCAL
+                                and cand.path
+                                and cand.path.resolve() != root_path
+                                and cand_name not in resolved_objects
+                            ):
                                 resolved_objects[cand_name] = (
-                                    cand.path, cand.object_type,
+                                    cand.path,
+                                    cand.object_type,
                                 )
                     # Merge the engine solve's overlay groups — overlays
                     # extending closure-pulled objects must compose too
                     for base, entries in eng_solve.overlays.items():
                         group = overlay_groups.setdefault(base, [])
                         existing = {e.name for e in group}
-                        group.extend(
-                            e for e in entries if e.name not in existing
-                        )
+                        group.extend(e for e in entries if e.name not in existing)
                         group.sort(key=lambda e: e.precedence)
 
                 # Add solved overlays (unless --no-overlays), filtered by
                 # the workspace platform selection
                 if not no_overlays:
                     selected_groups = _select_overlays_for_platforms(
-                        overlay_groups, selected_platforms,
-                        include=overlay_includes, exclude=overlay_excludes,
+                        overlay_groups,
+                        selected_platforms,
+                        include=overlay_includes,
+                        exclude=overlay_excludes,
                         selected_tags=selected_tags,
                     )
                     for _base, entries in selected_groups.items():
@@ -670,18 +712,26 @@ def create_command(
 
                         # Re-process overlays (same platform selection)
                         if not no_overlays:
-                            overlay_tuples = [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)]
+                            overlay_tuples = [
+                                (Path(o).resolve(), i, None) for i, o in enumerate(overlay)
+                            ]
                             selected_groups = _select_overlays_for_platforms(
-                                solve_result.overlays, selected_platforms,
-                                include=overlay_includes, exclude=overlay_excludes,
+                                solve_result.overlays,
+                                selected_platforms,
+                                include=overlay_includes,
+                                exclude=overlay_excludes,
                                 selected_tags=selected_tags,
                             )
                             for _base, entries in selected_groups.items():
                                 for ov in entries:
                                     if ov.path and ov.status == CandidateStatus.LOCAL:
                                         ov_resolved = ov.path.resolve()
-                                        if not any(p.resolve() == ov_resolved for p, *_ in overlay_tuples):
-                                            overlay_tuples.append((ov_resolved, ov.precedence, ov.extends))
+                                        if not any(
+                                            p.resolve() == ov_resolved for p, *_ in overlay_tuples
+                                        ):
+                                            overlay_tuples.append(
+                                                (ov_resolved, ov.precedence, ov.extends)
+                                            )
 
                         # Update counts after re-solve
                         remote_count = solve_result.remote_count
@@ -689,9 +739,7 @@ def create_command(
 
                 elif remote_count and auto_install and not store:
                     progress.stop()
-                    console.print(
-                        "[yellow]⚠ --auto-install requires --include-store[/yellow]"
-                    )
+                    console.print("[yellow]⚠ --auto-install requires --include-store[/yellow]")
                     progress.start()
 
                 if remote_count or unknown_count:
@@ -704,8 +752,7 @@ def create_command(
                         )
                     if unknown_count:
                         console.print(
-                            f"[red]⚠ {unknown_count} dependencies could not be "
-                            f"found anywhere[/red]"
+                            f"[red]⚠ {unknown_count} dependencies could not be found anywhere[/red]"
                         )
                     progress.start()
             else:
@@ -729,9 +776,9 @@ def create_command(
         overlay_order_map: dict[str, list[str]] = {}
         if overlay_order_opt and overlay_tuples:
             from o3de_cli.core.workspace import _object_name_from_path
+
             name_by_path = {
-                p.resolve(): _object_name_from_path(p.resolve(), p.name)
-                for p, *_ in overlay_tuples
+                p.resolve(): _object_name_from_path(p.resolve(), p.name) for p, *_ in overlay_tuples
             }
             for value in overlay_order_opt:
                 names = [t.strip() for t in value.split(",") if t.strip()]
@@ -743,9 +790,7 @@ def create_command(
                     raise SystemExit(1)
                 bases: set[str] = set()
                 for n in names:
-                    match = next(
-                        (p for p, nm in name_by_path.items() if nm == n), None
-                    )
+                    match = next((p for p, nm in name_by_path.items() if nm == n), None)
                     if match is None:
                         console.print(
                             f"[red]--overlay-order: overlay not selected "
@@ -756,8 +801,7 @@ def create_command(
                     bases.add(info["extends"] or "")
                 if len(bases) != 1:
                     console.print(
-                        "[red]--overlay-order: overlays must all extend "
-                        "the same object[/red]"
+                        "[red]--overlay-order: overlays must all extend the same object[/red]"
                     )
                     raise SystemExit(1)
                 overlay_order_map[bases.pop()] = names
@@ -771,13 +815,9 @@ def create_command(
                                 explicit_pos[p] = i
                 ordered = sorted(
                     overlay_tuples,
-                    key=lambda t: (
-                        explicit_pos.get(t[0].resolve(), 10_000 + t[1]),
-                    ),
+                    key=lambda t: (explicit_pos.get(t[0].resolve(), 10_000 + t[1]),),
                 )
-                overlay_tuples = [
-                    (p, i, ext) for i, (p, _prec, ext) in enumerate(ordered)
-                ]
+                overlay_tuples = [(p, i, ext) for i, (p, _prec, ext) in enumerate(ordered)]
 
         workspace_obj = create_workspace(
             target_path=output_path,
@@ -786,7 +826,7 @@ def create_command(
             overlays=overlay_tuples,
             attributions=attributions,
         )
-        
+
         # Save workspace metadata via Pydantic model
         meta = _build_workspace_meta(
             name=name,
@@ -806,6 +846,7 @@ def create_command(
         # instead of re-resolving against the user manifest.
         progress.update(task2, description="Writing CMake manifest...")
         from o3de_cli.core.cmake_manifest import generate_cmake_manifest
+
         tp = _find_third_party_path(meta=meta)
         generate_cmake_manifest(
             output_path,
@@ -816,6 +857,7 @@ def create_command(
 
     if as_json:
         from o3de_cli.core.json_output import emit_response
+
         data = {
             "action": "created",
             "workspace": str(output_path),
@@ -879,7 +921,9 @@ def _relink_object(
     """
     import shutil
     from o3de_cli.core.workspace import (
-        _TYPE_FOLDERS, _short_name, _ENGINE_SKIP_TOPDIRS,
+        _TYPE_FOLDERS,
+        _short_name,
+        _ENGINE_SKIP_TOPDIRS,
     )
 
     folder = _TYPE_FOLDERS.get(obj_type, "Gems")
@@ -889,16 +933,18 @@ def _relink_object(
 
     # Remove the old linked tree (hard links — sources unaffected)
     if dest_root.exists():
+
         def _clear_readonly(func, path, _exc_info):
             import os, stat
+
             os.chmod(path, stat.S_IWRITE)
             func(path)
+
         shutil.rmtree(dest_root, onexc=_clear_readonly)
 
     # Drop stale file_links for this object
     meta.file_links = {
-        src: rel for src, rel in meta.file_links.items()
-        if not rel.startswith(dest_prefix)
+        src: rel for src, rel in meta.file_links.items() if not rel.startswith(dest_prefix)
     }
 
     # Relink from the new source using the standard composer (nested-object
@@ -920,6 +966,7 @@ def _relink_object(
     # Re-apply overlays into the freshly relinked tree, precedence order
     if overlays:
         from o3de_cli.core.workspace import _object_name_from_path
+
         attributions = meta.attributions or "workspace"
         for ov_path, _prec in sorted(overlays, key=lambda t: t[1]):
             ov_name = _object_name_from_path(ov_path, ov_path.name)
@@ -934,18 +981,18 @@ def _relink_object(
 
     # Update the sources bucket
     bucket_key = {
-        ObjectType.ENGINE: "engines", ObjectType.PROJECT: "projects",
-        ObjectType.GEM: "gems", ObjectType.TEMPLATE: "templates",
+        ObjectType.ENGINE: "engines",
+        ObjectType.PROJECT: "projects",
+        ObjectType.GEM: "gems",
+        ObjectType.TEMPLATE: "templates",
     }.get(obj_type, "gems")
     getattr(meta.sources, bucket_key)[name] = str(new_path)
 
 
 @workspace.command("candidates")
 @click.argument("name_or_path")
-@click.option("--name", "object_name", default=None,
-              help="Limit output to one object")
-@click.option("--include-store", is_flag=True,
-              help="Include remote store candidates")
+@click.option("--name", "object_name", default=None, help="Limit output to one object")
+@click.option("--include-store", is_flag=True, help="Include remote store candidates")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def candidates_command(
     name_or_path: str,
@@ -985,6 +1032,7 @@ def candidates_command(
     store = None
     if include_store:
         from o3de_cli.core.store import Store
+
         store = Store()
         store.refresh_sync(resolver.manifest_remotes)
 
@@ -993,7 +1041,10 @@ def candidates_command(
     solve_result = None
     if root_name and root_name in resolver.objects:
         solve_result = solve_for_workspace(
-            root_name=root_name, resolver=resolver, store=store, overrides=pins,
+            root_name=root_name,
+            resolver=resolver,
+            store=store,
+            overrides=pins,
         )
 
     # Collect the object set to report: solved candidates + children,
@@ -1009,8 +1060,10 @@ def candidates_command(
                 )
     else:
         for bucket, type_name in (
-            (meta.sources.engines, "engine"), (meta.sources.projects, "project"),
-            (meta.sources.gems, "gem"), (meta.sources.templates, "template"),
+            (meta.sources.engines, "engine"),
+            (meta.sources.projects, "project"),
+            (meta.sources.gems, "gem"),
+            (meta.sources.templates, "template"),
         ):
             for cname, cpath in bucket.items():
                 chosen[cname] = ("", type_name, cpath)
@@ -1021,25 +1074,27 @@ def candidates_command(
         version, type_name, path = chosen.get(cname, ("", "", ""))
         cands = list_candidates(cname, resolver, store)
         override = meta.overrides.get(cname)
-        objects_out.append({
-            "name": cname,
-            "type": type_name,
-            "chosen_version": version,
-            "chosen_path": path,
-            "override": override.model_dump() if override else None,
-            "candidates": [
-                {
-                    "version": c.version,
-                    "status": c.status.value,
-                    "path": str(c.path) if c.path else None,
-                    "local_binary_path": (
-                        str(c.local_binary_path) if c.local_binary_path else None
-                    ),
-                    "remote_binary": c.remote_binary,
-                }
-                for c in cands
-            ],
-        })
+        objects_out.append(
+            {
+                "name": cname,
+                "type": type_name,
+                "chosen_version": version,
+                "chosen_path": path,
+                "override": override.model_dump() if override else None,
+                "candidates": [
+                    {
+                        "version": c.version,
+                        "status": c.status.value,
+                        "path": str(c.path) if c.path else None,
+                        "local_binary_path": (
+                            str(c.local_binary_path) if c.local_binary_path else None
+                        ),
+                        "remote_binary": c.remote_binary,
+                    }
+                    for c in cands
+                ],
+            }
+        )
 
     if as_json:
         emit_response(data={"workspace": str(ws_path), "objects": objects_out})
@@ -1062,8 +1117,10 @@ def candidates_command(
         ov = entry["override"]
         ov_str = f"{ov['version']} [{ov['artifact']}]" if ov else ""
         table.add_row(
-            entry["name"], entry["chosen_version"],
-            ", ".join(cand_strs) or "—", ov_str,
+            entry["name"],
+            entry["chosen_version"],
+            ", ".join(cand_strs) or "—",
+            ov_str,
         )
     console.print(table)
 
@@ -1071,15 +1128,19 @@ def candidates_command(
 @workspace.command("override")
 @click.argument("name_or_path")
 @click.argument("object_name")
-@click.option("--version", "pin_version", default=None,
-              help="Exact version to pin (required unless --clear)")
-@click.option("--artifact",
-              type=click.Choice(["source", "local-binary", "remote-binary",
-                                 "remote-source"]),
-              default="source", help="Artifact form to use")
+@click.option(
+    "--version", "pin_version", default=None, help="Exact version to pin (required unless --clear)"
+)
+@click.option(
+    "--artifact",
+    type=click.Choice(["source", "local-binary", "remote-binary", "remote-source"]),
+    default="source",
+    help="Artifact form to use",
+)
 @click.option("--clear", is_flag=True, help="Remove the override for this object")
-@click.option("--no-apply", is_flag=True,
-              help="Validate and persist only — don't relink the workspace")
+@click.option(
+    "--no-apply", is_flag=True, help="Validate and persist only — don't relink the workspace"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def override_command(
     name_or_path: str,
@@ -1157,7 +1218,10 @@ def override_command(
 
             try:
                 pkg = download_remote_binary(
-                    object_name, pin_version, data, on_progress=_dl_progress,
+                    object_name,
+                    pin_version,
+                    data,
+                    on_progress=_dl_progress,
                 )
             except Exception as e:
                 _fail(f"Remote binary unavailable: {e}", "E_NO_REMOTE_BINARY")
@@ -1177,7 +1241,10 @@ def override_command(
 
             try:
                 src = download_remote_source(
-                    object_name, pin_version, data, on_progress=_src_progress,
+                    object_name,
+                    pin_version,
+                    data,
+                    on_progress=_src_progress,
                 )
             except Exception as e:
                 _fail(f"Remote source unavailable: {e}", "E_NO_REMOTE_SOURCE")
@@ -1199,7 +1266,9 @@ def override_command(
 
     pins = {n: o.version for n, o in new_overrides.items()}
     solve_result = solve_for_workspace(
-        root_name=root_name, resolver=resolver, overrides=pins,
+        root_name=root_name,
+        resolver=resolver,
+        overrides=pins,
     )
     if not solve_result.is_resolved:
         _fail(
@@ -1220,8 +1289,12 @@ def override_command(
     changed: list[str] = []
     if not no_apply:
         current: dict[str, str] = {}
-        for bucket in (meta.sources.engines, meta.sources.projects,
-                       meta.sources.gems, meta.sources.templates):
+        for bucket in (
+            meta.sources.engines,
+            meta.sources.projects,
+            meta.sources.gems,
+            meta.sources.templates,
+        ):
             current.update(bucket)
 
         root_resolved = Path(meta.root_object).resolve() if meta.root_object else None
@@ -1233,14 +1306,22 @@ def override_command(
                 continue
             # Re-apply any overlays composed onto this object — relinking
             # without them would silently strip the composition
-            _relink_object(ws_path, meta, cname, cpath, ctype, new_map,
-                           overlays=_overlays_for_base(meta, cname))
+            _relink_object(
+                ws_path,
+                meta,
+                cname,
+                cpath,
+                ctype,
+                new_map,
+                overlays=_overlays_for_base(meta, cname),
+            )
             changed.append(cname)
 
         _write_workspace_meta(ws_path, meta)
 
         # Regenerate the workspace-scoped CMake manifest
         from o3de_cli.core.cmake_manifest import generate_cmake_manifest
+
         tp = _find_third_party_path(meta=meta)
         generate_cmake_manifest(
             ws_path,
@@ -1251,21 +1332,21 @@ def override_command(
         _write_workspace_meta(ws_path, meta)
 
     if as_json:
-        emit_response(data={
-            "action": "cleared" if clear else "overridden",
-            "object": object_name,
-            "version": pin_version,
-            "artifact": artifact,
-            "relinked": changed,
-            "applied": not no_apply,
-        })
+        emit_response(
+            data={
+                "action": "cleared" if clear else "overridden",
+                "object": object_name,
+                "version": pin_version,
+                "artifact": artifact,
+                "relinked": changed,
+                "applied": not no_apply,
+            }
+        )
     else:
         if clear:
             console.print(f"[green]Cleared override for[/green] {object_name}")
         else:
-            console.print(
-                f"[green]Pinned[/green] {object_name}=={pin_version} [{artifact}]"
-            )
+            console.print(f"[green]Pinned[/green] {object_name}=={pin_version} [{artifact}]")
         if changed:
             console.print(f"  Relinked: {', '.join(changed)}")
         elif not no_apply:
@@ -1307,6 +1388,7 @@ def _install_remote_overlay(name: str) -> Path | None:
 
     # Register in the manifest so the resolver can see it
     from o3de_cli.commands.manifest import add_command
+
     ctx = click.Context(add_command)
     ctx.invoke(add_command, path=str(installed))
     return installed
@@ -1369,24 +1451,40 @@ def _overlays_for_base(meta: WorkspaceMeta, base_name: str) -> list[tuple[Path, 
 
 @workspace.command("update")
 @click.argument("name_or_path")
-@click.option("--overlay", multiple=True, type=click.Path(exists=True),
-              help="Additional overlay path")
-@click.option("--add-overlay", "add_overlay", multiple=True,
-              help="Add an installed overlay by object name (repeatable); "
-                   "its overlay dependencies are pulled in automatically")
-@click.option("--remove-overlay", "remove_overlay", multiple=True,
-              help="Remove a composed overlay by object name (repeatable); "
-                   "the extended object is recomposed without it")
-@click.option("--overlay-order", "overlay_order", multiple=True,
-              help="Explicit apply order for overlays extending one object: "
-                   "comma-separated overlay names, first applied first "
-                   "(later entries win file conflicts). Overrides authored "
-                   "precedence for this workspace; repeatable per base.")
-@click.option("--attributions", "attributions",
-              type=click.Choice(["workspace", "object", "off"]),
-              default=None,
-              help="Change where composed overlays' metadata is recorded; "
-                   "existing attribution records are migrated")
+@click.option(
+    "--overlay", multiple=True, type=click.Path(exists=True), help="Additional overlay path"
+)
+@click.option(
+    "--add-overlay",
+    "add_overlay",
+    multiple=True,
+    help="Add an installed overlay by object name (repeatable); "
+    "its overlay dependencies are pulled in automatically",
+)
+@click.option(
+    "--remove-overlay",
+    "remove_overlay",
+    multiple=True,
+    help="Remove a composed overlay by object name (repeatable); "
+    "the extended object is recomposed without it",
+)
+@click.option(
+    "--overlay-order",
+    "overlay_order",
+    multiple=True,
+    help="Explicit apply order for overlays extending one object: "
+    "comma-separated overlay names, first applied first "
+    "(later entries win file conflicts). Overrides authored "
+    "precedence for this workspace; repeatable per base.",
+)
+@click.option(
+    "--attributions",
+    "attributions",
+    type=click.Choice(["workspace", "object", "off"]),
+    default=None,
+    help="Change where composed overlays' metadata is recorded; "
+    "existing attribution records are migrated",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def update_command(
     name_or_path: str,
@@ -1398,7 +1496,7 @@ def update_command(
     as_json: bool,
 ) -> None:
     """Update an existing workspace.
-    
+
     Re-syncs symlinks and applies any new overlays.  With --add-overlay /
     --remove-overlay / --overlay-order / --attributions, changes the
     workspace's composed overlay set, apply order, or attribution mode:
@@ -1406,19 +1504,19 @@ def update_command(
     migrated.
     """
     from o3de_cli.core.json_output import emit_response, emit_error
-    
+
     # Find workspace
     workspace_path = Path(name_or_path)
     if not workspace_path.exists():
         workspace_path = get_default_workspaces_path() / name_or_path
-    
+
     if not workspace_path.exists():
         if as_json:
             emit_error(f"Workspace not found: {name_or_path}", code="E_WS_NOT_FOUND")
         else:
             console.print(f"[red]Workspace not found:[/red] {name_or_path}")
         raise SystemExit(1)
-    
+
     # Load workspace metadata
     meta = _read_workspace_meta(workspace_path)
     if meta is None:
@@ -1432,11 +1530,9 @@ def update_command(
     # ------------------------------------------------------------------
     # Overlay set / order / attribution change
     # ------------------------------------------------------------------
-    attr_change = (
-        attributions is not None
-        and attributions != (meta.attributions or "workspace")
-    )
+    attr_change = attributions is not None and attributions != (meta.attributions or "workspace")
     if add_overlay or remove_overlay or overlay_order or attr_change:
+
         def _fail(msg: str, code: str) -> None:
             if as_json:
                 emit_error(msg, code=code)
@@ -1465,8 +1561,7 @@ def update_command(
                 installed = _install_remote_overlay(ov_name)
                 if installed is None:
                     _fail(
-                        f"Overlay not installed locally and not found in "
-                        f"remote repos: {ov_name}",
+                        f"Overlay not installed locally and not found in remote repos: {ov_name}",
                         "E_OVERLAY_NOT_FOUND",
                     )
                 resolver = Resolver()
@@ -1487,9 +1582,7 @@ def update_command(
                 _fail(f"Overlay not in workspace: {ov_name}", "E_OVERLAY_NOT_IN_WS")
 
         # New frozen set
-        new_set: dict[str, str] = {
-            n: p for n, p in current.items() if n not in removes
-        }
+        new_set: dict[str, str] = {n: p for n, p in current.items() if n not in removes}
         new_set.update(adds)
 
         # Dependency guard: a remaining overlay must not depend on a removed one
@@ -1526,21 +1619,18 @@ def update_command(
             names = [t.strip() for t in value.split(",") if t.strip()]
             if len(names) < 2:
                 _fail(
-                    "--overlay-order needs at least two comma-separated "
-                    "overlay names",
+                    "--overlay-order needs at least two comma-separated overlay names",
                     "E_OVERLAY_ORDER",
                 )
             bases: set[str] = set()
             for n in names:
                 if n not in new_set:
-                    _fail(f"--overlay-order: overlay not in workspace: {n}",
-                          "E_OVERLAY_ORDER")
+                    _fail(f"--overlay-order: overlay not in workspace: {n}", "E_OVERLAY_ORDER")
                 info = _read_overlay_info(Path(new_set[n]))
                 bases.add(info["extends"] or "")
             if len(bases) != 1:
                 _fail(
-                    "--overlay-order: overlays must all extend the same "
-                    "object",
+                    "--overlay-order: overlays must all extend the same object",
                     "E_OVERLAY_ORDER",
                 )
             base = bases.pop()
@@ -1550,8 +1640,7 @@ def update_command(
         def _ordered_for_base(base: str) -> list[tuple[Path, int]]:
             """Final apply order: authored precedence, then explicit
             workspace order stable-reordering the named ones first."""
-            entries = sorted(overlays_by_base.get(base, []),
-                             key=lambda t: (t[2], t[0]))
+            entries = sorted(overlays_by_base.get(base, []), key=lambda t: (t[2], t[0]))
             explicit = order_map.get(base) or []
             if explicit:
                 named = [e for n in explicit for e in entries if e[0] == n]
@@ -1575,30 +1664,35 @@ def update_command(
         old_attr_mode = meta.attributions or "workspace"
         if attr_change:
             affected_bases |= set(overlays_by_base)
-            meta.attributions = (
-                None if attributions == "workspace" else attributions
-            )
+            meta.attributions = None if attributions == "workspace" else attributions
             if old_attr_mode == "workspace":
                 import shutil as _shutil
+
                 for ov_name in new_set:
                     attr_dir = workspace_path / "Overlays" / ov_name
                     if attr_dir.exists():
+
                         def _clear_ro(func, path, _exc_info):
                             import os, stat
+
                             os.chmod(path, stat.S_IWRITE)
                             func(path)
+
                         _shutil.rmtree(attr_dir, onexc=_clear_ro)
                     attr_prefix = f"Overlays/{ov_name}/"
                     meta.file_links = {
-                        src: rel for src, rel in meta.file_links.items()
+                        src: rel
+                        for src, rel in meta.file_links.items()
                         if not rel.startswith(attr_prefix)
                     }
 
         # Build the full object map from meta.sources
         all_objects: dict[str, tuple[Path, ObjectType]] = {}
         bucket_types = [
-            ("engines", ObjectType.ENGINE), ("projects", ObjectType.PROJECT),
-            ("gems", ObjectType.GEM), ("templates", ObjectType.TEMPLATE),
+            ("engines", ObjectType.ENGINE),
+            ("projects", ObjectType.PROJECT),
+            ("gems", ObjectType.GEM),
+            ("templates", ObjectType.TEMPLATE),
         ]
         for bucket, btype in bucket_types:
             for obj_name, obj_path in getattr(meta.sources, bucket).items():
@@ -1614,26 +1708,34 @@ def update_command(
                 continue
             base_path, base_type = entry
             _relink_object(
-                workspace_path, meta, base_name, base_path, base_type,
-                all_objects, overlays=_ordered_for_base(base_name),
+                workspace_path,
+                meta,
+                base_name,
+                base_path,
+                base_type,
+                all_objects,
+                overlays=_ordered_for_base(base_name),
             )
             recomposed.append(base_name)
 
         # Remove the workspace attribution ledger entries for removed
         # overlays (object-mode attribution is wiped by the recompose)
         import shutil
+
         for ov_name in removes:
             attr_dir = workspace_path / "Overlays" / ov_name
             if attr_dir.exists():
+
                 def _clear_readonly(func, path, _exc_info):
                     import os, stat
+
                     os.chmod(path, stat.S_IWRITE)
                     func(path)
+
                 shutil.rmtree(attr_dir, onexc=_clear_readonly)
             attr_prefix = f"Overlays/{ov_name}/"
             meta.file_links = {
-                src: rel for src, rel in meta.file_links.items()
-                if not rel.startswith(attr_prefix)
+                src: rel for src, rel in meta.file_links.items() if not rel.startswith(attr_prefix)
             }
 
         # Persist the new frozen overlay set and apply order
@@ -1643,23 +1745,27 @@ def update_command(
 
         # Regenerate the workspace-scoped CMake manifest
         from o3de_cli.core.cmake_manifest import generate_cmake_manifest
+
         tp = _find_third_party_path(meta=meta)
         generate_cmake_manifest(
-            workspace_path, third_party_path=str(tp) if tp else "",
+            workspace_path,
+            third_party_path=str(tp) if tp else "",
         )
 
         if as_json:
-            emit_response(data={
-                "action": "overlays-updated",
-                "workspace": str(workspace_path),
-                "added": sorted(adds),
-                "removed": sorted(removes),
-                "reordered": sorted(ordered_bases),
-                "attributions": attributions if attr_change else None,
-                "recomposed": recomposed,
-                "skipped": skipped,
-                "overlays": sorted(new_set),
-            })
+            emit_response(
+                data={
+                    "action": "overlays-updated",
+                    "workspace": str(workspace_path),
+                    "added": sorted(adds),
+                    "removed": sorted(removes),
+                    "reordered": sorted(ordered_bases),
+                    "attributions": attributions if attr_change else None,
+                    "recomposed": recomposed,
+                    "skipped": skipped,
+                    "overlays": sorted(new_set),
+                }
+            )
         else:
             console.print(f"[green]Updated overlays:[/green] {workspace_path}")
             if adds:
@@ -1667,54 +1773,53 @@ def update_command(
             if removes:
                 console.print(f"  Removed: {', '.join(sorted(removes))}")
             if attr_change:
-                console.print(
-                    f"  Attributions: {old_attr_mode} → {attributions}"
-                )
+                console.print(f"  Attributions: {old_attr_mode} → {attributions}")
             if ordered_bases:
                 for base in sorted(ordered_bases):
-                    console.print(
-                        f"  Order for {base}: {' → '.join(order_map[base])}"
-                    )
+                    console.print(f"  Order for {base}: {' → '.join(order_map[base])}")
             console.print(f"  Recomposed: {', '.join(recomposed) or '(none)'}")
             if skipped:
                 console.print(
-                    f"[yellow]  Skipped (base not in workspace): "
-                    f"{', '.join(skipped)}[/yellow]"
+                    f"[yellow]  Skipped (base not in workspace): {', '.join(skipped)}[/yellow]"
                 )
             console.print(f"  Overlays now: {len(new_set)}")
         return
-    
+
     # Reconstruct workspace from metadata
     sources: list[Path] = []
-    for type_dict in [meta.sources.engines, meta.sources.projects,
-                      meta.sources.gems, meta.sources.templates]:
+    for type_dict in [
+        meta.sources.engines,
+        meta.sources.projects,
+        meta.sources.gems,
+        meta.sources.templates,
+    ]:
         for _name, path in type_dict.items():
             if path:
                 sources.append(Path(path))
     existing_overlays = [Path(p) for p in meta.sources.overlays.values()]
     new_overlays = [Path(o).resolve() for o in overlay]
     all_overlays = existing_overlays + new_overlays
-    
+
     # Determine root object path and type
     root_source = sources[0] if sources else workspace_path
     try:
         root_type = detect_root_type(root_source)
     except Exception:
         root_type = ObjectType.ENGINE  # fallback
-    
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
         task = progress.add_task("Updating workspace...", total=None)
-        
+
         workspace_obj = Workspace(
             root_path=workspace_path,
             root_object_path=root_source,
             root_object_type=root_type,
         )
-        
+
         # Add resolved objects from sources with their types
         for i, source in enumerate(sources):
             if (source / "engine.json").exists():
@@ -1726,21 +1831,23 @@ def update_command(
             else:
                 stype = ObjectType.GEM
             workspace_obj.add_resolved_object(source.name, source, stype)
-        
+
         # Add overlays
         for i, overlay_path in enumerate(all_overlays):
             workspace_obj.add_overlay(overlay_path, precedence=i)
-        
+
         workspace_obj.update()
-        
+
         progress.update(task, description="Done")
-    
+
     if as_json:
-        emit_response(data={
-            "action": "updated",
-            "workspace": str(workspace_path),
-            "overlays": len(all_overlays),
-        })
+        emit_response(
+            data={
+                "action": "updated",
+                "workspace": str(workspace_path),
+                "overlays": len(all_overlays),
+            }
+        )
     else:
         console.print(f"[green]Updated workspace:[/green] {workspace_path}")
 
@@ -1774,30 +1881,31 @@ def list_command(as_json: bool) -> None:
         meta = _read_workspace_meta(ws_dir)
         if meta is not None:
             src = meta.sources
-            n_sources = (len(src.engines) + len(src.projects)
-                         + len(src.gems) + len(src.templates))
+            n_sources = len(src.engines) + len(src.projects) + len(src.gems) + len(src.templates)
             n_overlays = len(src.overlays)
-            workspaces.append({
-                "name": meta.workspace.name or ws_dir.name,
-                "path": str(ws_dir),
-                "sources": n_sources,
-                "overlays": n_overlays,
-                "created": meta.created,
-            })
-    
+            workspaces.append(
+                {
+                    "name": meta.workspace.name or ws_dir.name,
+                    "path": str(ws_dir),
+                    "sources": n_sources,
+                    "overlays": n_overlays,
+                    "created": meta.created,
+                }
+            )
+
     if as_json:
         console.print_json(json.dumps(workspaces))
     else:
         if not workspaces:
             console.print("[dim]No workspaces found.[/dim]")
             return
-        
+
         table = Table(title="Workspaces")
         table.add_column("Name", style="cyan")
         table.add_column("Sources", style="green", justify="right")
         table.add_column("Overlays", style="yellow", justify="right")
         table.add_column("Path", style="dim")
-        
+
         for ws in workspaces:
             table.add_row(
                 ws["name"],
@@ -1805,7 +1913,7 @@ def list_command(as_json: bool) -> None:
                 str(ws["overlays"]),
                 ws["path"],
             )
-        
+
         console.print(table)
 
 
@@ -1818,34 +1926,34 @@ def show_command(name_or_path: str, as_json: bool) -> None:
     ws_path = Path(name_or_path)
     if not ws_path.exists():
         ws_path = get_default_workspaces_path() / name_or_path
-    
+
     if not ws_path.exists():
         console.print(f"[red]Workspace not found:[/red] {name_or_path}")
         raise SystemExit(1)
-    
+
     meta = _read_workspace_meta(ws_path)
     if meta is None:
         console.print(f"[red]Not a valid workspace:[/red] {ws_path}")
         raise SystemExit(1)
-    
+
     if as_json:
-        console.print_json(json.dumps(
-            meta.model_dump(by_alias=True, exclude_none=True), indent=2
-        ))
+        console.print_json(json.dumps(meta.model_dump(by_alias=True, exclude_none=True), indent=2))
     else:
         console.print(f"[bold]Workspace:[/bold] {meta.workspace.name or ws_path.name}")
         console.print(f"[dim]Path:[/dim] {ws_path}")
         console.print(f"[dim]Created:[/dim] {meta.created}")
-        
+
         console.print("\n[bold]Sources:[/bold]")
         src = meta.sources
         for type_label, items in [
-            ("Engines", src.engines), ("Projects", src.projects),
-            ("Gems", src.gems), ("Templates", src.templates),
+            ("Engines", src.engines),
+            ("Projects", src.projects),
+            ("Gems", src.gems),
+            ("Templates", src.templates),
         ]:
             for name, path in items.items():
                 console.print(f"  • [cyan]{type_label[:-1]}[/cyan] {name}  [dim]{path}[/dim]")
-        
+
         if src.overlays:
             console.print("\n[bold]Overlays:[/bold]")
             for name, path in src.overlays.items():
@@ -1859,46 +1967,49 @@ def show_command(name_or_path: str, as_json: bool) -> None:
 @click.option("--dry-run", is_flag=True, help="Show what would be deleted without deleting")
 def delete_command(name_or_path: str, force: bool, as_json: bool, dry_run: bool) -> None:
     """Delete a workspace.
-    
+
     Removes the workspace directory and all symlinks.
     Does not delete the original source files.
     """
     import shutil
     from o3de_cli.core.json_output import emit_response, emit_error
-    
+
     # Find workspace
     ws_path = Path(name_or_path)
     if not ws_path.exists():
         ws_path = get_default_workspaces_path() / name_or_path
-    
+
     if not ws_path.exists():
         if as_json:
             emit_error(f"Workspace not found: {name_or_path}", code="E_WS_NOT_FOUND")
         else:
             console.print(f"[red]Workspace not found:[/red] {name_or_path}")
         raise SystemExit(1)
-    
+
     if dry_run:
         if as_json:
-            emit_response(data={
-                "dry_run": True,
-                "action": "delete",
-                "workspace": str(ws_path),
-            })
+            emit_response(
+                data={
+                    "dry_run": True,
+                    "action": "delete",
+                    "workspace": str(ws_path),
+                }
+            )
         else:
             console.print(f"[dim]Would delete:[/dim] {ws_path}")
         return
-    
+
     if not force:
         if not click.confirm(f"Delete workspace '{ws_path.name}'?"):
             console.print("[dim]Cancelled.[/dim]")
             return
-    
+
     def _clear_readonly(func, path, _exc_info):
         """Windows: build artifacts (e.g. FetchContent git pack files)
         are read-only; clear the attribute and retry."""
         import os
         import stat
+
         os.chmod(path, stat.S_IWRITE)
         func(path)
 
@@ -1919,24 +2030,24 @@ def tree_command(name_or_path: str, depth: int) -> None:
     ws_path = Path(name_or_path)
     if not ws_path.exists():
         ws_path = get_default_workspaces_path() / name_or_path
-    
+
     if not ws_path.exists():
         console.print(f"[red]Workspace not found:[/red] {name_or_path}")
         raise SystemExit(1)
-    
+
     def add_tree_items(tree: Tree, path: Path, current_depth: int):
         if current_depth >= depth:
             return
-        
+
         try:
             items = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name))
         except PermissionError:
             return
-        
+
         for item in items:
             if item.name.startswith("."):
                 continue
-            
+
             if item.is_symlink():
                 target = item.resolve()
                 subtree = tree.add(f"[cyan]{item.name}[/cyan] → [dim]{target}[/dim]")
@@ -1945,7 +2056,7 @@ def tree_command(name_or_path: str, depth: int) -> None:
                 add_tree_items(subtree, item, current_depth + 1)
             else:
                 tree.add(item.name)
-    
+
     tree = Tree(f"[bold]{ws_path.name}[/bold]")
     add_tree_items(tree, ws_path, 0)
     console.print(tree)
@@ -2006,6 +2117,7 @@ def solve_command(
 
     if as_json:
         import json as json_mod
+
         data = {
             "root": result.root_name,
             "root_version": result.root_version,
@@ -2090,10 +2202,7 @@ def solve_command(
         for base_name, entries in result.overlays.items():
             console.print(f"  [cyan]{base_name}[/cyan]:")
             for entry in entries:
-                console.print(
-                    f"    {entry.name}@{entry.version} "
-                    f"(precedence {entry.precedence})"
-                )
+                console.print(f"    {entry.name}@{entry.version} (precedence {entry.precedence})")
 
     console.print()
     console.print(
@@ -2106,6 +2215,7 @@ def solve_command(
 # ---------------------------------------------------------------------------
 # workspace build
 # ---------------------------------------------------------------------------
+
 
 def _find_third_party_path(
     meta: WorkspaceMeta | None = None,
@@ -2148,6 +2258,7 @@ def _find_third_party_path(
     # 3. User config
     try:
         from o3de_cli.core.config import get_config
+
         cfg = get_config()
         cfg_tp = cfg.get("build.third_party_path")
         if cfg_tp:
@@ -2168,6 +2279,7 @@ def _find_third_party_path(
 
     # 5. Default path (~/.o3de/3rdParty)
     from o3de_cli.core.paths import get_third_party_path
+
     candidates.append(str(get_third_party_path()))
 
     for tp_str in candidates:
@@ -2189,7 +2301,9 @@ def _find_engine_path(meta: WorkspaceMeta) -> Path | None:
 
 
 def _workspace_local_dir(
-    ws_path: Path, folder: str, names: "Iterable[str]",
+    ws_path: Path,
+    folder: str,
+    names: "Iterable[str]",
 ) -> Path | None:
     """Return the composed workspace directory for the first matching object.
 
@@ -2198,6 +2312,7 @@ def _workspace_local_dir(
     so that overlays and workspace-level composition take effect.
     """
     from o3de_cli.core.workspace import _short_name
+
     for name in names:
         candidate = ws_path / folder / _short_name(name)
         if candidate.is_dir():
@@ -2392,16 +2507,18 @@ def _run_cmake(
 @workspace.command("build")
 @click.argument("name_or_path")
 @click.option(
-    "--config", "-c",
+    "--config",
+    "-c",
     type=click.Choice(["debug", "profile", "release"]),
     default="profile",
     help="Build configuration (default: profile)",
 )
 @click.option(
-    "--target", "-t",
+    "--target",
+    "-t",
     multiple=True,
     help="CMake build targets (e.g. Editor, MyProject.GameLauncher). "
-         "If omitted, builds all default targets.",
+    "If omitted, builds all default targets.",
 )
 @click.option(
     "--engine-centric",
@@ -2430,16 +2547,18 @@ def _run_cmake(
     help="Override LY_3RDPARTY_PATH",
 )
 @click.option(
-    "--parallel", "-j",
+    "--parallel",
+    "-j",
     type=int,
     default=None,
     help="Number of parallel build jobs",
 )
 @click.option(
-    "--generator", "-G",
+    "--generator",
+    "-G",
     default=None,
     help="CMake generator (auto, vs, ninja, xcode, makefiles, or full name). "
-         "Default: auto-detect per platform.",
+    "Default: auto-detect per platform.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.option(
@@ -2504,10 +2623,14 @@ def build_command(
     # original source paths, so builds use the workspace composition
     # (engine without embedded gems, workspace-level Gems/, overlays).
     engine_path = _workspace_local_dir(
-        ws_path, "Engines", meta.sources.engines.keys(),
+        ws_path,
+        "Engines",
+        meta.sources.engines.keys(),
     ) or _find_engine_path(meta)
     project_path = _workspace_local_dir(
-        ws_path, "Projects", meta.sources.projects.keys(),
+        ws_path,
+        "Projects",
+        meta.sources.projects.keys(),
     ) or _find_project_path(meta)
 
     if not engine_path:
@@ -2552,14 +2675,15 @@ def build_command(
                     break
         if root_gem_name is None:
             from o3de_cli.core.workspace import _object_name_from_path
+
             root_gem_name = _object_name_from_path(
-                root_resolved, root_resolved.name,
+                root_resolved,
+                root_resolved.name,
             )
         target = (root_gem_name,)
         if not as_json:
             console.print(
-                f"[dim]Gem-rooted workspace — defaulting build target to "
-                f"{root_gem_name}[/dim]"
+                f"[dim]Gem-rooted workspace — defaulting build target to {root_gem_name}[/dim]"
             )
 
     # Resolve third-party path (K6 resolution chain)
@@ -2606,9 +2730,7 @@ def build_command(
     if not dry_run and not engine_centric and project_path:
         if _ensure_project_cmake_presets(project_path, engine_path):
             if not as_json:
-                console.print(
-                    "[dim]Updated project CMakePresets.json with engine include[/dim]"
-                )
+                console.print("[dim]Updated project CMakePresets.json with engine include[/dim]")
 
     # ------------------------------------------------------------------
     # Build configure + build commands
@@ -2621,14 +2743,18 @@ def build_command(
         if preset:
             configure_cmd = [
                 "cmake",
-                "--preset", preset,
-                "-S", str(source_dir),
+                "--preset",
+                preset,
+                "-S",
+                str(source_dir),
             ]
         else:
             configure_cmd = [
                 "cmake",
-                "-B", str(build_dir),
-                "-S", str(source_dir),
+                "-B",
+                str(build_dir),
+                "-S",
+                str(source_dir),
             ]
             if cmake_generator:
                 configure_cmd.append(f"-G{cmake_generator}")
@@ -2642,21 +2768,19 @@ def build_command(
         # compose-time solution instead of ~/.o3de's user manifest.
         ws_cmake_manifest = ws_path / "resolved_o3de_manifest.json"
         if ws_cmake_manifest.exists():
-            configure_cmd.append(
-                f"-DO3DE_RESOLVED_MANIFEST={ws_cmake_manifest.as_posix()}"
-            )
+            configure_cmd.append(f"-DO3DE_RESOLVED_MANIFEST={ws_cmake_manifest.as_posix()}")
         # Tell the project bootstrap where the composed engine lives
         if engine_path and not engine_centric:
-            configure_cmd.append(
-                f"-DO3DE_ENGINE_PATH={Path(engine_path).as_posix()}"
-            )
+            configure_cmd.append(f"-DO3DE_ENGINE_PATH={Path(engine_path).as_posix()}")
 
     if not configure_only:
         cmake_config = {"debug": "Debug", "profile": "Profile", "release": "Release"}[config]
         build_cmd_list = [
             "cmake",
-            "--build", str(build_dir),
-            "--config", cmake_config,
+            "--build",
+            str(build_dir),
+            "--config",
+            cmake_config,
         ]
         if target:
             build_cmd_list.append("--target")
@@ -2677,17 +2801,19 @@ def build_command(
             commands.append(build_cmd_list)
 
         if as_json:
-            emit_response(data={
-                "workspace": meta.workspace.name,
-                "mode": mode,
-                "config": config,
-                "source_dir": str(source_dir),
-                "build_dir": str(build_dir),
-                "generator": cmake_generator,
-                "third_party_path": str(tp_path) if tp_path else None,
-                "commands": [" ".join(c) for c in commands],
-                "dry_run": True,
-            })
+            emit_response(
+                data={
+                    "workspace": meta.workspace.name,
+                    "mode": mode,
+                    "config": config,
+                    "source_dir": str(source_dir),
+                    "build_dir": str(build_dir),
+                    "generator": cmake_generator,
+                    "third_party_path": str(tp_path) if tp_path else None,
+                    "commands": [" ".join(c) for c in commands],
+                    "dry_run": True,
+                }
+            )
         else:
             console.print("\n[bold yellow]Dry run — commands that would be executed:[/bold yellow]")
             for cmd in commands:
@@ -2715,11 +2841,13 @@ def build_command(
 
     if configure_only:
         if as_json:
-            emit_response(data={
-                "workspace": meta.workspace.name,
-                "phase": "configure",
-                "status": "complete",
-            })
+            emit_response(
+                data={
+                    "workspace": meta.workspace.name,
+                    "phase": "configure",
+                    "status": "complete",
+                }
+            )
         return
 
     # ------------------------------------------------------------------
@@ -2740,13 +2868,15 @@ def build_command(
 
     cmake_config = {"debug": "Debug", "profile": "Profile", "release": "Release"}[config]
     if as_json:
-        emit_response(data={
-            "workspace": meta.workspace.name,
-            "mode": mode,
-            "config": cmake_config,
-            "source_dir": str(source_dir),
-            "build_dir": str(build_dir),
-        })
+        emit_response(
+            data={
+                "workspace": meta.workspace.name,
+                "mode": mode,
+                "config": cmake_config,
+                "source_dir": str(source_dir),
+                "build_dir": str(build_dir),
+            }
+        )
     else:
         console.print(f"\n[green]Build complete:[/green] {cmake_config}")
 
@@ -2808,11 +2938,13 @@ def lock_command(name_or_path: str, as_json: bool) -> None:
 
     if as_json:
         lockdata = read_lockfile(ws_path)
-        emit_response(data={
-            "lockfile": str(lockfile_path),
-            "packages": len(lockdata.get("packages", {})),
-            "contentHash": lockdata.get("contentHash", ""),
-        })
+        emit_response(
+            data={
+                "lockfile": str(lockfile_path),
+                "packages": len(lockdata.get("packages", {})),
+                "contentHash": lockdata.get("contentHash", ""),
+            }
+        )
     else:
         console.print(f"[green]Lockfile written:[/green] {lockfile_path}")
 
@@ -2854,10 +2986,14 @@ def verify_lock_command(name_or_path: str, as_json: bool) -> None:
     matches, mismatches = verify_lockfile(ws_path, candidates)
 
     if as_json:
-        console.print_json(json.dumps({
-            "verified": matches,
-            "mismatches": mismatches,
-        }))
+        console.print_json(
+            json.dumps(
+                {
+                    "verified": matches,
+                    "mismatches": mismatches,
+                }
+            )
+        )
     else:
         if matches:
             console.print("[green]Lockfile verified — all packages match.[/green]")
@@ -2885,8 +3021,11 @@ def _resolve_workspace_path(name_or_path: str) -> Path | None:
 def _flatten_sources_for_lockfile(sources: dict) -> dict:
     """Flatten categorised sources into {name: {path, type}} for lockfile."""
     _type_map = {
-        "engines": "engine", "projects": "project",
-        "gems": "gem", "templates": "template", "overlays": "overlay",
+        "engines": "engine",
+        "projects": "project",
+        "gems": "gem",
+        "templates": "template",
+        "overlays": "overlay",
     }
     result: dict[str, dict] = {}
     for type_key, items in sources.items():

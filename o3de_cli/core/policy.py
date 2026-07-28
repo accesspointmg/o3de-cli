@@ -165,26 +165,30 @@ def check_install_policy(
     return violations
 
 
-def _check_licenses(
-    data: dict, policy: PolicyConfig, obj_name: str
-) -> list[PolicyViolation]:
+def _check_licenses(data: dict, policy: PolicyConfig, obj_name: str) -> list[PolicyViolation]:
     """Check license compliance."""
     violations = []
     licenses = data.get("licenses", [])
 
     if not licenses:
         if policy.require_license:
-            violations.append(PolicyViolation(
-                "error", "license",
-                f"No license specified — required by policy",
-                obj_name,
-            ))
+            violations.append(
+                PolicyViolation(
+                    "error",
+                    "license",
+                    f"No license specified — required by policy",
+                    obj_name,
+                )
+            )
         else:
-            violations.append(PolicyViolation(
-                "warning", "license",
-                f"No license specified",
-                obj_name,
-            ))
+            violations.append(
+                PolicyViolation(
+                    "warning",
+                    "license",
+                    f"No license specified",
+                    obj_name,
+                )
+            )
         return violations
 
     for lic in licenses:
@@ -192,34 +196,41 @@ def _check_licenses(
 
         # Check denied list
         if lic_id in policy.denied_licenses:
-            violations.append(PolicyViolation(
-                "error", "license",
-                f"License '{lic_id}' is denied by policy",
-                obj_name,
-            ))
+            violations.append(
+                PolicyViolation(
+                    "error",
+                    "license",
+                    f"License '{lic_id}' is denied by policy",
+                    obj_name,
+                )
+            )
 
         # Check allowed list (if set, only these are permitted)
         if policy.allowed_licenses is not None and lic_id not in policy.allowed_licenses:
-            violations.append(PolicyViolation(
-                "error", "license",
-                f"License '{lic_id}' is not in the allowed list",
-                obj_name,
-            ))
+            violations.append(
+                PolicyViolation(
+                    "error",
+                    "license",
+                    f"License '{lic_id}' is not in the allowed list",
+                    obj_name,
+                )
+            )
 
         # Check copyleft
         if not policy.allow_copyleft and lic_id in COPYLEFT_LICENSES:
-            violations.append(PolicyViolation(
-                "error", "license",
-                f"Copyleft license '{lic_id}' is not allowed by policy",
-                obj_name,
-            ))
+            violations.append(
+                PolicyViolation(
+                    "error",
+                    "license",
+                    f"Copyleft license '{lic_id}' is not allowed by policy",
+                    obj_name,
+                )
+            )
 
     return violations
 
 
-def _check_deprecation(
-    data: dict, policy: PolicyConfig, obj_name: str
-) -> list[PolicyViolation]:
+def _check_deprecation(data: dict, policy: PolicyConfig, obj_name: str) -> list[PolicyViolation]:
     """Check deprecation status."""
     violations = []
 
@@ -228,34 +239,41 @@ def _check_deprecation(
         header = data.get(key, {})
         if isinstance(header, dict) and header.get("deprecated"):
             if not policy.allow_deprecated:
-                violations.append(PolicyViolation(
-                    "error", "deprecation",
-                    f"Object is deprecated: {header['deprecated']}",
-                    obj_name,
-                ))
+                violations.append(
+                    PolicyViolation(
+                        "error",
+                        "deprecation",
+                        f"Object is deprecated: {header['deprecated']}",
+                        obj_name,
+                    )
+                )
             else:
-                violations.append(PolicyViolation(
-                    "warning", "deprecation",
-                    f"Object is deprecated: {header['deprecated']}",
-                    obj_name,
-                ))
+                violations.append(
+                    PolicyViolation(
+                        "warning",
+                        "deprecation",
+                        f"Object is deprecated: {header['deprecated']}",
+                        obj_name,
+                    )
+                )
             break
 
     # Also check top-level deprecated field
     if data.get("deprecated"):
         if not policy.allow_deprecated:
-            violations.append(PolicyViolation(
-                "error", "deprecation",
-                f"Object is deprecated: {data['deprecated']}",
-                obj_name,
-            ))
+            violations.append(
+                PolicyViolation(
+                    "error",
+                    "deprecation",
+                    f"Object is deprecated: {data['deprecated']}",
+                    obj_name,
+                )
+            )
 
     return violations
 
 
-def _check_security(
-    data: dict, policy: PolicyConfig, obj_name: str
-) -> list[PolicyViolation]:
+def _check_security(data: dict, policy: PolicyConfig, obj_name: str) -> list[PolicyViolation]:
     """Check against known security advisories."""
     violations = []
 
@@ -268,11 +286,14 @@ def _check_security(
         if obj_name == affected_name:
             obj_version = _extract_version(data)
             if not affected_versions or obj_version in affected_versions:
-                violations.append(PolicyViolation(
-                    severity, "security",
-                    f"Security advisory: {description}",
-                    obj_name,
-                ))
+                violations.append(
+                    PolicyViolation(
+                        severity,
+                        "security",
+                        f"Security advisory: {description}",
+                        obj_name,
+                    )
+                )
 
     return violations
 

@@ -24,6 +24,7 @@ logger = logging.getLogger("o3de_cli.hooks")
 
 class HookError(Exception):
     """Error during hook execution."""
+
     pass
 
 
@@ -136,7 +137,10 @@ class HooksEngine:
             if not script_path:
                 continue
             results[hook_type] = self.run_hook(
-                hook_type, script_path, object_dir, object_name,
+                hook_type,
+                script_path,
+                object_dir,
+                object_name,
                 confirm_callback=confirm_callback,
             )
 
@@ -190,9 +194,7 @@ class HooksEngine:
             return True
 
         except subprocess.TimeoutExpired:
-            logger.error(
-                f"Hook [{hook_type}] for {object_name} timed out after {self.timeout}s"
-            )
+            logger.error(f"Hook [{hook_type}] for {object_name} timed out after {self.timeout}s")
             return False
         except FileNotFoundError:
             logger.error(f"Hook [{hook_type}] interpreter not found for {script_path}")

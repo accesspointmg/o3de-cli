@@ -55,37 +55,37 @@ class Config:
         """Get a configuration value using dot notation."""
         parts = key.split(".")
         value = self._data
-        
+
         for part in parts:
             if isinstance(value, dict) and part in value:
                 value = value[part]
             else:
                 return default
-        
+
         return value
 
     def set(self, key: str, value: Any) -> None:
         """Set a configuration value using dot notation."""
         parts = key.split(".")
         data = self._data
-        
+
         for part in parts[:-1]:
             if part not in data:
                 data[part] = {}
             data = data[part]
-        
+
         data[parts[-1]] = value
 
     def unset(self, key: str) -> None:
         """Remove a configuration value."""
         parts = key.split(".")
         data = self._data
-        
+
         for part in parts[:-1]:
             if part not in data:
                 return
             data = data[part]
-        
+
         if parts[-1] in data:
             del data[parts[-1]]
 

@@ -53,9 +53,7 @@ def _fail(msg: str, code: str, as_json: bool) -> None:
     raise SystemExit(1)
 
 
-def _locate_gem(
-    ws_path: Path, object_name: str, as_json: bool
-) -> tuple[Path, str, str]:
+def _locate_gem(ws_path: Path, object_name: str, as_json: bool) -> tuple[Path, str, str]:
     """Find a gem in the workspace's resolved manifest.
 
     Returns (gem_dir, canonical_name, version).
@@ -79,8 +77,7 @@ def _locate_gem(
             return gem_dir, name, version
 
     _fail(
-        f"Gem '{object_name}' not found in workspace manifest "
-        f"({len(names)} gems present).",
+        f"Gem '{object_name}' not found in workspace manifest ({len(names)} gems present).",
         "E_OBJECT_NOT_FOUND",
         as_json,
     )
@@ -136,10 +133,7 @@ def _discover_targets(
 
 
 def _buildable(targets: list[TargetInfo]) -> list[TargetInfo]:
-    return [
-        t for t in targets
-        if t.type in BUILDABLE_TYPES and ".Tests" not in t.name
-    ]
+    return [t for t in targets if t.type in BUILDABLE_TYPES and ".Tests" not in t.name]
 
 
 def _run_gem_build(
@@ -152,9 +146,13 @@ def _run_gem_build(
 
     names = [t.name for t in targets]
     cmd = [
-        "cmake", "--build", str(build_dir),
-        "--config", _CMAKE_CONFIG[config],
-        "--target", *names,
+        "cmake",
+        "--build",
+        str(build_dir),
+        "--config",
+        _CMAKE_CONFIG[config],
+        "--target",
+        *names,
         "--parallel",
     ]
     if not as_json:
@@ -167,18 +165,23 @@ def _run_gem_build(
 @object_group.command("build")
 @click.argument("object_name")
 @click.option(
-    "--workspace", "-w", "workspace_arg", required=True,
+    "--workspace",
+    "-w",
+    "workspace_arg",
+    required=True,
     help="Workspace name or path containing the gem",
 )
 @click.option(
-    "--config", "-c",
+    "--config",
+    "-c",
     type=click.Choice(["debug", "profile", "release"]),
     default="profile",
     show_default=True,
     help="Build configuration",
 )
-@click.option("--reconfigure", is_flag=True,
-              help="Force a CMake reconfigure before target discovery")
+@click.option(
+    "--reconfigure", is_flag=True, help="Force a CMake reconfigure before target discovery"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def build_command(
     object_name: str,
@@ -202,7 +205,11 @@ def build_command(
 
     gem_dir, canonical, version = _locate_gem(ws_path, object_name, as_json)
     build_dir, gem_targets = _discover_targets(
-        ws_path, gem_dir, config, as_json, reconfigure,
+        ws_path,
+        gem_dir,
+        config,
+        as_json,
+        reconfigure,
     )
     targets = _buildable(gem_targets)
     if not targets:
@@ -214,21 +221,21 @@ def build_command(
         )
 
     if not as_json:
-        console.print(
-            f"[bold]Building gem:[/bold] {canonical}=={version} ({config})"
-        )
+        console.print(f"[bold]Building gem:[/bold] {canonical}=={version} ({config})")
         console.print(f"  Targets: {', '.join(t.name for t in targets)}")
 
     _run_gem_build(build_dir, targets, config, as_json)
 
     if as_json:
-        emit_response(data={
-            "object": canonical,
-            "version": version,
-            "config": config,
-            "targets": [t.name for t in targets],
-            "build_dir": str(build_dir),
-        })
+        emit_response(
+            data={
+                "object": canonical,
+                "version": version,
+                "config": config,
+                "targets": [t.name for t in targets],
+                "build_dir": str(build_dir),
+            }
+        )
     else:
         console.print(f"[green]Built {len(targets)} targets.[/green]")
 
@@ -236,19 +243,26 @@ def build_command(
 @object_group.command("install")
 @click.argument("object_name")
 @click.option(
-    "--workspace", "-w", "workspace_arg", required=True,
+    "--workspace",
+    "-w",
+    "workspace_arg",
+    required=True,
     help="Workspace name or path containing the gem",
 )
 @click.option(
-    "--config", "-c",
+    "--config",
+    "-c",
     type=click.Choice(["debug", "profile", "release"]),
     default="profile",
     show_default=True,
     help="Configuration to build and package",
 )
-@click.option("--skip-build", is_flag=True, help="Package existing build outputs without rebuilding")
-@click.option("--reconfigure", is_flag=True,
-              help="Force a CMake reconfigure before target discovery")
+@click.option(
+    "--skip-build", is_flag=True, help="Package existing build outputs without rebuilding"
+)
+@click.option(
+    "--reconfigure", is_flag=True, help="Force a CMake reconfigure before target discovery"
+)
 @click.option("--force", "-f", is_flag=True, help="Overwrite an existing installed package")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def install_command(
@@ -281,7 +295,11 @@ def install_command(
 
     gem_dir, canonical, version = _locate_gem(ws_path, object_name, as_json)
     build_dir, gem_targets = _discover_targets(
-        ws_path, gem_dir, config, as_json, reconfigure,
+        ws_path,
+        gem_dir,
+        config,
+        as_json,
+        reconfigure,
     )
     targets = _buildable(gem_targets)
     if not targets:
@@ -293,9 +311,7 @@ def install_command(
         )
 
     if not as_json:
-        console.print(
-            f"[bold]Installing gem:[/bold] {canonical}=={version} ({config})"
-        )
+        console.print(f"[bold]Installing gem:[/bold] {canonical}=={version} ({config})")
         console.print(f"  Targets: {', '.join(t.name for t in targets)}")
 
     if not skip_build:
@@ -328,13 +344,15 @@ def install_command(
         return
 
     if as_json:
-        emit_response(data={
-            "object": canonical,
-            "version": version,
-            "config": config,
-            "package_dir": str(dest),
-            "targets": [t.name for t in targets],
-        })
+        emit_response(
+            data={
+                "object": canonical,
+                "version": version,
+                "config": config,
+                "package_dir": str(dest),
+                "targets": [t.name for t in targets],
+            }
+        )
     else:
         console.print(f"[green]Installed:[/green] {dest}")
         console.print(
@@ -346,41 +364,54 @@ def install_command(
 @object_group.command("package")
 @click.argument("object_name")
 @click.option(
-    "--workspace", "-w", "workspace_arg", required=True,
+    "--workspace",
+    "-w",
+    "workspace_arg",
+    required=True,
     help="Workspace name or path containing the gem",
 )
 @click.option(
-    "--config", "-c",
+    "--config",
+    "-c",
     type=click.Choice(["debug", "profile", "release"]),
     default="release",
     show_default=True,
     help="Configuration to build and package",
 )
 @click.option(
-    "--output", "-o", "output_dir",
+    "--output",
+    "-o",
+    "output_dir",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
     help="Directory for the release zip [default: current directory]",
 )
-@click.option("--skip-build", is_flag=True, help="Package existing build outputs without rebuilding")
-@click.option("--reconfigure", is_flag=True,
-              help="Force a CMake reconfigure before target discovery")
 @click.option(
-    "--code", "code_release", is_flag=True,
-    help="Produce a source (code) release archive instead of a binary "
-         "release — no build, platform-independent",
+    "--skip-build", is_flag=True, help="Package existing build outputs without rebuilding"
 )
 @click.option(
-    "--format", "archive_format",
+    "--reconfigure", is_flag=True, help="Force a CMake reconfigure before target discovery"
+)
+@click.option(
+    "--code",
+    "code_release",
+    is_flag=True,
+    help="Produce a source (code) release archive instead of a binary "
+    "release — no build, platform-independent",
+)
+@click.option(
+    "--format",
+    "archive_format",
     type=click.Choice(["zip", "tar.gz"]),
     default="zip",
     show_default=True,
     help="Archive format (code releases only)",
 )
 @click.option(
-    "--update-manifest", is_flag=True,
+    "--update-manifest",
+    is_flag=True,
     help="Record the release archive (file:// URL + sha256) in the gem's "
-         "manifest releases[] — replace the URL after uploading",
+    "manifest releases[] — replace the URL after uploading",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def package_command(
@@ -433,37 +464,43 @@ def package_command(
     # ------------------------------------------------------------------
     if code_release:
         if not as_json:
-            console.print(
-                f"[bold]Packaging gem source:[/bold] {canonical}=={version}"
-            )
+            console.print(f"[bold]Packaging gem source:[/bold] {canonical}=={version}")
         out = output_dir if output_dir is not None else Path.cwd()
         archive_path, sha256 = package_gem_source_archive(
-            gem_dir, canonical, version, out, fmt=archive_format,
+            gem_dir,
+            canonical,
+            version,
+            out,
+            fmt=archive_format,
         )
 
         manifest_path = None
         if update_manifest:
             manifest_path = update_release_manifest_source(
-                gem_dir, version, archive_path.resolve().as_uri(), sha256,
+                gem_dir,
+                version,
+                archive_path.resolve().as_uri(),
+                sha256,
             )
 
         if as_json:
-            emit_response(data={
-                "object": canonical,
-                "version": version,
-                "release": "code",
-                "archive": str(archive_path),
-                "sha256": sha256,
-                "manifest": str(manifest_path) if manifest_path else None,
-            })
+            emit_response(
+                data={
+                    "object": canonical,
+                    "version": version,
+                    "release": "code",
+                    "archive": str(archive_path),
+                    "sha256": sha256,
+                    "manifest": str(manifest_path) if manifest_path else None,
+                }
+            )
         else:
             console.print(f"[green]Source release archive:[/green] {archive_path}")
             console.print(f"  sha256: {sha256}")
             if manifest_path:
                 console.print(f"  Manifest updated: {manifest_path}")
                 console.print(
-                    "[dim]Replace the file:// URL with the hosted archive URL "
-                    "after uploading[/dim]"
+                    "[dim]Replace the file:// URL with the hosted archive URL after uploading[/dim]"
                 )
             else:
                 console.print(
@@ -474,7 +511,11 @@ def package_command(
         return
 
     build_dir, gem_targets = _discover_targets(
-        ws_path, gem_dir, config, as_json, reconfigure,
+        ws_path,
+        gem_dir,
+        config,
+        as_json,
+        reconfigure,
     )
     targets = _buildable(gem_targets)
     if not targets:
@@ -486,9 +527,7 @@ def package_command(
         )
 
     if not as_json:
-        console.print(
-            f"[bold]Packaging gem:[/bold] {canonical}=={version} ({config})"
-        )
+        console.print(f"[bold]Packaging gem:[/bold] {canonical}=={version} ({config})")
         console.print(f"  Targets: {', '.join(t.name for t in targets)}")
 
     if not skip_build:
@@ -515,35 +554,42 @@ def package_command(
 
     out = output_dir if output_dir is not None else Path.cwd()
     zip_path, sha256 = package_gem_archive(
-        staged, canonical, version, out,
+        staged,
+        canonical,
+        version,
+        out,
     )
     on_progress(f"Archived {zip_path.name}")
 
     manifest_path = None
     if update_manifest:
         manifest_path = update_release_manifest(
-            gem_dir, version, zip_path.resolve().as_uri(), sha256,
+            gem_dir,
+            version,
+            zip_path.resolve().as_uri(),
+            sha256,
         )
         on_progress(f"Updated releases[] in {manifest_path}")
 
     if as_json:
-        emit_response(data={
-            "object": canonical,
-            "version": version,
-            "config": config,
-            "archive": str(zip_path),
-            "sha256": sha256,
-            "package_dir": str(staged),
-            "manifest": str(manifest_path) if manifest_path else None,
-        })
+        emit_response(
+            data={
+                "object": canonical,
+                "version": version,
+                "config": config,
+                "archive": str(zip_path),
+                "sha256": sha256,
+                "package_dir": str(staged),
+                "manifest": str(manifest_path) if manifest_path else None,
+            }
+        )
     else:
         console.print(f"[green]Release archive:[/green] {zip_path}")
         console.print(f"  sha256: {sha256}")
         if manifest_path:
             console.print(f"  Manifest updated: {manifest_path}")
             console.print(
-                "[dim]Replace the file:// URL with the hosted archive URL "
-                "after uploading[/dim]"
+                "[dim]Replace the file:// URL with the hosted archive URL after uploading[/dim]"
             )
         else:
             console.print(
@@ -556,8 +602,15 @@ def package_command(
 # ── split-platforms ─────────────────────────────────────────────────
 
 _SPLIT_SKIP_DIRS = {
-    ".git", ".svn", ".vs", "__pycache__", "build", "Cache", "External",
-    "node_modules", "user",
+    ".git",
+    ".svn",
+    ".vs",
+    "__pycache__",
+    "build",
+    "Cache",
+    "External",
+    "node_modules",
+    "user",
 }
 
 #: Directory name that marks a common (platform-agnostic fallback) payload.
@@ -576,9 +629,7 @@ def _load_object_json(object_path: Path) -> tuple[dict, str]:
             if candidate.exists():
                 with open(candidate, encoding="utf-8-sig") as f:
                     return json.load(f), type_token
-    raise FileNotFoundError(
-        f"No engine/project/gem/template JSON at: {object_path}"
-    )
+    raise FileNotFoundError(f"No engine/project/gem/template JSON at: {object_path}")
 
 
 def _find_platform_dirs(object_root: Path) -> dict[str, list[Path]]:
@@ -659,8 +710,8 @@ def _build_overlay_meta(
             "description": (
                 f"Shared platform-common payload for the {display_base} "
                 f"{type_token}. Platform overlays depend on this overlay."
-                if is_common else
-                f"{plat} platform delivery for the {display_base} "
+                if is_common
+                else f"{plat} platform delivery for the {display_base} "
                 f"{type_token}, composed into the {type_token} tree at "
                 f"workspace compose time."
             ),
@@ -687,26 +738,46 @@ def _build_overlay_meta(
 
 @object_group.command("split-platforms")
 @click.argument("object_path", type=click.Path(exists=True, file_okay=False))
-@click.option("--output", "-o", type=click.Path(),
-              help="Directory to create the overlay objects in "
-                   "(default: the object's parent directory)")
-@click.option("--platforms", "-P", "platforms_opt", multiple=True,
-              help="Only split these platforms (repeatable or "
-                   "comma-separated; default: all detected)")
-@click.option("--overlay-version", "-V", "overlay_version", default=None,
-              help="Version for the created overlays "
-                   "(default: the base object's version)")
-@click.option("--tags", "-T", "tags_opt", multiple=True,
-              help="user_tags to stamp on the created overlays")
-@click.option("--precedence", type=int, default=10, show_default=True,
-              help="Precedence for platform overlays (common overlay is 0)")
-@click.option("--remove", "do_remove", is_flag=True,
-              help="Remove the split platform directories from the "
-                   "source object after creating the overlays")
-@click.option("--register", "do_register", is_flag=True,
-              help="Register the created overlays in the manifest")
-@click.option("--dry-run", is_flag=True,
-              help="Only report what would be split")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Directory to create the overlay objects in (default: the object's parent directory)",
+)
+@click.option(
+    "--platforms",
+    "-P",
+    "platforms_opt",
+    multiple=True,
+    help="Only split these platforms (repeatable or comma-separated; default: all detected)",
+)
+@click.option(
+    "--overlay-version",
+    "-V",
+    "overlay_version",
+    default=None,
+    help="Version for the created overlays (default: the base object's version)",
+)
+@click.option(
+    "--tags", "-T", "tags_opt", multiple=True, help="user_tags to stamp on the created overlays"
+)
+@click.option(
+    "--precedence",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Precedence for platform overlays (common overlay is 0)",
+)
+@click.option(
+    "--remove",
+    "do_remove",
+    is_flag=True,
+    help="Remove the split platform directories from the source object after creating the overlays",
+)
+@click.option(
+    "--register", "do_register", is_flag=True, help="Register the created overlays in the manifest"
+)
+@click.option("--dry-run", is_flag=True, help="Only report what would be split")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def split_platforms_command(
     object_path: str,
@@ -765,8 +836,7 @@ def split_platforms_command(
                 token = token.strip()
                 if token:
                     selected.append(token)
-        unknown = [p for p in selected
-                   if p.lower() not in {d.lower() for d in detected}]
+        unknown = [p for p in selected if p.lower() not in {d.lower() for d in detected}]
         if unknown:
             _fail(
                 f"Platforms not present in the object: {', '.join(unknown)} "
@@ -777,7 +847,8 @@ def split_platforms_command(
         keep = {p.lower() for p in selected}
         # Common is always split when any platform is (dependency target)
         detected = {
-            name: dirs for name, dirs in detected.items()
+            name: dirs
+            for name, dirs in detected.items()
             if name.lower() in keep or name == _COMMON_PLATFORM
         }
 
@@ -793,25 +864,22 @@ def split_platforms_command(
             if token and token not in user_tags:
                 user_tags.append(token)
 
-    common_name = (
-        _split_overlay_name(base_name, "common")
-        if _COMMON_PLATFORM in detected else None
-    )
+    common_name = _split_overlay_name(base_name, "common") if _COMMON_PLATFORM in detected else None
 
     plan: list[dict] = []
     for plat in plat_names:
         is_common = plat == _COMMON_PLATFORM
         ov_name = _split_overlay_name(base_name, plat)
-        files = [
-            f for d in detected[plat] for f in sorted(d.rglob("*")) if f.is_file()
-        ]
-        plan.append({
-            "platform": plat,
-            "overlay": ov_name,
-            "path": str(out_dir / ov_name),
-            "files": len(files),
-            "common": is_common,
-        })
+        files = [f for d in detected[plat] for f in sorted(d.rglob("*")) if f.is_file()]
+        plan.append(
+            {
+                "platform": plat,
+                "overlay": ov_name,
+                "path": str(out_dir / ov_name),
+                "files": len(files),
+                "common": is_common,
+            }
+        )
 
     if dry_run:
         if as_json:
@@ -820,8 +888,7 @@ def split_platforms_command(
             console.print(f"[bold]Would split {base_name}:[/bold]")
             for entry in plan:
                 console.print(
-                    f"  {entry['platform']:<12} → {entry['overlay']} "
-                    f"({entry['files']} files)"
+                    f"  {entry['platform']:<12} → {entry['overlay']} ({entry['files']} files)"
                 )
         return
 
@@ -841,8 +908,7 @@ def split_platforms_command(
         ov_name = _split_overlay_name(base_name, plat)
         ov_root = out_dir / ov_name
         if ov_root.exists():
-            _fail(f"Overlay path already exists: {ov_root}",
-                  "E_OVERLAY_EXISTS", as_json)
+            _fail(f"Overlay path already exists: {ov_root}", "E_OVERLAY_EXISTS", as_json)
         payload_root = ov_root / "Overlay"
 
         # Copy platform payload preserving the object-relative layout
@@ -852,25 +918,33 @@ def split_platforms_command(
 
         # Copy license files
         for lic in licenses:
-            shutil.copy2(obj_root / lic["relative_path"],
-                         ov_root / lic["relative_path"])
+            shutil.copy2(obj_root / lic["relative_path"], ov_root / lic["relative_path"])
 
         meta = _build_overlay_meta(
-            ov_name=ov_name, plat=plat, is_common=is_common,
-            base_name=base_name, base_version=base_version,
-            ov_version=ov_version, type_token=type_token,
-            precedence=precedence, origin=origin, licenses=licenses,
-            user_tags=user_tags, common_name=common_name,
+            ov_name=ov_name,
+            plat=plat,
+            is_common=is_common,
+            base_name=base_name,
+            base_version=base_version,
+            ov_version=ov_version,
+            type_token=type_token,
+            precedence=precedence,
+            origin=origin,
+            licenses=licenses,
+            user_tags=user_tags,
+            common_name=common_name,
         )
         with open(ov_root / "overlay.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
             f.write("\n")
 
-        created.append({
-            "platform": plat,
-            "overlay": ov_name,
-            "path": str(ov_root),
-        })
+        created.append(
+            {
+                "platform": plat,
+                "overlay": ov_name,
+                "path": str(ov_root),
+            }
+        )
 
     # Remove split payloads from the source object
     removed: list[str] = []
@@ -904,66 +978,84 @@ def split_platforms_command(
                 json.dump(manifest, f, indent=2)
 
     if as_json:
-        emit_response(data={
-            "object": base_name,
-            "version": base_version,
-            "overlays": created,
-            "removed": removed,
-            "registered": registered,
-        })
+        emit_response(
+            data={
+                "object": base_name,
+                "version": base_version,
+                "overlays": created,
+                "removed": removed,
+                "registered": registered,
+            }
+        )
     else:
         console.print(f"[green]Split {base_name}:[/green]")
         for entry in created:
             console.print(f"  {entry['platform']:<12} → {entry['path']}")
         if removed:
-            console.print(
-                f"[yellow]Removed from source:[/yellow] {', '.join(removed)}"
-            )
+            console.print(f"[yellow]Removed from source:[/yellow] {', '.join(removed)}")
         if registered:
-            console.print(
-                f"[dim]Registered: {', '.join(registered)}[/dim]"
-            )
+            console.print(f"[dim]Registered: {', '.join(registered)}[/dim]")
 
 
 # ── hoist ───────────────────────────────────────────────────────────
 
 
-def _run_git(args: list[str], cwd: Path | None = None,
-             env: dict | None = None) -> tuple[int, str]:
+def _run_git(args: list[str], cwd: Path | None = None, env: dict | None = None) -> tuple[int, str]:
     """Run a git command, returning (returncode, combined output)."""
     import os
     import subprocess
 
     full_env = {**os.environ, **(env or {})}
     result = subprocess.run(
-        ["git", *args], cwd=cwd, env=full_env,
-        capture_output=True, text=True,
+        ["git", *args],
+        cwd=cwd,
+        env=full_env,
+        capture_output=True,
+        text=True,
     )
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
 @object_group.command("hoist")
 @click.argument("object_path", type=click.Path(exists=True, file_okay=False))
-@click.option("--output", "-o", type=click.Path(),
-              help="Path for the new family repo (default: sibling of the "
-                   "source git repo, named o3de-<family>)")
-@click.option("--repo-name", default=None,
-              help="Family repo object name "
-                   "(default: derived, e.g. org.o3de.repo.<family>)")
-@click.option("--branch", default=None,
-              help="Branch to hoist from (default: the source repo's "
-                   "current branch)")
-@click.option("--overlay-version", "-V", "overlay_version", default=None,
-              help="Version for the created overlays "
-                   "(default: the base object's version)")
-@click.option("--tags", "-T", "tags_opt", multiple=True,
-              help="user_tags to stamp on the created overlays")
-@click.option("--precedence", type=int, default=10, show_default=True,
-              help="Precedence for platform overlays (common overlay is 0)")
-@click.option("--register", "do_register", is_flag=True,
-              help="Register the family repo in the manifest")
-@click.option("--dry-run", is_flag=True,
-              help="Only report what would be hoisted")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Path for the new family repo (default: sibling of the "
+    "source git repo, named o3de-<family>)",
+)
+@click.option(
+    "--repo-name",
+    default=None,
+    help="Family repo object name (default: derived, e.g. org.o3de.repo.<family>)",
+)
+@click.option(
+    "--branch",
+    default=None,
+    help="Branch to hoist from (default: the source repo's current branch)",
+)
+@click.option(
+    "--overlay-version",
+    "-V",
+    "overlay_version",
+    default=None,
+    help="Version for the created overlays (default: the base object's version)",
+)
+@click.option(
+    "--tags", "-T", "tags_opt", multiple=True, help="user_tags to stamp on the created overlays"
+)
+@click.option(
+    "--precedence",
+    type=int,
+    default=10,
+    show_default=True,
+    help="Precedence for platform overlays (common overlay is 0)",
+)
+@click.option(
+    "--register", "do_register", is_flag=True, help="Register the family repo in the manifest"
+)
+@click.option("--dry-run", is_flag=True, help="Only report what would be hoisted")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def hoist_command(
     object_path: str,
@@ -1017,34 +1109,39 @@ def hoist_command(
 
     # Locate the enclosing git repository
     rc, git_root_str = _run_git(
-        ["rev-parse", "--show-toplevel"], cwd=obj_root,
+        ["rev-parse", "--show-toplevel"],
+        cwd=obj_root,
     )
     if rc != 0:
-        _fail(f"Not inside a git repository: {obj_root}",
-              "E_NOT_A_GIT_REPO", as_json)
+        _fail(f"Not inside a git repository: {obj_root}", "E_NOT_A_GIT_REPO", as_json)
     git_root = Path(git_root_str)
     try:
         gem_rel = obj_root.relative_to(git_root).as_posix()
     except ValueError:
-        _fail(f"{obj_root} is not under git root {git_root}",
-              "E_NOT_IN_REPO", as_json)
+        _fail(f"{obj_root} is not under git root {git_root}", "E_NOT_IN_REPO", as_json)
         raise
 
     if branch is None:
         rc, branch = _run_git(
-            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=git_root,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=git_root,
         )
         if rc != 0 or branch == "HEAD":
-            _fail("Cannot determine the source branch (detached HEAD?) — "
-                  "pass --branch", "E_NO_BRANCH", as_json)
+            _fail(
+                "Cannot determine the source branch (detached HEAD?) — pass --branch",
+                "E_NO_BRANCH",
+                as_json,
+            )
 
     # git filter-repo availability
     try:
         import git_filter_repo  # noqa: F401
     except ImportError:
-        _fail("git-filter-repo is not installed. "
-              "Install it with: pip install git-filter-repo",
-              "E_NO_FILTER_REPO", as_json)
+        _fail(
+            "git-filter-repo is not installed. Install it with: pip install git-filter-repo",
+            "E_NO_FILTER_REPO",
+            as_json,
+        )
 
     # Detect platform payloads in the working tree
     detected = _find_platform_dirs(obj_root)
@@ -1059,10 +1156,7 @@ def hoist_command(
     filter_args = ["--path", f"{gem_rel}/"]
     overlay_dirs: dict[str, str] = {}  # overlay dir name → platform
     renames: list[tuple[str, str]] = []
-    common_name = (
-        _split_overlay_name(base_name, "common")
-        if _COMMON_PLATFORM in detected else None
-    )
+    common_name = _split_overlay_name(base_name, "common") if _COMMON_PLATFORM in detected else None
     for plat, dirs in sorted(detected.items()):
         ov_dir = f"{family}.{plat.lower()}"
         overlay_dirs[ov_dir] = plat
@@ -1075,10 +1169,7 @@ def hoist_command(
     if gem_rel != gem_target:
         filter_args += ["--path-rename", f"{gem_rel}/:{gem_target}/"]
 
-    out_dir = (
-        Path(output).resolve() if output
-        else git_root.parent / f"o3de-{family}"
-    )
+    out_dir = Path(output).resolve() if output else git_root.parent / f"o3de-{family}"
 
     if dry_run:
         plan = {
@@ -1088,8 +1179,11 @@ def hoist_command(
             "branch": branch,
             "gem_dir": gem_target,
             "overlays": [
-                {"dir": f"Overlays/{d}", "platform": p,
-                 "overlay": _split_overlay_name(base_name, p)}
+                {
+                    "dir": f"Overlays/{d}",
+                    "platform": p,
+                    "overlay": _split_overlay_name(base_name, p),
+                }
                 for d, p in sorted(overlay_dirs.items())
             ],
         }
@@ -1105,16 +1199,22 @@ def hoist_command(
         return
 
     if out_dir.exists():
-        _fail(f"Output path already exists: {out_dir}",
-              "E_OUTPUT_EXISTS", as_json)
+        _fail(f"Output path already exists: {out_dir}", "E_OUTPUT_EXISTS", as_json)
 
     # Fresh clone (filter-repo requirement); skip LFS smudge — pointers
     # filter fine and the gem may not have LFS content at all
     if not as_json:
         console.print(f"[dim]Cloning {git_root} (branch {branch})...[/dim]")
     rc, out = _run_git(
-        ["clone", "--no-local", "--single-branch", "--branch", branch,
-         f"file://{git_root.as_posix()}", str(out_dir)],
+        [
+            "clone",
+            "--no-local",
+            "--single-branch",
+            "--branch",
+            branch,
+            f"file://{git_root.as_posix()}",
+            str(out_dir),
+        ],
         env={"GIT_LFS_SKIP_SMUDGE": "1"},
     )
     if rc != 0:
@@ -1124,12 +1224,13 @@ def hoist_command(
         console.print("[dim]Filtering history (git filter-repo)...[/dim]")
     result = subprocess.run(
         [sys.executable, "-m", "git_filter_repo", *filter_args],
-        cwd=out_dir, capture_output=True, text=True,
+        cwd=out_dir,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         shutil.rmtree(out_dir, ignore_errors=True)
-        _fail(f"filter-repo failed: {result.stdout}{result.stderr}",
-              "E_FILTER_FAILED", as_json)
+        _fail(f"filter-repo failed: {result.stdout}{result.stderr}", "E_FILTER_FAILED", as_json)
 
     # ── LFS carry-over ────────────────────────────────────────────────
     # The split repo inherits LFS *pointer* blobs but neither the root
@@ -1141,7 +1242,8 @@ def hoist_command(
     if src_attributes.is_file() and not (out_dir / ".gitattributes").exists():
         shutil.copy2(src_attributes, out_dir / ".gitattributes")
     rc, lfs_files = _run_git(
-        ["lfs", "ls-files", "--name-only"], cwd=out_dir,
+        ["lfs", "ls-files", "--name-only"],
+        cwd=out_dir,
     )
     if rc == 0 and lfs_files.strip():
         copied = 0
@@ -1159,10 +1261,8 @@ def hoist_command(
                 )
             except Exception:
                 continue
-            src_obj = (git_root / ".git" / "lfs" / "objects"
-                       / oid[:2] / oid[2:4] / oid)
-            dst_obj = (out_dir / ".git" / "lfs" / "objects"
-                       / oid[:2] / oid[2:4] / oid)
+            src_obj = git_root / ".git" / "lfs" / "objects" / oid[:2] / oid[2:4] / oid
+            dst_obj = out_dir / ".git" / "lfs" / "objects" / oid[:2] / oid[2:4] / oid
             if src_obj.is_file() and not dst_obj.exists():
                 dst_obj.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_obj, dst_obj)
@@ -1200,24 +1300,29 @@ def hoist_command(
         is_common = plat == _COMMON_PLATFORM
         ov_name = _split_overlay_name(base_name, plat)
         meta = _build_overlay_meta(
-            ov_name=ov_name, plat=plat, is_common=is_common,
-            base_name=base_name, base_version=base_version,
-            ov_version=ov_version, type_token=type_token,
-            precedence=precedence, origin=origin, licenses=licenses,
-            user_tags=user_tags, common_name=common_name,
+            ov_name=ov_name,
+            plat=plat,
+            is_common=is_common,
+            base_name=base_name,
+            base_version=base_version,
+            ov_version=ov_version,
+            type_token=type_token,
+            precedence=precedence,
+            origin=origin,
+            licenses=licenses,
+            user_tags=user_tags,
+            common_name=common_name,
         )
         with open(ov_root / "overlay.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
             f.write("\n")
         for lic in licenses:
-            shutil.copy2(gem_dir / lic["relative_path"],
-                         ov_root / lic["relative_path"])
+            shutil.copy2(gem_dir / lic["relative_path"], ov_root / lic["relative_path"])
         created_overlays.append(ov_name)
 
     # Repo root licenses
     for lic in licenses:
-        shutil.copy2(gem_dir / lic["relative_path"],
-                     out_dir / lic["relative_path"])
+        shutil.copy2(gem_dir / lic["relative_path"], out_dir / lic["relative_path"])
 
     # repo.json — the family repo object
     display_family = family.capitalize()
@@ -1255,19 +1360,22 @@ def hoist_command(
         "templates": [],
         "repos": [],
         "overlays": [
-            f"Overlays/{d}/overlay.json" for d in sorted(overlay_dirs)
+            f"Overlays/{d}/overlay.json"
+            for d in sorted(overlay_dirs)
             if (out_dir / "Overlays" / d).is_dir()
         ],
     }
     # Place the object reference under the correct child type
     _child_key = {"gem": "gems", "template": "templates", "project": "projects"}
-    children[_child_key.get(type_token, "gems")].append(
-        f"{gem_target}/{obj_json_name}"
-    )
+    children[_child_key.get(type_token, "gems")].append(f"{gem_target}/{obj_json_name}")
     repo_meta["children"] = children
     repo_meta["remote"] = {
-        "engines": [], "projects": [], "gems": [],
-        "templates": [], "repos": [], "overlays": [],
+        "engines": [],
+        "projects": [],
+        "gems": [],
+        "templates": [],
+        "repos": [],
+        "overlays": [],
     }
     with open(out_dir / "repo.json", "w", encoding="utf-8") as f:
         json.dump(repo_meta, f, indent=2)
@@ -1276,10 +1384,13 @@ def hoist_command(
     rc, out = _run_git(["add", "-A"], cwd=out_dir)
     if rc == 0:
         rc, out = _run_git(
-            ["commit", "-m",
-             f"Hoist {base_name} into family repo {family_repo_name}\n\n"
-             f"repo.json + per-platform overlay objects laid over the\n"
-             f"filter-repo split of the {type_token}'s git history."],
+            [
+                "commit",
+                "-m",
+                f"Hoist {base_name} into family repo {family_repo_name}\n\n"
+                f"repo.json + per-platform overlay objects laid over the\n"
+                f"filter-repo split of the {type_token}'s git history.",
+            ],
             cwd=out_dir,
         )
     if rc != 0:
@@ -1305,14 +1416,16 @@ def hoist_command(
                 json.dump(manifest, f, indent=2)
 
     if as_json:
-        emit_response(data={
-            "object": base_name,
-            "repo": family_repo_name,
-            "path": str(out_dir),
-            "branch": branch,
-            "overlays": created_overlays,
-            "registered": registered,
-        })
+        emit_response(
+            data={
+                "object": base_name,
+                "repo": family_repo_name,
+                "path": str(out_dir),
+                "branch": branch,
+                "overlays": created_overlays,
+                "registered": registered,
+            }
+        )
     else:
         console.print(f"[green]Hoisted {base_name}:[/green] {out_dir}")
         console.print(f"  Repo object: {family_repo_name}")

@@ -108,7 +108,9 @@ def verify_lockfile(
     # Check each locked package against current resolution
     for name, locked in locked_packages.items():
         if name not in resolved_candidates:
-            mismatches.append(f"{name}: locked at {locked['version']} but not in current resolution")
+            mismatches.append(
+                f"{name}: locked at {locked['version']} but not in current resolution"
+            )
             continue
         current = resolved_candidates[name]
         current_version = _get_version(current)
@@ -121,9 +123,7 @@ def verify_lockfile(
     for name in resolved_candidates:
         if name not in locked_packages:
             current = resolved_candidates[name]
-            mismatches.append(
-                f"{name}: resolved to {_get_version(current)} but not in lockfile"
-            )
+            mismatches.append(f"{name}: resolved to {_get_version(current)} but not in lockfile")
 
     return len(mismatches) == 0, mismatches
 

@@ -436,9 +436,7 @@ def solve_for_workspace(
     # Build initial requirements from the root's dependencies
     root_requirements: list[Requirement] = []
     for dep_spec in root.dependencies:
-        root_requirements.append(
-            Requirement(name=dep_spec.name, specifier=dep_spec.specifier)
-        )
+        root_requirements.append(Requirement(name=dep_spec.name, specifier=dep_spec.specifier))
 
     # Inject user override pins as == root requirements
     pinned_names: set[str] = set()
@@ -518,9 +516,11 @@ def solve_for_workspace(
             if child_obj is None:
                 continue
             for dep_spec in child_obj.dependencies:
-                if (dep_spec.name in candidates
-                        or dep_spec.name in children
-                        or dep_spec.name in requested_child_deps):
+                if (
+                    dep_spec.name in candidates
+                    or dep_spec.name in children
+                    or dep_spec.name in requested_child_deps
+                ):
                     continue
                 requested_child_deps.add(dep_spec.name)
                 new_requirements.append(
@@ -535,9 +535,7 @@ def solve_for_workspace(
             return SolveResult(
                 root_name=root_name,
                 root_version=root.version,
-                conflict_message=(
-                    f"Child object dependencies unresolvable: {e}"
-                ),
+                conflict_message=(f"Child object dependencies unresolvable: {e}"),
             )
         candidates = dict(result.mapping)
         candidates[root.name] = root_candidate
@@ -577,8 +575,7 @@ def solve_for_workspace(
             path=overlay_obj.path,
             status=CandidateStatus.LOCAL,
             platforms=[
-                p for p in overlay_obj.data.get("platforms", []) or []
-                if isinstance(p, str)
+                p for p in overlay_obj.data.get("platforms", []) or [] if isinstance(p, str)
             ],
             overlay_deps=[
                 ObjectNameVersion(d).name
@@ -586,8 +583,7 @@ def solve_for_workspace(
                 if isinstance(d, str)
             ],
             user_tags=[
-                t for t in overlay_obj.data.get("user_tags", []) or []
-                if isinstance(t, str)
+                t for t in overlay_obj.data.get("user_tags", []) or [] if isinstance(t, str)
             ],
         )
         overlays.setdefault(extends_spec.name, []).append(entry)
@@ -714,10 +710,7 @@ def abi_compatible(binary) -> bool:
     glibc is >= the floor the binary was built against.  Absent or
     unknown constraints pass (assume compatible).
     """
-    abi = (
-        binary.get("abi") if isinstance(binary, dict)
-        else getattr(binary, "abi", None)
-    )
+    abi = binary.get("abi") if isinstance(binary, dict) else getattr(binary, "abi", None)
     if not isinstance(abi, dict):
         return True
     floor = abi.get("glibc")
@@ -778,12 +771,14 @@ def has_remote_binary(candidate: Candidate, platform: Optional[str] = None) -> b
 
     def _release_has_binary(release) -> bool:
         binaries = (
-            release.get("binaries", []) if isinstance(release, dict)
+            release.get("binaries", [])
+            if isinstance(release, dict)
             else getattr(release, "binaries", []) or []
         )
         for binary in binaries:
             bin_platform = (
-                binary.get("platform", "") if isinstance(binary, dict)
+                binary.get("platform", "")
+                if isinstance(binary, dict)
                 else getattr(binary, "platform", "")
             )
             if platform_matches(bin_platform, platform) and abi_compatible(binary):
@@ -793,8 +788,7 @@ def has_remote_binary(candidate: Candidate, platform: Optional[str] = None) -> b
     # Exact version-named release first
     for release in releases:
         rel_name = (
-            release.get("name", "") if isinstance(release, dict)
-            else getattr(release, "name", "")
+            release.get("name", "") if isinstance(release, dict) else getattr(release, "name", "")
         )
         if rel_name == candidate.version and _release_has_binary(release):
             return True
@@ -805,7 +799,9 @@ def has_remote_binary(candidate: Candidate, platform: Optional[str] = None) -> b
 def annotate_artifacts(candidate: Candidate) -> Candidate:
     """Populate artifact availability fields on *candidate* (in place)."""
     candidate.local_binary_path = find_local_binary_install(
-        candidate.name, candidate.version, candidate.path,
+        candidate.name,
+        candidate.version,
+        candidate.path,
     )
     candidate.remote_binary = has_remote_binary(candidate)
     return candidate
