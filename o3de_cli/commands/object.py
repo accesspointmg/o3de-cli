@@ -1438,3 +1438,118 @@ def hoist_command(
             "[dim]Upstream sync: re-run the same hoist to a scratch path "
             "after upstream merges, then fetch+merge from it[/dim]"
         )
+
+
+@object_group.command("compose")
+@click.option(
+    "--plan",
+    "plan_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Composition plan describing the families to produce",
+)
+@click.option(
+    "--family",
+    "only_families",
+    multiple=True,
+    help="Limit to these family names (repeatable)",
+)
+@click.option("--apply", "do_apply", is_flag=True, help="Generate the families")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def compose_command(
+    plan_path: str,
+    only_families: tuple[str, ...],
+    do_apply: bool,
+    as_json: bool,
+) -> None:
+    """Compose object family repositories from a declarative plan.
+
+    Reports what a plan would produce and does not write anything unless
+    --apply is given. Unlike ``hoist``, which computes its filter arguments
+    from the working tree and records nothing, a plan states the mapping
+    explicitly and pins the source commit, so the same plan reproduces the
+    same result and a family can be deleted and recreated at will.
+
+    Example:
+        o3de object compose --plan chickenator.plan.json
+    """
+    import json as _json
+
+    from pydantic import ValidationError
+
+    from o3de_cli.core.compose import ComposeError, ComposePlan, analyze
+    from o3de_cli.core.json_output import emit_response
+
+    try:
+        raw = _json.loads(Path(plan_path).read_text(encoding="utf-8"))
+    except (OSError, _json.JSONDecodeError) as e:
+        _fail(f"Cannot read plan: {e}", "E_PLAN_UNREADABLE", as_json)
+        return
+
+    try:
+        plan = ComposePlan.model_validate(raw)
+    except ValidationError as e:
+        _fail(f"Invalid plan:\n{e}", "E_PLAN_INVALID", as_json)
+        return
+
+    only = set(only_families) if only_families else None
+    if only:
+        known = {f.name for f in plan.families}
+        unknown = only - known
+        if unknown:
+            _fail(
+                f"Plan has no such families: {', '.join(sorted(unknown))}",
+                "E_NO_SUCH_FAMILY",
+                as_json,
+            )
+            return
+
+    try:
+        report = analyze(plan, only=only)
+    except ComposeError as e:
+        _fail(str(e), "E_COMPOSE_FAILED", as_json)
+        return
+
+    if as_json:
+        emit_response(data=report.model_dump())
+    else:
+        console.print(f"[bold]Source:[/bold] {report.source_repo} @ {report.source_commit[:10]}")
+        console.print(
+            f"[bold]Families:[/bold] {len(report.families)}  "
+            f"[bold]Source files:[/bold] {report.total_source_files}\n"
+        )
+        for fam in report.families:
+            flag = "" if fam.history else " [yellow](no history)[/yellow]"
+            console.print(f"[bold cyan]{fam.name}[/bold cyan]{flag}")
+            console.print(
+                f"  rules {len(fam.rules)}   files {fam.mapped_files}   "
+                f"created {len(fam.created)}   copies {fam.copies}"
+            )
+            for src, dst in fam.rules:
+                arrow = "->" if src != dst else "=="
+                console.print(f"    {src} {arrow} {dst}")
+            for created in fam.created:
+                console.print(f"    [green]+[/green] {created}")
+            for missing in fam.missing_sources:
+                console.print(f"    [red]missing source:[/red] {missing}")
+            for warning in fam.warnings:
+                console.print(f"    [yellow]warning:[/yellow] {warning}")
+            console.print()
+
+        # Unmapped files are dropped: --path is an allowlist, so this is the
+        # number that matters most and it goes last where it will be read.
+        if report.unmapped_files:
+            console.print(
+                f"[yellow]{report.unmapped_files} of {report.total_source_files} "
+                f"source files are not mapped by any family and would be dropped."
+                f"[/yellow]"
+            )
+        else:
+            console.print("[green]Every source file is mapped by some family.[/green]")
+
+    if do_apply:
+        _fail(
+            "Generation is not implemented yet; this reports only. Re-run without --apply.",
+            "E_NOT_IMPLEMENTED",
+            as_json,
+        )
