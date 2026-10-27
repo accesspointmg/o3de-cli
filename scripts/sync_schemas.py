@@ -68,9 +68,9 @@ def main() -> int:
     DEST.mkdir(exist_ok=True)
     for name in SCHEMAS:
         shutil.copyfile(src_dir / name, DEST / name)
-    (DEST / "SOURCE").write_text(
-        f"https://github.com/accesspointmg/canonical.o3de.org/tree/{commit}/src\n",
-        encoding="utf-8",
+    # Bytes, not text: text mode would write CRLF on Windows.
+    (DEST / "SOURCE").write_bytes(
+        f"https://github.com/accesspointmg/canonical.o3de.org/tree/{commit}/src\n".encode()
     )
     print(f"Copied {len(SCHEMAS)} schemas from canonical.o3de.org@{commit[:10]}")
     return 0
