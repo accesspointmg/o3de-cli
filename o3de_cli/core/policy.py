@@ -1,4 +1,4 @@
-# O3DE Pilot - Policy Enforcement
+# O3DE CLI - Policy Enforcement
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Policy enforcement for O3DE object installation.

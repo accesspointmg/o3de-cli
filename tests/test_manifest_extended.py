@@ -1,4 +1,4 @@
-# O3DE Pilot - Manifest Command Extended Tests
+# O3DE CLI - Manifest Command Extended Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for manifest.py command subcommands."""
@@ -314,7 +314,7 @@ class TestManifestAddJson:
         runner = CliRunner()
         with patch("o3de_cli.commands.manifest.get_manifest_path", return_value=mp):
             result = runner.invoke(manifest, ["add", str(empty), "--json"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
 
@@ -362,7 +362,7 @@ class TestManifestSetJson:
         runner = CliRunner()
         with patch("o3de_cli.commands.manifest.get_manifest_path", return_value=mp):
             result = runner.invoke(manifest, ["set", "bad", "val", "--json"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
 

@@ -1,7 +1,7 @@
-# O3DE Pilot CLI - Configuration
+# O3DE CLI - Configuration
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-"""Configuration management for O3DE Pilot."""
+"""Configuration management for o3de-cli."""
 
 from pathlib import Path
 from typing import Any
@@ -13,7 +13,8 @@ _config_instance: "Config | None" = None
 
 def get_config_path() -> Path:
     """Get the path to the config file."""
-    # Use ~/.o3de/pilot/config.yaml
+    # The "pilot" folder predates the package's name; existing users' config
+    # lives there, so it stays.
     return Path.home() / ".o3de" / "pilot" / "config.yaml"
 
 
@@ -26,7 +27,7 @@ def get_config() -> "Config":
 
 
 class Config:
-    """Configuration manager for O3DE Pilot."""
+    """Configuration manager for o3de-cli."""
 
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or get_config_path()

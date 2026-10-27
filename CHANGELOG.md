@@ -5,31 +5,28 @@ All notable changes to o3de-cli will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-06-07
+## [Unreleased]
+
+Nothing has been published yet; the first release will be 0.1.0.
 
 ### Added
 
 - **Core**: Schema 2.0 object models (engine, project, gem, template, repo, overlay) with Pydantic validation
-- **Core**: Dependency resolver with SAT-based constraint solving (resolvelib)
-- **Core**: Object store with manifest management and git-aware path resolution
-- **Core**: Workspace system — create, solve, build, lock, verify
-- **Core**: Schema upgrade pipeline (1.0 → 2.0 migration)
-- **Core**: Network layer with httpx for registry operations
-- **Core**: Policy enforcement (license compliance, security advisories, deprecation)
-- **Core**: Auth token management for registry login/logout
-- **Core**: Lockfile generation and verification
-- **Commands**: engine, project, gem, template, repo, manifest, workspace, register, unregister, config, deps, audit, publish, registry
-- **Commands**: All commands support `--json` for structured output
-- **Commands**: Destructive commands support `--dry-run`
-- **Build**: CMake workspace build integration (configure + build)
-- **AI**: 11-provider support (Ollama, Anthropic, OpenAI, Gemini, Groq, DeepSeek, Mistral, xAI, OpenRouter, Together, Perplexity)
-- **AI**: Conversational agent with tool-calling loop and confirmation gates
-- **AI**: Command router with pattern matching + AI fallback
-- **AI**: Dynamic model discovery across all providers
-- **AI**: Configurable thinking effort (off/low/medium/high/max) for Claude, OpenAI o-series, Gemini
-- **AI**: Free local model tier via Ollama (llama3.2:3b, auto-pull)
-- **Voice**: 4 STT providers (Whisper local, Google free, Deepgram, OpenAI Whisper API)
-- **Voice**: 3 TTS providers (OS-native, ElevenLabs, OpenAI TTS)
-- **Voice**: AudioCapture with silence detection and cross-platform playback
-- **MCP**: JSON-RPC 2.0 stdio server with 18 tools for IDE integration
-- **Tests**: 1248 tests covering all modules
+- **Core**: Schema upgrade pipeline (0 → 1.0 → 2.0), writing 2.0.0 sidecars alongside legacy files
+- **Core**: Dependency solver for workspaces (resolvelib), with platform and binary-ABI awareness
+- **Core**: Object store that crawls remote `repo.json` trees, with an offline cache and SHA-256 integrity checks
+- **Core**: Workspaces: symlinked build trees composed from an engine, project, gems and overlays, with lockfiles
+- **Core**: Overlays compose into the object they extend, selected by platform and user tags, with explicit apply order
+- **Core**: Policy checks (licenses, deprecation, security advisories) and token auth for private registries
+- **Commands**: engine, project, gem, template, repo, overlay, register/unregister, manifest, registry, workspace, object, publish, deps, audit, config, gui, mcp
+- **Commands**: `object build` / `object install` build a single gem into a binary package with a generated `<name>Config.cmake`
+- **Commands**: `object split-platforms` extracts platform directories into overlay objects
+- **Commands**: `object hoist` projects a gem out of its engine repo into a family repo with full git history
+- **Commands**: `object compose --plan` reports what a declarative composition plan would produce (generation to follow)
+- **Commands**: `--json` output with a shared envelope; errors exit 1
+- **MCP**: JSON-RPC 2.0 stdio server exposing 18 CLI operations as tools
+- The canonical 2.0.0 JSON schemas ship with the package
+
+### Changed
+
+- AI assistance and voice moved out of the CLI into the [o3de-pilot](https://github.com/accesspointmg/o3de-pilot) GUI

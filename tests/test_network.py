@@ -1,4 +1,4 @@
-# Tests for O3DE Pilot Network module
+# Tests for o3de-cli Network module
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for network connectivity detection."""

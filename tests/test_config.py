@@ -1,4 +1,4 @@
-# O3DE Pilot - Config Tests
+# O3DE CLI - Config Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.core.config module."""

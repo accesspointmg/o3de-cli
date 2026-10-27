@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Register Commands
+# O3DE CLI - Register Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Object registration commands.

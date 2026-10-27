@@ -1,4 +1,4 @@
-# O3DE Pilot - Models Tests
+# O3DE CLI - Models Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.core.models module."""

@@ -1,4 +1,4 @@
-# O3DE Pilot - Policy Enforcement Tests
+# O3DE CLI - Policy Enforcement Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for O3: license compliance, security advisories, deprecation."""

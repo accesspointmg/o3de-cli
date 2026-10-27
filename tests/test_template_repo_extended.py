@@ -1,4 +1,4 @@
-# O3DE Pilot - Template & Repo Extended Tests
+# O3DE CLI - Template & Repo Extended Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Additional tests for template and repo command branches."""
@@ -258,7 +258,7 @@ class TestTemplateInfoJson:
         runner = CliRunner()
         with patch("o3de_cli.core.resolver.load_resolved_manifest", return_value={"objects": {}}):
             result = runner.invoke(template, ["info", "nope", "--json"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
 
@@ -285,7 +285,7 @@ class TestTemplateCreateJson:
         result = runner.invoke(template, [
             "create", "test", "--path", str(target), "--json",
         ])
-        assert result.exit_code == 0
+        assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
 

@@ -1,4 +1,4 @@
-# O3DE Pilot - Store / Remote Object Fetcher
+# O3DE CLI - Store / Remote Object Fetcher
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

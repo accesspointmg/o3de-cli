@@ -1,7 +1,7 @@
-# O3DE Pilot CLI - Entry Point
+# O3DE CLI - Entry Point
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-"""Main entry point for o3de-pilot CLI."""
+"""Main entry point for the o3de CLI."""
 
 import click
 from rich.console import Console
@@ -42,13 +42,13 @@ def ensure_first_run_setup() -> None:
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="o3de-pilot")
+@click.version_option(version=__version__, prog_name="o3de")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
-    """O3DE Pilot - AI-powered O3DE project management.
+    """o3de - package manager and CLI for the O3DE ecosystem.
 
-    A modern CLI for managing O3DE projects, gems, templates, and engines
-    with npm-style package management and AI assistance.
+    Manage O3DE engines, projects, gems, templates, repos, overlays and
+    build workspaces, with npm-style dependency resolution.
     """
     ctx.ensure_object(dict)
 
@@ -82,7 +82,7 @@ cli.add_command(object_cmd.object_group)
 def mcp_command() -> None:
     """Start MCP (Model Context Protocol) server on stdio.
 
-    Exposes o3de-pilot CLI commands as MCP tools for AI agents,
+    Exposes o3de CLI commands as MCP tools for AI agents,
     VS Code Copilot, and other MCP-compliant clients.
     """
     from o3de_cli.mcp_server import serve

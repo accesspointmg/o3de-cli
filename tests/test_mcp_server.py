@@ -1,4 +1,4 @@
-# O3DE Pilot - MCP Server Tests
+# O3DE CLI - MCP Server Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for the MCP server module."""
@@ -295,7 +295,7 @@ class TestMCPHandlers:
     def test_initialize_returns_protocol_version(self):
         result = _handle_initialize({})
         assert result["protocolVersion"] == "2024-11-05"
-        assert result["serverInfo"]["name"] == "o3de-pilot"
+        assert result["serverInfo"]["name"] == "o3de-cli"
         assert "tools" in result["capabilities"]
 
     def test_tools_list_returns_all_tools(self):

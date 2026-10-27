@@ -1,4 +1,4 @@
-# O3DE Pilot - Gem & Workspace Command Extended Tests
+# O3DE CLI - Gem & Workspace Command Extended Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for gem and workspace command subcommands."""

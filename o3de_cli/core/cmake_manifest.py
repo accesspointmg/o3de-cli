@@ -1,4 +1,4 @@
-# O3DE Pilot - Workspace CMake Manifest Generator
+# O3DE CLI - Workspace CMake Manifest Generator
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

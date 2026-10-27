@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Workspace Commands
+# O3DE CLI - Workspace Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Workspace management commands.
@@ -39,6 +39,7 @@ from o3de_cli.core.models import (
     WorkspaceHeader,
     WorkspaceMeta,
 )
+from o3de_cli.core.paths import rmtree_force
 from o3de_cli.core.solver import (
     CandidateStatus,
     SolveResult,
@@ -401,8 +402,8 @@ def create_command(
     dependencies from the manifest.  Use --no-solve for explicit-only mode.
 
     Example:
-        o3de-pilot workspace create my-build -e ./o3de -p ./my-project
-        o3de-pilot workspace create my-build -e ./o3de -p ./my-project --no-solve
+        o3de workspace create my-build -e ./o3de -p ./my-project
+        o3de workspace create my-build -e ./o3de -p ./my-project --no-solve
     """
     if not engine_path and not project_path and not root_opt:
         if as_json:
@@ -935,15 +936,7 @@ def _relink_object(
 
     # Remove the old linked tree (hard links — sources unaffected)
     if dest_root.exists():
-
-        def _clear_readonly(func, path, _exc_info):
-            import os
-            import stat
-
-            os.chmod(path, stat.S_IWRITE)
-            func(path)
-
-        shutil.rmtree(dest_root, onexc=_clear_readonly)
+        rmtree_force(dest_root)
 
     # Drop stale file_links for this object
     meta.file_links = {
@@ -1675,15 +1668,7 @@ def update_command(
                 for ov_name in new_set:
                     attr_dir = workspace_path / "Overlays" / ov_name
                     if attr_dir.exists():
-
-                        def _clear_ro(func, path, _exc_info):
-                            import os
-                            import stat
-
-                            os.chmod(path, stat.S_IWRITE)
-                            func(path)
-
-                        _shutil.rmtree(attr_dir, onexc=_clear_ro)
+                        rmtree_force(attr_dir)
                     attr_prefix = f"Overlays/{ov_name}/"
                     meta.file_links = {
                         src: rel
@@ -1730,15 +1715,7 @@ def update_command(
         for ov_name in removes:
             attr_dir = workspace_path / "Overlays" / ov_name
             if attr_dir.exists():
-
-                def _clear_readonly(func, path, _exc_info):
-                    import os
-                    import stat
-
-                    os.chmod(path, stat.S_IWRITE)
-                    func(path)
-
-                shutil.rmtree(attr_dir, onexc=_clear_readonly)
+                rmtree_force(attr_dir)
             attr_prefix = f"Overlays/{ov_name}/"
             meta.file_links = {
                 src: rel for src, rel in meta.file_links.items() if not rel.startswith(attr_prefix)
@@ -2016,16 +1993,7 @@ def delete_command(name_or_path: str, force: bool, as_json: bool, dry_run: bool)
             console.print("[dim]Cancelled.[/dim]")
             return
 
-    def _clear_readonly(func, path, _exc_info):
-        """Windows: build artifacts (e.g. FetchContent git pack files)
-        are read-only; clear the attribute and retry."""
-        import os
-        import stat
-
-        os.chmod(path, stat.S_IWRITE)
-        func(path)
-
-    shutil.rmtree(ws_path, onexc=_clear_readonly)
+    rmtree_force(ws_path)
     _unregister_workspace(ws_path)
     if as_json:
         emit_response(data={"action": "deleted", "workspace": str(ws_path)})
@@ -2092,8 +2060,8 @@ def solve_command(
     which objects are local, remote, or unknown.
 
     Example:
-        o3de-pilot workspace solve org.o3de.engine.o3de
-        o3de-pilot workspace solve org.o3de.project.myproject --include-store
+        o3de workspace solve org.o3de.engine.o3de
+        o3de workspace solve org.o3de.project.myproject --include-store
     """
     from o3de_cli.core.store import Store
 
@@ -2904,7 +2872,7 @@ def lock_command(name_or_path: str, as_json: bool) -> None:
     `workspace create --frozen` to reproduce exact builds.
 
     Example:
-        o3de-pilot workspace lock my-workspace
+        o3de workspace lock my-workspace
     """
     from o3de_cli.core.json_output import emit_error, emit_response
     from o3de_cli.core.lockfile import generate_lockfile, read_lockfile

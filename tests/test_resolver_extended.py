@@ -1,4 +1,4 @@
-# O3DE Pilot - Extended Resolver Tests
+# O3DE CLI - Extended Resolver Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Extended tests for o3de_cli.core.resolver — covers uncovered resolve paths."""

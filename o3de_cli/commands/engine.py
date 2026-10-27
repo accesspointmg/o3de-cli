@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Engine Commands
+# O3DE CLI - Engine Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Engine management commands."""
@@ -77,7 +77,7 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
             from o3de_cli.core.json_output import emit_error
 
             emit_error(f"Path already exists: {engine_path}", code="E_EXISTS")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Path already exists:[/red] {engine_path}")
         raise SystemExit(1)
 
@@ -132,7 +132,7 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
         emit_response(data={"name": name, "path": str(engine_path)})
         return
     console.print(f"[green]Created engine:[/green] {engine_path}")
-    console.print("[dim]Register it with: o3de-pilot engine register <path>[/dim]")
+    console.print("[dim]Register it with: o3de engine register <path>[/dim]")
 
 
 @engine.command("register")
@@ -151,7 +151,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
             from o3de_cli.core.json_output import emit_error
 
             emit_error("No manifest found", code="E_NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
@@ -182,7 +182,7 @@ def register(path_or_url: str, remote: bool, as_json: bool) -> None:
                 from o3de_cli.core.json_output import emit_error
 
                 emit_error("No engine JSON found at this path", code="E_NOT_AN_ENGINE")
-                return
+                raise SystemExit(1)
             console.print("[red]No engine JSON found at this path.[/red]")
             raise SystemExit(1)
         section = manifest.setdefault("local", {})
@@ -225,7 +225,7 @@ def unregister(name: str, remote: bool, as_json: bool) -> None:
             from o3de_cli.core.json_output import emit_error
 
             emit_error("No manifest found", code="E_NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
@@ -248,7 +248,7 @@ def unregister(name: str, remote: bool, as_json: bool) -> None:
             from o3de_cli.core.json_output import emit_error
 
             emit_error(f"Engine '{name}' not found in {section_key} manifest", code="E_NOT_FOUND")
-            return
+            raise SystemExit(1)
         console.print(f"[yellow]Engine '{name}' not found in {section_key} manifest.[/yellow]")
         return
 

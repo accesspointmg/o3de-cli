@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Override / candidate enumeration tests
+# O3DE CLI - Override / candidate enumeration tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for per-object resolve overrides (version pins + artifact forms)."""

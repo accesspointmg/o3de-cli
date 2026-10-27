@@ -1,4 +1,4 @@
-# O3DE Pilot - Gem binary package build/install support
+# O3DE CLI - Gem binary package build/install support
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

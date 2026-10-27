@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Deps Command
+# O3DE CLI - Deps Command
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Dependency tree visualization and management commands."""
@@ -109,7 +109,7 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
             from o3de_cli.core.json_output import emit_error
 
             emit_error(f"Object not found: {name}", code="E_NOT_FOUND")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Object not found:[/red] {name}")
         raise SystemExit(1)
 
@@ -216,7 +216,7 @@ def why_command(name: str, dependency: str, as_json: bool) -> None:
             from o3de_cli.core.json_output import emit_error
 
             emit_error("No manifest found", code="E_NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
@@ -230,7 +230,7 @@ def why_command(name: str, dependency: str, as_json: bool) -> None:
             from o3de_cli.core.json_output import emit_error
 
             emit_error(f"Object not found: {name}", code="E_NOT_FOUND")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Object not found:[/red] {name}")
         raise SystemExit(1)
 

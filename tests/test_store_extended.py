@@ -1,4 +1,4 @@
-# O3DE Pilot - Extended Store Tests
+# O3DE CLI - Extended Store Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Extended tests for o3de_cli.core.store module — covers fetch, refresh, search, download."""

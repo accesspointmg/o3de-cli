@@ -1,4 +1,4 @@
-# O3DE Pilot - object split-platforms tests
+# O3DE CLI - object split-platforms tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for ``o3de object split-platforms``."""

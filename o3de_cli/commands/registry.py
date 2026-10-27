@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Registry Commands
+# O3DE CLI - Registry Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Package registry commands."""
@@ -179,7 +179,7 @@ def install_package(
             from o3de_cli.core.json_output import emit_error
 
             emit_error(f"Package not found: {package}", code="E_NOT_FOUND")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Package not found:[/red] {package}")
         console.print("[dim]Try 'registry refresh' to update the package index.[/dim]")
         return
@@ -261,7 +261,7 @@ def install_package(
                 from o3de_cli.core.json_output import emit_error
 
                 emit_error(str(e), code="E_INSTALL_FAILED")
-                return
+                raise SystemExit(1)
             console.print(f"[red]Installation failed:[/red] {e}")
 
 
@@ -283,7 +283,7 @@ def uninstall(package: str, as_json: bool) -> None:
             from o3de_cli.core.json_output import emit_error
 
             emit_error("No manifest found", code="E_NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
@@ -307,7 +307,7 @@ def uninstall(package: str, as_json: bool) -> None:
             from o3de_cli.core.json_output import emit_error
 
             emit_error(f"Package '{package}' not found in manifest", code="E_NOT_FOUND")
-            return
+            raise SystemExit(1)
         console.print(f"[yellow]Package '{package}' not found in manifest.[/yellow]")
         return
 
@@ -407,7 +407,7 @@ def refresh_command(force: bool) -> None:
 
     if not manifest_path.exists():
         console.print("[red]No manifest found.[/red]")
-        console.print("Run 'o3de-pilot init' to set up.")
+        console.print("Run 'o3de init' to set up.")
         raise SystemExit(1)
 
     from o3de_cli.core.store import get_manifest_remote_urls
@@ -416,7 +416,7 @@ def refresh_command(force: bool) -> None:
 
     if not remotes:
         console.print("[yellow]No remote repos configured.[/yellow]")
-        console.print("Add remotes with 'o3de-pilot repo register <url> --remote'")
+        console.print("Add remotes with 'o3de repo register <url> --remote'")
         return
 
     store = Store()
@@ -448,7 +448,7 @@ def add_remote_command(url: str, name: str | None) -> None:
     """Add a remote repository.
 
     Example:
-        o3de-pilot registry add-remote https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json
+        o3de registry add-remote https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json
     """
     manifest_path = get_manifest_path()
 
@@ -477,7 +477,7 @@ def add_remote_command(url: str, name: str | None) -> None:
         json.dump(manifest, f, indent=2)
 
     console.print(f"[green]Added remote:[/green] {url}")
-    console.print("Run 'o3de-pilot registry refresh' to fetch packages.")
+    console.print("Run 'o3de registry refresh' to fetch packages.")
 
 
 @registry.command("remove-remote")

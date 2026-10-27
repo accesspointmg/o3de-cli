@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - GUI Command
+# O3DE CLI - GUI Command
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """
@@ -28,13 +28,13 @@ def gui(ctx, manifest: Path | None, demo: bool):
     Examples:
 
         # Launch GUI with default manifest
-        o3de-pilot gui
+        o3de gui
 
         # Launch GUI with specific manifest
-        o3de-pilot gui --manifest ~/.o3de/o3de_manifest.json
+        o3de gui --manifest ~/.o3de/o3de_manifest.json
 
         # Launch GUI with demo objects
-        o3de-pilot gui --demo
+        o3de gui --demo
     """
     try:
         from o3de_pilot_gui.app import run_gui

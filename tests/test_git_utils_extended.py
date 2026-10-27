@@ -1,4 +1,4 @@
-# O3DE Pilot - Extended Git Utilities Tests
+# O3DE CLI - Extended Git Utilities Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Extended tests for o3de_cli.core.git_utils — covers uncovered functions."""

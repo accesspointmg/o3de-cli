@@ -1,4 +1,4 @@
-# O3DE Pilot - Hooks Engine Tests
+# O3DE CLI - Hooks Engine Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.core.hooks module."""

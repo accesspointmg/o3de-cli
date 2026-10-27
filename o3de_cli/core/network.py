@@ -1,4 +1,4 @@
-# O3DE Pilot - Network Connectivity
+# O3DE CLI - Network Connectivity
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

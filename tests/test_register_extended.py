@@ -1,4 +1,4 @@
-# O3DE Pilot - Register Command Tests
+# O3DE CLI - Register Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for register.py — the object registration command."""

@@ -1,8 +1,8 @@
-# O3DE Pilot - End-to-End Acceptance Tests
+# O3DE CLI - End-to-End Acceptance Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """
-End-to-end acceptance tests for the full o3de-pilot lifecycle:
+End-to-end acceptance tests for the full o3de lifecycle:
   workspace create → solve → build
 
 These tests exercise real CLI paths with mocked filesystem and subprocess

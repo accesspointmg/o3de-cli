@@ -1,4 +1,4 @@
-# O3DE Pilot - Extended Workspace Tests
+# O3DE CLI - Extended Workspace Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Extended tests for o3de_cli.core.workspace module — covers create, link, overlay, update, stats."""

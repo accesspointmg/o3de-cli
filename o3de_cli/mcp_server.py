@@ -1,7 +1,7 @@
-# O3DE Pilot - MCP Server
+# O3DE CLI - MCP Server
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-"""MCP (Model Context Protocol) server exposing o3de-pilot CLI as tools.
+"""MCP (Model Context Protocol) server exposing the o3de CLI as tools.
 
 Each tool maps to a CLI command invoked with ``--json``.  The server
 runs over stdio and is compatible with VS Code Copilot, Claude, and any
@@ -9,7 +9,7 @@ MCP-compliant client.
 
 Start with::
 
-    o3de-pilot mcp          # via CLI
+    o3de mcp          # via CLI
     python -m o3de_cli.mcp_server   # directly
 """
 
@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from o3de_cli import __version__
 
 # ---------------------------------------------------------------------------
 # Tool definitions
@@ -425,8 +427,8 @@ def _jsonrpc_error(id: Any, code: int, message: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _SERVER_INFO = {
-    "name": "o3de-pilot",
-    "version": "0.1.0",
+    "name": "o3de-cli",
+    "version": __version__,
 }
 
 _CAPABILITIES = {

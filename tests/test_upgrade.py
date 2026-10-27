@@ -1,4 +1,4 @@
-# O3DE Pilot - Upgrade Tests
+# O3DE CLI - Upgrade Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.core.upgrade module - following O3DE upgrade_schema.py patterns."""

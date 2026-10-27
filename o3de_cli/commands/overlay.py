@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Overlay Commands
+# O3DE CLI - Overlay Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Overlay management commands."""
@@ -117,7 +117,7 @@ def create_overlay(name: str, path: str | None, template_name: str | None) -> No
         json.dump(overlay_json, f, indent=2)
 
     console.print(f"[green]Created overlay:[/green] {overlay_path}")
-    console.print("[dim]Register it with: o3de-pilot overlay register <path>[/dim]")
+    console.print("[dim]Register it with: o3de overlay register <path>[/dim]")
 
 
 @overlay.command("register")

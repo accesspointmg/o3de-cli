@@ -1,4 +1,4 @@
-# O3DE Pilot - Registry Command Tests
+# O3DE CLI - Registry Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for registry commands: search, install, refresh, add-remote, etc."""
