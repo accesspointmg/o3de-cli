@@ -1,0 +1,8 @@
+# Code owners are requested for review automatically, and the `review`
+# ruleset requires a code owner's approval on main and development.
+
+*                 @byrcolin @colinb-accesspointmg
+
+# Workflows, Dependabot config and this file control what can be merged and
+# published; changes here deserve the same scrutiny as the code.
+/.github/         @byrcolin @colinb-accesspointmg

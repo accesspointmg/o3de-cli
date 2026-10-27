@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # Python dependencies (pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    target-branch: "development"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(python):"
+    groups:
+      dev-dependencies:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "mypy"
+          - "black"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions (keeps the pinned commit SHAs current)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "development"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(actions):"
+    groups:
+      actions:
+        patterns:
+          - "*"
