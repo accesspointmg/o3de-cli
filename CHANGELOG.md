@@ -26,6 +26,9 @@ Nothing has been published yet; the first release will be 0.1.0.
 - **Commands**: `--json` output with a shared envelope; errors exit 1
 - **MCP**: JSON-RPC 2.0 stdio server exposing 18 CLI operations as tools
 - The canonical 2.0.0 JSON schemas ship with the package
+- Object hooks (`post_install` on install, `pre_build` on `workspace build`) run after showing the script and asking; `--yes-hooks` / `--no-hooks`
+- Remote archives must be HTTPS and publish a SHA-256, verified before unpacking (`--allow-unverified` / `O3DE_ALLOW_UNVERIFIED=1`, `O3DE_ALLOW_HTTP=1`)
+- Archive unpacking refuses path traversal and links; git clones accept only https/ssh URLs
 
 ### Changed
 

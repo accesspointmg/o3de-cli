@@ -920,13 +920,60 @@ class Store:
             result.append((0, ""))
         return tuple(result)
 
+    # -- Download helpers -----------------------------------------------------
+    #
+    # Everything a remote object names (clone URL, ref, archive URL) comes from
+    # third-party metadata, so it goes through core.safety first.
+
+    @staticmethod
+    def _git_clone(url: str, dest: Path, ref: str | None = None, shallow: bool = True) -> None:
+        """Clone *url* into *dest* under the transport and argument rules."""
+        import subprocess
+
+        from .safety import git_clone_env, require_safe_git_ref, require_safe_git_url
+
+        require_safe_git_url(url)
+        require_safe_git_ref(ref)
+        cmd = ["git", "clone"]
+        if shallow:
+            cmd += ["--depth", "1"]
+        if ref:
+            cmd += ["--branch", ref]
+        # "--" so the URL can never be parsed as an option.
+        cmd += ["--", url, str(dest)]
+        result = subprocess.run(cmd, capture_output=True, text=True, env=git_clone_env())
+        if result.returncode != 0:
+            raise StoreError(f"Git clone failed: {result.stderr}")
+
+    @staticmethod
+    def _archive_checks(remote_obj: RemoteObject, allow_unverified: bool) -> tuple[str, str | None]:
+        """Validate an archive download before any bytes are fetched."""
+        from .safety import require_checksum, require_secure_url
+
+        url = remote_obj.download_url or ""
+        require_secure_url(url)
+        require_checksum(url, remote_obj.source_sha256, allow_unverified)
+        return url, remote_obj.source_sha256
+
+    @staticmethod
+    def _unpack_verified(archive_path: Path, expected_sha256: str | None, dest: Path) -> None:
+        """Check the archive's SHA-256, then unpack it safely, then delete it."""
+        from .safety import safe_extract, verify_file_sha256
+
+        try:
+            if expected_sha256:
+                verify_file_sha256(archive_path, expected_sha256)
+            safe_extract(archive_path, dest)
+        finally:
+            archive_path.unlink(missing_ok=True)
+
     async def download(
         self,
         remote_obj: RemoteObject,
         target_path: Path,
         prefer_source_control: bool = True,
         progress_callback: Callable[[str, int, int], None] | None = None,
-        expected_sha256: str | None = None,
+        allow_unverified: bool = False,
     ) -> Path:
         """
         Download a remote object to local disk.
@@ -936,81 +983,50 @@ class Store:
             target_path: Where to download (parent directory)
             prefer_source_control: Prefer git clone over archive download
             progress_callback: Progress callback
-            expected_sha256: If set, verify download integrity against this hash
+            allow_unverified: Accept an archive that publishes no SHA-256
 
         Returns:
             Path to downloaded object
 
         Raises:
-            IntegrityError: If expected_sha256 is set and hash does not match
+            IntegrityError: If the archive does not match its published SHA-256
+            UnsafeSourceError: If the URL, ref or archive is refused
         """
-        import subprocess
-        import zipfile
+        from .safety import async_download_client
 
-        # Determine download method
+        obj_name = remote_obj.name.split(".")[-1]  # Last segment of reverse domain
+
         if prefer_source_control and remote_obj.source_control_url:
-            # Git clone
-            clone_url = remote_obj.source_control_url
-            obj_name = remote_obj.name.split(".")[-1]  # Last segment of reverse domain
             clone_path = target_path / obj_name
-
             if progress_callback:
-                progress_callback(f"Cloning {clone_url}", 0, 1)
-
-            result = subprocess.run(
-                ["git", "clone", clone_url, str(clone_path)],
-                capture_output=True,
-                text=True,
-            )
-
-            if result.returncode != 0:
-                raise StoreError(f"Git clone failed: {result.stderr}")
-
-            if expected_sha256:
-                verify_integrity(clone_path, expected_sha256)
-
+                progress_callback(f"Cloning {remote_obj.source_control_url}", 0, 1)
+            self._git_clone(remote_obj.source_control_url, clone_path, shallow=False)
             if progress_callback:
                 progress_callback("Clone complete", 1, 1)
-
             return clone_path
 
-        elif remote_obj.download_url:
-            # Download archive
-            download_url = remote_obj.download_url
-
+        if remote_obj.download_url:
+            url, expected_sha256 = self._archive_checks(remote_obj, allow_unverified)
             if progress_callback:
-                progress_callback(f"Downloading {download_url}", 0, 1)
+                progress_callback(f"Downloading {url}", 0, 1)
 
-            # Download to temp location
             download_dir = get_download_path()
-            archive_path = download_dir / f"{remote_obj.name}.zip"
-
-            async with httpx.AsyncClient(timeout=300) as client:
-                async with client.stream("GET", download_url) as response:
+            download_dir.mkdir(parents=True, exist_ok=True)
+            archive_path = download_dir / f"{remote_obj.name}.archive"
+            async with async_download_client() as client:
+                async with client.stream("GET", url) as response:
                     response.raise_for_status()
                     with open(archive_path, "wb") as f:
                         async for chunk in response.aiter_bytes():
                             f.write(chunk)
 
-            # Extract
-            obj_name = remote_obj.name.split(".")[-1]
             extract_path = target_path / obj_name
-
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(extract_path)
-
-            # Cleanup
-            archive_path.unlink()
-
-            if expected_sha256:
-                verify_integrity(extract_path, expected_sha256)
-
+            self._unpack_verified(archive_path, expected_sha256, extract_path)
             if progress_callback:
                 progress_callback("Download complete", 1, 1)
-
             return extract_path
-        else:
-            raise StoreError(f"No download method available for {remote_obj.name}")
+
+        raise StoreError(f"No download method available for {remote_obj.name}")
 
     def download_sync(
         self,
@@ -1019,10 +1035,14 @@ class Store:
         prefer_source_control: bool = True,
         progress_callback: Callable[[str, int, int], None] | None = None,
         use_version_folders: bool = True,
-        expected_sha256: str | None = None,
+        allow_unverified: bool = False,
     ) -> Path:
         """
         Synchronous version of download.
+
+        A git clone is not checked against ``source_sha256``: that is the hash
+        of the release *archive*, which a clone never produces. Archives are
+        checked against it before anything is unpacked.
 
         Args:
             remote_obj: Object to download
@@ -1030,126 +1050,83 @@ class Store:
             prefer_source_control: Prefer git clone over archive download
             progress_callback: Progress callback
             use_version_folders: If True, creates <name>/<version>/ structure
-            expected_sha256: If set, verify download integrity against this hash
+            allow_unverified: Accept an archive that publishes no SHA-256
 
         Returns:
             Path to downloaded object
 
         Raises:
-            IntegrityError: If expected_sha256 is set and hash does not match
+            IntegrityError: If the archive does not match its published SHA-256
+            UnsafeSourceError: If the URL, ref or archive is refused
         """
-        import subprocess
-        import zipfile
+        import shutil
+        import tempfile
+
+        from .paths import rmtree_force
+        from .safety import download_client
 
         target_path = Path(target_path)
         target_path.mkdir(parents=True, exist_ok=True)
 
-        # Compute folder structure
         version = remote_obj.version or "0.0.0"
+        # <target>/<name>/<version>/, or straight into <target>/
+        obj_folder = target_path / remote_obj.name / version if use_version_folders else target_path
 
-        if use_version_folders:
-            # Structure: <target>/<name>/<version>/
-            obj_folder = target_path / remote_obj.name / version
-        else:
-            # Structure: download directly to <target>/
-            obj_folder = target_path
-
-        # Determine download method
         effective_sc_url = remote_obj.effective_source_control_url
         if prefer_source_control and effective_sc_url:
-            # Git clone. Prefer an immutable release tag, then a branch.
-            clone_url = effective_sc_url
+            # Prefer an immutable release tag, then a branch.
             ref = remote_obj.source_control_tag or remote_obj.effective_source_control_branch
-
             # Contained objects (repo children) live in a subdirectory of
             # the repo clone: clone to a temp dir, then copy the subdir.
             subdir = remote_obj.repo_relative_path
 
             if progress_callback:
-                # Use -1 for indeterminate progress (git clone doesn't report size)
+                # -1: indeterminate progress (git clone doesn't report size)
                 progress_callback(f"Cloning {remote_obj.display_name or remote_obj.name}", -1, 100)
 
-            clone_cmd = ["git", "clone", "--depth", "1"]
-            if ref:
-                clone_cmd += ["--branch", ref]
-
             if subdir:
-                import shutil
-                import stat
-                import tempfile
+                from .safety import UnsafeSourceError
 
+                if ".." in Path(subdir).parts or Path(subdir).is_absolute():
+                    raise UnsafeSourceError(f"Refusing repo-relative path {subdir!r}")
                 tmp_dir = Path(tempfile.mkdtemp(prefix="o3de_store_"))
-                clone_path = tmp_dir / "repo"
-                result = subprocess.run(
-                    clone_cmd + [clone_url, str(clone_path)],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    raise StoreError(f"Git clone failed: {result.stderr}")
-
-                src_dir = clone_path / subdir
-                if not src_dir.is_dir():
-                    raise StoreError(f"Object path '{subdir}' not found in repo clone {clone_url}")
-
+                try:
+                    clone_path = tmp_dir / "repo"
+                    self._git_clone(effective_sc_url, clone_path, ref=ref)
+                    src_dir = clone_path / subdir
+                    if not src_dir.is_dir():
+                        raise StoreError(
+                            f"Object path '{subdir}' not found in repo clone {effective_sc_url}"
+                        )
+                    obj_folder.parent.mkdir(parents=True, exist_ok=True)
+                    if obj_folder.exists():
+                        raise StoreError(f"Target already exists: {obj_folder}")
+                    shutil.copytree(src_dir, obj_folder)
+                finally:
+                    # Read-only .git files on Windows need the forced delete
+                    rmtree_force(tmp_dir)
+            else:
                 obj_folder.parent.mkdir(parents=True, exist_ok=True)
-                if obj_folder.exists():
-                    raise StoreError(f"Target already exists: {obj_folder}")
-                shutil.copytree(src_dir, obj_folder)
-
-                # Cleanup temp clone (handle read-only .git files on Windows)
-                def _on_rm_error(func, path, exc_info):
-                    os.chmod(path, stat.S_IWRITE)
-                    func(path)
-
-                shutil.rmtree(tmp_dir, onerror=_on_rm_error)
-
-                if expected_sha256:
-                    verify_integrity(obj_folder, expected_sha256)
-
-                if progress_callback:
-                    progress_callback("Clone complete", 100, 100)
-
-                return obj_folder
-
-            clone_path = obj_folder
-
-            # Ensure parent directory exists
-            clone_path.parent.mkdir(parents=True, exist_ok=True)
-
-            result = subprocess.run(
-                clone_cmd + [clone_url, str(clone_path)],
-                capture_output=True,
-                text=True,
-            )
-
-            if result.returncode != 0:
-                raise StoreError(f"Git clone failed: {result.stderr}")
-
-            if expected_sha256:
-                verify_integrity(clone_path, expected_sha256)
+                self._git_clone(effective_sc_url, obj_folder, ref=ref)
 
             if progress_callback:
                 progress_callback("Clone complete", 100, 100)
+            return obj_folder
 
-            return clone_path
-
-        elif remote_obj.download_url:
-            # Download archive
-            download_url = remote_obj.download_url
+        if remote_obj.download_url:
+            url, expected_sha256 = self._archive_checks(remote_obj, allow_unverified)
 
             if progress_callback:
                 progress_callback(
                     f"Downloading {remote_obj.display_name or remote_obj.name}", 0, 100
                 )
 
-            # Download to temp location
             download_dir = get_download_path()
             download_dir.mkdir(parents=True, exist_ok=True)
-            archive_path = download_dir / f"{remote_obj.name}.zip"
+            archive_path = download_dir / f"{remote_obj.name}.archive"
 
-            with httpx.Client(timeout=300) as client:
-                with client.stream("GET", download_url) as response:
+            with download_client() as client:
+                with client.stream("GET", url) as response:
                     response.raise_for_status()
                     total_size = int(response.headers.get("content-length", 0))
                     downloaded = 0
@@ -1162,27 +1139,15 @@ class Store:
                                     pct = int(downloaded * 80 / total_size)  # 0-80% for download
                                     progress_callback("Downloading...", pct, 100)
                                 else:
-                                    progress_callback("Downloading...", -1, 100)  # indeterminate
+                                    progress_callback("Downloading...", -1, 100)
 
             if progress_callback:
                 progress_callback("Extracting...", 85, 100)
-
-            # Extract to versioned folder
-            extract_path = obj_folder
-            extract_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(extract_path)
-
-            # Cleanup
-            archive_path.unlink()
-
-            if expected_sha256:
-                verify_integrity(extract_path, expected_sha256)
+            obj_folder.parent.mkdir(parents=True, exist_ok=True)
+            self._unpack_verified(archive_path, expected_sha256, obj_folder)
 
             if progress_callback:
                 progress_callback("Download complete", 100, 100)
+            return obj_folder
 
-            return extract_path
-        else:
-            raise StoreError(f"No download method available for {remote_obj.name}")
+        raise StoreError(f"No download method available for {remote_obj.name}")

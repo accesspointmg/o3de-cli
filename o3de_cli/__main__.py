@@ -114,11 +114,34 @@ def search(query: str, obj_type: str, remote: bool, local: bool, as_json: bool) 
 @click.argument("package")
 @click.option("--version", "-v", "version", help="Specific version to install")
 @click.option("--path", "-p", type=click.Path(), help="Install path")
-def install(package: str, version: str | None, path: str | None) -> None:
-    """Install a gem, template, or other package."""
+@click.option(
+    "--allow-unverified",
+    is_flag=True,
+    help="Install an archive even if it publishes no SHA-256 (it cannot be verified)",
+)
+@click.option("--no-hooks", is_flag=True, help="Do not run the package's post_install hook")
+@click.option(
+    "--yes-hooks", is_flag=True, help="Run the package's post_install hook without asking"
+)
+def install(
+    package: str,
+    version: str | None,
+    path: str | None,
+    allow_unverified: bool,
+    no_hooks: bool,
+    yes_hooks: bool,
+) -> None:
+    """Install a gem, template, or other package (same as `registry install`)."""
     from o3de_cli.commands.registry import install_package
 
-    install_package(package, version, path)
+    install_package(
+        package,
+        version,
+        path,
+        allow_unverified=allow_unverified,
+        no_hooks=no_hooks,
+        yes_hooks=yes_hooks,
+    )
 
 
 @cli.command()

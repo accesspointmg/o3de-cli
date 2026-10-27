@@ -138,12 +138,42 @@ def search_registry(
 @click.option("--version", "-v", "version", help="Specific version to install")
 @click.option("--path", "-p", type=click.Path(), help="Install path")
 @click.option("--dry-run", is_flag=True, help="Show what would be installed without downloading")
+@click.option(
+    "--allow-unverified",
+    is_flag=True,
+    help="Install an archive even if it publishes no SHA-256 (it cannot be verified)",
+)
+@click.option("--no-hooks", is_flag=True, help="Do not run the package's post_install hook")
+@click.option(
+    "--yes-hooks", is_flag=True, help="Run the package's post_install hook without asking"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def install_command(
-    package: str, version: str | None, path: str | None, dry_run: bool, as_json: bool
+    package: str,
+    version: str | None,
+    path: str | None,
+    dry_run: bool,
+    allow_unverified: bool,
+    no_hooks: bool,
+    yes_hooks: bool,
+    as_json: bool,
 ) -> None:
-    """Install a package from the registry."""
-    install_package(package, version, path, dry_run=dry_run, as_json=as_json)
+    """Install a package from the registry.
+
+    A package may declare a post_install hook script. You are shown the
+    script and asked before it runs; with --json, or without a terminal to
+    ask on, it is skipped unless --yes-hooks is given.
+    """
+    install_package(
+        package,
+        version,
+        path,
+        dry_run=dry_run,
+        as_json=as_json,
+        allow_unverified=allow_unverified,
+        no_hooks=no_hooks,
+        yes_hooks=yes_hooks,
+    )
 
 
 def install_package(
@@ -152,6 +182,9 @@ def install_package(
     install_path: str | None = None,
     dry_run: bool = False,
     as_json: bool = False,
+    allow_unverified: bool = False,
+    no_hooks: bool = False,
+    yes_hooks: bool = False,
 ) -> None:
     """Install a package from the registry."""
     from o3de_cli.core.models import ObjectType
@@ -182,7 +215,7 @@ def install_package(
             raise SystemExit(1)
         console.print(f"[red]Package not found:[/red] {package}")
         console.print("[dim]Try 'registry refresh' to update the package index.[/dim]")
-        return
+        raise SystemExit(1)
 
     # Find exact match or best match
     obj = None
@@ -227,42 +260,89 @@ def install_package(
             console.print(f"  Download: {obj.download_url}")
         return
 
-    console.print(f"[dim]Installing to: {target_path}[/dim]")
+    from o3de_cli.commands.manifest import register_in_manifest
+    from o3de_cli.core.hooks import hook_policy, run_object_hooks
+    from o3de_cli.core.json_output import emit_error, emit_response
+    from o3de_cli.core.safety import UnsafeSourceError
+    from o3de_cli.core.store import IntegrityError
 
-    # Download
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task(f"Downloading {obj.name}...", total=None)
+    if not as_json:
+        console.print(f"[dim]Installing to: {target_path}[/dim]")
 
-        try:
-            download_path = store.download_sync(obj, target_path, expected_sha256=obj.source_sha256)
+    # Download. Nothing but the JSON document may reach stdout in --json
+    # mode, so the spinner is off there.
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            disable=as_json,
+        ) as progress:
+            task = progress.add_task(f"Downloading {obj.name}...", total=None)
+            download_path = store.download_sync(obj, target_path, allow_unverified=allow_unverified)
             progress.update(task, description="Done")
-            if as_json:
-                from o3de_cli.core.json_output import emit_response
-
-                emit_response(
-                    data={"package": obj.name, "version": obj.version, "path": str(download_path)}
-                )
-                return
-            console.print(f"[green]Installed:[/green] {download_path}")
-
-            # Add to manifest
-            console.print("[dim]Adding to manifest...[/dim]")
-            from o3de_cli.commands.manifest import add_command
-
-            ctx = click.Context(add_command)
-            ctx.invoke(add_command, path=str(download_path))
-
-        except Exception as e:
-            if as_json:
-                from o3de_cli.core.json_output import emit_error
-
-                emit_error(str(e), code="E_INSTALL_FAILED")
-                raise SystemExit(1)
+    except (UnsafeSourceError, IntegrityError) as e:
+        if as_json:
+            emit_error(str(e), code="E_UNSAFE_SOURCE")
+        else:
+            console.print(f"[red]Refused:[/red] {e}")
+        raise SystemExit(1)
+    except Exception as e:
+        if as_json:
+            emit_error(str(e), code="E_INSTALL_FAILED")
+        else:
             console.print(f"[red]Installation failed:[/red] {e}")
+        raise SystemExit(1)
+
+    if not as_json:
+        console.print(f"[green]Installed:[/green] {download_path}")
+
+    # Register in the manifest -- in --json mode too, or an install through
+    # the MCP server would leave the package unregistered.
+    try:
+        _path, _type, added = register_in_manifest(download_path)
+    except ValueError:
+        added = None
+    if not as_json:
+        if added is None:
+            console.print("[yellow]Not added to the manifest: object type not detected.[/yellow]")
+        else:
+            console.print(
+                "[dim]Added to manifest.[/dim]" if added else "[dim]Already in manifest.[/dim]"
+            )
+
+    outcomes = run_object_hooks(
+        download_path,
+        "post_install",
+        hook_policy(no_hooks, yes_hooks, as_json),
+        console=None if as_json else console,
+    )
+
+    # A hook that ran and failed leaves the package installed but possibly
+    # unusable; say so with a failing exit rather than a quiet success.
+    failed = [o for o in outcomes if o.status == "failed"]
+    if as_json:
+        if failed:
+            emit_error(
+                f"Installed {obj.name} to {download_path}, but its post_install hook "
+                f"failed: {failed[0].script}",
+                code="E_HOOK_FAILED",
+            )
+            raise SystemExit(1)
+        emit_response(
+            data={
+                "package": obj.name,
+                "version": obj.version,
+                "path": str(download_path),
+                "registered": added is not None,
+                "hooks": [o.to_dict() for o in outcomes],
+            },
+            warnings=[
+                f"post_install hook {o.status}: {o.script}" for o in outcomes if o.status != "ran"
+            ],
+        )
+    elif failed:
+        raise SystemExit(1)
 
 
 @registry.command("uninstall")
