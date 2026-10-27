@@ -149,94 +149,98 @@ class TestWorkspaceCreateGemRoot:
 # ── B: Command helper tests ────────────────────────────────────────
 
 class TestBuildWorkspaceMeta:
-    """Tests for _build_workspace_meta with resolved_candidates."""
+    """Tests for _build_workspace_meta with categorised sources."""
 
-    def test_with_candidates(self):
+    def test_with_sources(self):
         from o3de_cli.commands.workspace import _build_workspace_meta
-        cands = [
-            {"name": "org.o3de.engine.o3de", "version": "1.0.0",
-             "object_type": "engine", "status": "local", "path": "/e"},
-            {"name": "org.o3de.gem.x", "version": "0.1.0",
-             "object_type": "gem", "status": "unknown"},
-        ]
         meta = _build_workspace_meta(
             name="test-ws", root_path=Path("/root"), root_type="engine",
-            sources=["/root"], overlays=[], resolved_candidates=cands,
+            sources={
+                "engines": {"org.o3de.engine.o3de": "/e"},
+                "gems": {"org.o3de.gem.x": "/g"},
+            },
         )
-        assert len(meta.resolved_candidates) == 2
-        assert meta.resolved_candidates[0].name == "org.o3de.engine.o3de"
-        assert meta.resolved_candidates[1].status == "unknown"
+        assert meta.root_object == str(Path("/root"))
+        assert meta.root_type == "engine"
+        assert meta.sources.engines == {"org.o3de.engine.o3de": "/e"}
+        assert meta.sources.gems == {"org.o3de.gem.x": "/g"}
 
-    def test_without_candidates(self):
+    def test_without_sources(self):
         from o3de_cli.commands.workspace import _build_workspace_meta
         meta = _build_workspace_meta(
-            name="no-cands", root_path=Path("/root"), root_type="project",
-            sources=["/root"], overlays=[],
+            name="no-sources", root_path=Path("/root"), root_type="project", sources={},
         )
-        assert meta.resolved_candidates == []
+        assert meta.sources.engines == {}
+        assert meta.sources.projects == {}
+        assert meta.platforms is None
+        assert meta.attributions is None
+
+    def test_platforms_and_attributions(self):
+        from o3de_cli.commands.workspace import _build_workspace_meta
+        meta = _build_workspace_meta(
+            name="ws", root_path=Path("/root"), root_type="engine", sources={},
+            platforms=["linux"], attributions="object",
+        )
+        assert meta.platforms == ["linux"]
+        assert meta.attributions == "object"
+
+    def test_default_attribution_not_recorded(self):
+        """'workspace' is the default mode, so it is left out of the file."""
+        from o3de_cli.commands.workspace import _build_workspace_meta
+        meta = _build_workspace_meta(
+            name="ws", root_path=Path("/root"), root_type="engine", sources={},
+            attributions="workspace",
+        )
+        assert meta.attributions is None
+
+
+def _meta(**kwargs):
+    from o3de_cli.commands.workspace import _build_workspace_meta
+    defaults = dict(name="ws", root_path=Path("/root"), root_type="engine", sources={})
+    defaults.update(kwargs)
+    return _build_workspace_meta(**defaults)
 
 
 class TestFindEnginePath:
     """Tests for _find_engine_path helper."""
 
-    def _meta(self, **kwargs):
-        from o3de_cli.commands.workspace import _build_workspace_meta
-        defaults = dict(name="ws", root_path=Path("/root"), root_type="engine",
-                        sources=["/root"], overlays=[])
-        defaults.update(kwargs)
-        return _build_workspace_meta(**defaults)
-
-    def test_from_candidates(self):
+    def test_from_sources(self):
         from o3de_cli.commands.workspace import _find_engine_path
-        meta = self._meta(resolved_candidates=[
-            {"name": "org.o3de.engine.o3de", "version": "1.0.0",
-             "object_type": "engine", "status": "local", "path": "/eng"},
-        ])
+        meta = _meta(sources={"engines": {"org.o3de.engine.o3de": "/eng"}})
         assert _find_engine_path(meta) == Path("/eng")
 
     def test_fallback_to_root_object(self):
         from o3de_cli.commands.workspace import _find_engine_path
-        meta = self._meta(root_path=Path("/my-engine"), root_type="engine")
+        meta = _meta(root_path=Path("/my-engine"), root_type="engine")
         assert _find_engine_path(meta) == Path("/my-engine")
 
     def test_none_when_no_engine(self):
         from o3de_cli.commands.workspace import _find_engine_path
-        meta = self._meta(root_type="project", resolved_candidates=[
-            {"name": "org.o3de.gem.x", "version": "0.1.0",
-             "object_type": "gem", "status": "local", "path": "/g"},
-        ])
+        meta = _meta(root_type="project", sources={"gems": {"org.o3de.gem.x": "/g"}})
+        assert _find_engine_path(meta) is None
+
+    def test_engine_without_local_path_is_skipped(self):
+        from o3de_cli.commands.workspace import _find_engine_path
+        meta = _meta(root_type="project", sources={"engines": {"org.o3de.engine.o3de": ""}})
         assert _find_engine_path(meta) is None
 
 
 class TestFindProjectPath:
     """Tests for _find_project_path helper."""
 
-    def _meta(self, **kwargs):
-        from o3de_cli.commands.workspace import _build_workspace_meta
-        defaults = dict(name="ws", root_path=Path("/root"), root_type="engine",
-                        sources=["/root"], overlays=[])
-        defaults.update(kwargs)
-        return _build_workspace_meta(**defaults)
-
-    def test_from_candidates(self):
+    def test_from_sources(self):
         from o3de_cli.commands.workspace import _find_project_path
-        meta = self._meta(resolved_candidates=[
-            {"name": "org.o3de.project.myproj", "version": "1.0.0",
-             "object_type": "project", "status": "local", "path": "/proj"},
-        ])
+        meta = _meta(sources={"projects": {"org.o3de.project.myproj": "/proj"}})
         assert _find_project_path(meta) == Path("/proj")
 
     def test_fallback_to_root_object(self):
         from o3de_cli.commands.workspace import _find_project_path
-        meta = self._meta(root_path=Path("/proj"), root_type="project")
+        meta = _meta(root_path=Path("/proj"), root_type="project")
         assert _find_project_path(meta) == Path("/proj")
 
     def test_none_when_no_project(self):
         from o3de_cli.commands.workspace import _find_project_path
-        meta = self._meta(resolved_candidates=[
-            {"name": "org.o3de.engine.o3de", "version": "1.0.0",
-             "object_type": "engine", "status": "local", "path": "/e"},
-        ])
+        meta = _meta(sources={"engines": {"org.o3de.engine.o3de": "/e"}})
         assert _find_project_path(meta) is None
 
 
@@ -610,12 +614,12 @@ class TestBuildCommandGemRoot:
         assert bld[target_idx + 1] == "Widget"
 
 
-# ── D: Integration — create persists candidates ────────────────────
+# ── D: Integration — create persists sources ────────────────────
 
-class TestCreatePersistsCandidates:
-    """workspace create should persist resolved_candidates in metadata."""
+class TestCreatePersistsSources:
+    """workspace create records its root and categorised sources in metadata."""
 
-    def test_create_writes_candidates_field(self, tmp_path):
+    def test_create_writes_sources(self, tmp_path):
         from o3de_cli.commands.workspace import workspace
         edir = _engine(tmp_path)
         mp = _manifest(tmp_path)
@@ -637,13 +641,15 @@ class TestCreatePersistsCandidates:
             ])
         assert result.exit_code == 0, result.output
 
-        # Read the written metadata and verify resolved_candidates key exists
         ws_json_path = output / "ws1" / "workspace.json"
         assert ws_json_path.exists(), f"workspace.json not found at {ws_json_path}"
         data = json.loads(ws_json_path.read_text())
-        assert "resolved_candidates" in data
-        # It should be a list (may be empty if engine wasn't registered in manifest)
-        assert isinstance(data["resolved_candidates"], list)
+        assert data["root_type"] == "engine"
+        assert Path(data["root_object"]) == edir
+        assert set(data["sources"]) == {"engines", "projects", "gems", "templates", "overlays"}
+        # Legacy fields are no longer written
+        assert "resolved_candidates" not in data
+        assert "file_owners" not in data
 
 
 # ── E: Auto-install (J2) tests ─────────────────────────────────────
@@ -1630,3 +1636,42 @@ class TestUpdateJson:
         data = json.loads(result.output)
         assert data["status"] == "error"
         assert data["code"] == "E_WS_INVALID"
+
+
+# ── F: workspace update keeps the recorded root ────────────────────
+
+class TestUpdateKeepsRoot:
+    """Regression: update used to take the first source (always the engine)
+    as the root, turning a project-rooted workspace into an engine-rooted one."""
+
+    def test_project_root_survives_update(self, tmp_path):
+        from unittest.mock import MagicMock
+        from o3de_cli.commands.workspace import (
+            _build_workspace_meta, _write_workspace_meta, update_command,
+        )
+        from o3de_cli.core import ObjectType
+
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        (engine / "engine.json").write_text("{}")
+        project = tmp_path / "MyGame"
+        project.mkdir()
+        (project / "project.json").write_text("{}")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        _write_workspace_meta(ws, _build_workspace_meta(
+            name="ws", root_path=project, root_type="project",
+            sources={
+                "engines": {"org.o3de.engine.o3de": str(engine)},
+                "projects": {"org.o3de.project.mygame": str(project)},
+            },
+        ))
+
+        with patch("o3de_cli.commands.workspace.Workspace") as mock_ws:
+            mock_ws.return_value = MagicMock()
+            result = CliRunner().invoke(update_command, [str(ws)])
+
+        assert result.exit_code == 0, result.output
+        kwargs = mock_ws.call_args[1]
+        assert kwargs["root_object_type"] == ObjectType.PROJECT
+        assert kwargs["root_object_path"] == project

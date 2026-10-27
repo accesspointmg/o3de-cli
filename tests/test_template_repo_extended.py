@@ -295,11 +295,17 @@ class TestTemplateInstanceDryRun:
         from o3de_cli.commands.template import template
         from unittest.mock import MagicMock
 
-        # Mock resolver
+        # The dry-run preview comes from the template manifest's copyFiles,
+        # with tokens in file names replaced by the instance name.
         tpl_path = tmp_path / "mytpl"
         tpl_path.mkdir()
         (tpl_path / "Template").mkdir()
-        (tpl_path / "Code").mkdir()
+        _write_json(tpl_path / "template.json", {
+            "copyFiles": [
+                {"file": "Code/${Name}Module.cpp"},
+                {"file": "CMakeLists.txt"},
+            ],
+        })
 
         mock_tpl = MagicMock()
         mock_tpl.path = tpl_path
@@ -314,10 +320,10 @@ class TestTemplateInstanceDryRun:
                 "--path", str(tmp_path / "inst"),
                 "--dry-run", "--json",
             ])
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["status"] == "ok"
         assert data["data"]["template"] == "org.test.tpl"
-        assert "Code" in data["data"]["files"]
+        assert data["data"]["files"] == ["Code/myinstModule.cpp", "CMakeLists.txt"]
         # Verify nothing was actually created
         assert not (tmp_path / "inst").exists()

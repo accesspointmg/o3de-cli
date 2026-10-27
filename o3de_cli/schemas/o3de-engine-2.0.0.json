@@ -1,0 +1,106 @@
+{
+    "$schema": "https://json-schema.org/draft-07/schema#",
+    "$id": "./o3de-engine-2.0.0.json",
+    "title": "O3DE Engine Schema 2.0.0",
+    "description": "Schema 2.0.0 for O3DE engines.",
+    "type": "object",
+    "properties": {
+        "$schema": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schema"
+        },
+        "$schemaVersion": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schemaVersion"
+        },
+        "engine": {
+            "description": "The engine header.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/objectHeader"
+        },
+        "origin": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/origin"
+        },       
+        "api_versions": {
+            "type": "object",
+            "description": "The versions of the various O3DE APIs this object uses.",
+            "properties": {
+                "editor": {
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/version",
+                    "description": "The version of the O3DE Editor API this object uses. i.e. '1.0.0'"
+                },
+                "framework": {
+                    "description": "The version of the O3DE Framework API this object uses. i.e. '1.2.1'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/version"
+                },
+                "launcher": {
+                    "description": "The version of the O3DE Launcher API this object uses. i.e. '1.0.0'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/version"
+                },
+                "tools": {
+                    "description": "The version of the O3DE Tools API this object uses. i.e. '1.1.0'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/version"
+                }
+            }
+        },
+        "licenses": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/licenses"
+        },
+        "children": {
+            "description": "List all direct child O3DE objects relative paths.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/children"
+        },
+        "remote": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/remote"
+        },
+        "dependent": {
+            "description": "List the names and optionally version(s) of objects this object depends on. A dependency means if this object is not present this object will fail and that this dependent object should be processed before this object is processed or it will fail to find dependent targets.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/objectNameAndVersionLists"
+        },
+        "optional_dependent": {
+            "description": "List the names and optionally version(s) of objects this object can optionally use. These dependencies enhance functionality but are not required. The object will still work without them.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/objectNameAndVersionLists"
+        },
+        "peer_dependent": {
+            "description": "List the names and optionally version(s) of objects that must also be present when a consumer uses this object. Unlike dependencies which this object itself needs, peer dependencies are requirements imposed on the consumer.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/objectNameAndVersionLists"
+        },
+        "hooks": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/hooks"
+        },
+        "icon": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/icon"
+        },
+        "documentation": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/documentation"
+        },
+        "canonical_tags": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/canonical_tags"
+        },
+        "user_tags": {
+            "description": "These are non canonical tags, defined by the originator (creator), exclusive of the canonical tags, that Project Manager uses to search, sort and filter objects. These can be anything you want to tag your object with i.e. 'AI' or 'Space' or 'Human' etc.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/user_tags"
+        },
+        "platforms": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/platforms"
+        },
+        "requirements": {
+            "type": "string",
+            "description": "If you have extra instructions for the user, beyond the normal O3DE setup, on how to setup/use this object. i.e. 'You must install XYZ SDK 1.2 to compile this object.', or 'Read Setup.md before compiling."
+        },
+        "downloads": {
+            "description": "If this object is available as a zip download such as a release. It can have a source and lfs portion.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/downloads"
+        },
+        "source_control": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/source_control"
+        },
+        "releases": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/releases"
+        }
+    },
+    "required": [
+        "$schema",
+        "$schemaVersion",
+        "engine",
+        "origin",
+        "licenses"
+    ]
+}

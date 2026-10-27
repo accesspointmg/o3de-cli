@@ -1,8 +1,12 @@
-# O3DE Pilot - Shared Test Fixtures
+# O3DE CLI - Shared Test Fixtures
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """
-Centralized pytest fixtures for o3de-pilot tests.
+Centralized pytest fixtures for o3de-cli tests.
+
+Every test session runs with a throwaway home directory (see
+``pytest_configure``), so no test can read or write the real ``~/.o3de``
+manifest, cache or credentials, whatever it forgets to mock.
 
 Provides:
 - runner: CliRunner instance
@@ -15,17 +19,47 @@ Provides:
 """
 
 import json
-import sys
+import os
+import shutil
+import tempfile
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from click.testing import CliRunner
 
-# Ensure the GUI package (src/gui/) is importable for GUI tests
-_gui_root = Path(__file__).resolve().parent.parent.parent / "gui"
-if str(_gui_root) not in sys.path:
-    sys.path.insert(0, str(_gui_root))
+
+# ---------------------------------------------------------------------------
+# Session isolation
+# ---------------------------------------------------------------------------
+
+_SANDBOX_HOME: Path | None = None
+
+
+def pytest_configure(config):
+    """Point the home directory at a throwaway folder for the whole session.
+
+    Runs before test modules are imported, so even code that resolves
+    ``~`` at import time sees the sandbox.
+    """
+    global _SANDBOX_HOME
+    _SANDBOX_HOME = Path(tempfile.mkdtemp(prefix="o3de-cli-test-home-"))
+    for var in ("HOME", "USERPROFILE"):
+        os.environ[var] = str(_SANDBOX_HOME)
+    # Tests that make git commits need an identity, and the real global
+    # git config is no longer visible from the sandbox home.
+    for var, value in (
+        ("GIT_AUTHOR_NAME", "o3de-cli tests"),
+        ("GIT_AUTHOR_EMAIL", "tests@example.invalid"),
+        ("GIT_COMMITTER_NAME", "o3de-cli tests"),
+        ("GIT_COMMITTER_EMAIL", "tests@example.invalid"),
+    ):
+        os.environ.setdefault(var, value)
+
+
+def pytest_unconfigure(config):
+    if _SANDBOX_HOME is not None:
+        shutil.rmtree(_SANDBOX_HOME, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

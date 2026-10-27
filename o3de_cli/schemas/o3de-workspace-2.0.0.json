@@ -1,0 +1,114 @@
+{
+    "$schema": "https://json-schema.org/draft-07/schema#",
+    "$id": "./o3de-workspace-2.0.0.json",
+    "title": "O3DE Workspace Schema 2.0.0",
+    "description": "Schema 2.0.0 for O3DE workspace. A workspace is a local build artifact that links source objects into a unified directory tree with symlinks.",
+    "type": "object",
+    "properties": {
+        "$schema": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schema"
+        },
+        "$schemaVersion": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schemaVersion"
+        },
+        "workspace": {
+            "description": "The workspace header.",
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Human-readable workspace name."
+                },
+                "version": {
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/version"
+                },
+                "display_name": {
+                    "type": "string",
+                    "description": "Display name for UI."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Brief description of this workspace."
+                }
+            },
+            "required": ["name"]
+        },
+        "created": {
+            "type": "string",
+            "description": "ISO 8601 timestamp when the workspace was created.",
+            "format": "date-time"
+        },
+        "root_object": {
+            "description": "The root O3DE object path used to create this workspace.",
+            "type": "string"
+        },
+        "root_type": {
+            "description": "The object type of the root (engine, project, gem, etc.).",
+            "type": "string",
+            "enum": ["engine", "project", "gem", "template", "repo", "overlay"]
+        },
+        "platforms": {
+            "description": "Platform selection used when composing this workspace. Platform-specific overlays are included only if they deliver one of these platforms (family overlays are pulled in via overlay dependencies). Absent means all platforms.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/platforms"
+        },
+        "attributions": {
+            "description": "Where composed overlays' object metadata (overlay.json, licenses, icon, docs) is recorded: 'workspace' = ledger at <workspace>/Overlays/<overlay-name>/ (default), 'object' = inside the extended object, 'off' = not recorded.",
+            "type": "string",
+            "enum": ["workspace", "object", "off"]
+        },
+        "overlay_order": {
+            "description": "Explicit overlay apply order per extended object: base object name → ordered overlay names (first applied first, so later entries win file conflicts). Overrides the overlays' authored precedence for this workspace.",
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        },
+        "sources": {
+            "description": "Categorised source objects resolved into this workspace. Each category maps object names to their absolute local paths. Names are scoped by type, so a gem and a project may share a name without collision.",
+            "type": "object",
+            "properties": {
+                "engines": {
+                    "description": "Engine objects: name → absolute local path.",
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                },
+                "projects": {
+                    "description": "Project objects: name → absolute local path.",
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                },
+                "gems": {
+                    "description": "Gem objects: name → absolute local path.",
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                },
+                "templates": {
+                    "description": "Template objects: name → absolute local path.",
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                },
+                "overlays": {
+                    "description": "Overlay objects: name → absolute local path.",
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                }
+            },
+            "additionalProperties": false
+        },
+        "file_links": {
+            "description": "Map of source absolute POSIX paths to workspace-relative POSIX paths. Each entry records a file link from the source object into the workspace directory tree. The owner of a file can be derived by matching the source path against the source roots in the sources field.",
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        }
+    },
+    "required": [
+        "$schema",
+        "$schemaVersion",
+        "workspace",
+        "created",
+        "sources"
+    ]
+}

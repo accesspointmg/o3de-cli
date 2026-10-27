@@ -68,11 +68,11 @@ class TestCLIRoot:
         assert "O3DE Pilot" in result.output
 
     def test_help_lists_all_commands(self, runner):
+        from tests.test_cli import EXPECTED_COMMANDS
+
         result = runner.invoke(cli, ["--help"])
-        for cmd in ["project", "gem", "engine", "template", "registry",
-                     "manifest", "workspace", "ai", "config", "publish",
-                     "audit", "deps"]:
-            assert cmd in result.output
+        for cmd in EXPECTED_COMMANDS:
+            assert f"  {cmd} " in result.output, f"Missing from --help: {cmd}"
 
 
 # ---- Manifest Commands ----
@@ -357,14 +357,6 @@ class TestDepsCommands:
 
 
 # ---- AI Commands ----
-
-class TestAICommands:
-    def test_ai_help(self, runner):
-        result = runner.invoke(cli, ["ai", "--help"])
-        assert result.exit_code == 0
-        for subcmd in ["ask", "diagnose", "generate", "migrate", "explain"]:
-            assert subcmd in result.output, f"Missing AI subcommand: {subcmd}"
-
 
 # ---- Deep Behavioral Integration Tests ----
 

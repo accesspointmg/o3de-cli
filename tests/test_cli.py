@@ -16,16 +16,22 @@ def test_cli_version():
     assert "o3de-pilot" in result.output
 
 
+EXPECTED_COMMANDS = {
+    "project", "gem", "engine", "template", "registry", "manifest", "workspace",
+    "config", "publish", "audit", "deps", "repo", "overlay", "object", "register",
+    "unregister", "gui", "mcp", "search", "install", "init", "list",
+}
+
+
 def test_cli_help():
     """Test that --help lists all expected command groups."""
     runner = CliRunner()
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "O3DE Pilot" in result.output
-    for cmd in ["project", "gem", "engine", "template", "registry",
-                 "manifest", "workspace", "ai", "config", "publish",
-                 "audit", "deps"]:
-        assert cmd in result.output, f"Missing command group: {cmd}"
+    assert set(cli.commands) == EXPECTED_COMMANDS
+    for cmd in EXPECTED_COMMANDS:
+        assert f"  {cmd} " in result.output, f"Missing from --help: {cmd}"
 
 
 def test_project_list(mock_manifest, tmp_path, runner):

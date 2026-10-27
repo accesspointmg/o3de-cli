@@ -1,0 +1,80 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "./o3de-manifest-2.0.0.json",
+    "title": "O3DE Manifest Schema 2.0.0",
+    "description": "Schema 2.0.0 for O3DE manifest.",
+    "type": "object",
+    "properties": {
+        "$schema": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schema"
+        },
+        "$schemaVersion": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schemaVersion"
+        },
+        "o3de_manifest": {
+           "description": "The manifest header.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/objectHeader"
+        },
+        "country": {
+            "description": "The country code for the manifest, used to determine the default paths for the various types of O3DE objects.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/country"
+        },
+        "default": {
+            "type": "object",
+            "description": "Default local paths for the various types of O3DE objects, these are the paths that will be used if the user does not specify a path.",
+            "properties": {
+                "engines_path": {
+                    "description": "The default path for storing O3DE engines. i.e. 'C:/Users/colinb/O3DE/Engines' or '/home/colinb/O3DE/Engines/MyEngine'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/fullPath"
+                },
+                "projects_path": {
+                    "description": "The default path for storing O3DE projects. i.e. 'C:/Users/colinb/O3DE/Projects' or '/home/colinb/O3DE/Projects'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/fullPath"
+                },
+                "gems_path": {
+                    "description": "The default path for storing O3DE gems. i.e. 'C:/Users/colinb/O3DE/Gems' or '/home/colinb/O3DE/Gems'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/fullPath"
+                },
+                "templates_path": {
+                    "description": "The default path for storing O3DE templates. i.e. 'C:/Users/colinb/O3DE/Templates' or '/home/colinb/O3DE/Templates'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/fullPath"
+                },
+                "overlays_path": {
+                    "description": "The default path for storing O3DE overlays. i.e. 'C:/Users/colinb/O3DE/Overlays' or '/home/colinb/O3DE/Overlays'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/fullPath"
+                },
+                "repos_path": {
+                    "description": "The default path for storing O3DE repos. i.e. 'C:/Users/colinb/O3DE/Repos' or '/home/colinb/O3DE/Repos'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/fullPath"
+                },
+                "third_party_path": {
+                    "description": "The default path for storing third-party O3DE content. i.e. 'C:/Users/colinb/O3DE/3rdParty' or '/home/colinb/O3DE/3rdParty'",
+                    "$ref": "./o3de-patterns-2.0.0.json#/definitions/fullPath"
+                }
+            },
+            "required": [
+                "engines_path",
+                "projects_path",
+                "gems_path",
+                "templates_path",
+                "overlays_path",
+                "repos_path",
+                "third_party_path"
+            ]
+        },
+        "local": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/local"
+        },
+        "remote": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/remote"
+        }
+    },
+    "required": [
+        "$schema",
+        "$schemaVersion",
+        "default",
+        "local",
+        "remote",
+        "country"
+    ]
+}

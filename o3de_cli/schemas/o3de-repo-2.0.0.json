@@ -1,0 +1,59 @@
+{
+    "$schema": "https://json-schema.org/draft-07/schema#",
+    "$id": "./o3de-repo-2.0.0.json",
+    "title": "O3DE Repo Schema 2.0.0",
+    "description": "Schema 2.0.0 for O3DE repos.",
+    "type": "object",
+    "properties": {
+        "$schema": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schema"
+        },
+        "$schemaVersion": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/$schemaVersion"
+        },
+        "repo": {
+            "description": "The repo header.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/objectHeader"
+        },
+        "origin": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/origin"
+        },
+        "licenses": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/licenses"
+        },
+        "children": {
+            "description": "List all direct child O3DE objects relative paths here.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/children"
+        },
+        "remote": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/remote"
+        },
+        "hooks": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/hooks"
+        },
+        "documentation": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/documentation"
+        },
+        "canonical_tags": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/canonical_tags"
+        },
+        "user_tags": {
+            "description": "These are non canonical tags, defined by the originator (creator), exclusive of the canonical tags, that Project Manager uses to search, sort and filter objects. These can be anything you want to tag your object with i.e. 'AI' or 'Space' or 'Human' etc.",
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/user_tags"
+        },
+        "requirements": {
+            "type": "string",
+            "description": "If you have extra instructions for the user, beyond the normal O3DE setup, on how to setup/use this object. i.e. 'You must install XYZ SDK 1.2 to compile this object.', or 'Read Setup.md before compiling."
+        },
+        "source_control": {
+            "$ref": "./o3de-patterns-2.0.0.json#/definitions/source_control"
+        }
+    },
+    "required": [
+        "$schema",
+        "$schemaVersion",
+        "repo",
+        "origin",
+        "licenses"
+    ]
+}

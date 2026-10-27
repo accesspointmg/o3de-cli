@@ -577,6 +577,19 @@ class WorkspaceMeta(BaseO3DEObject):
             if ov_name:
                 cats["overlays"][ov_name] = str(ov_path)
 
+        # The oldest files have only the bare source list, no candidates.
+        # Keep those paths too, typed by the object JSON each one holds,
+        # rather than dropping them and leaving an empty workspace.
+        known = {p for type_dict in cats.values() for p in type_dict.values()}
+        for src in raw_sources:
+            if not isinstance(src, str) or not src or src in known:
+                continue
+            key = cls._legacy_source_category(Path(src))
+            if key:
+                cats[key].setdefault(Path(src).name, src)
+        if not data.get("root_object") and raw_sources and isinstance(raw_sources[0], str):
+            data["root_object"] = raw_sources[0]
+
         data["sources"] = cats
 
         # Convert file_owners → file_links (source_abs → dest_rel)
@@ -600,6 +613,20 @@ class WorkspaceMeta(BaseO3DEObject):
         # Remove legacy fields (BaseO3DEObject has extra="allow" so they
         # won't fail, but let's keep them so old code can still access)
         return data
+
+    @staticmethod
+    def _legacy_source_category(path: Path) -> str | None:
+        """Which ``sources`` category a legacy source directory belongs in."""
+        for key, stem in (
+            ("engines", "engine"),
+            ("projects", "project"),
+            ("gems", "gem"),
+            ("templates", "template"),
+            ("overlays", "overlay"),
+        ):
+            if (path / f"{stem}.json").exists() or (path / f"{stem}.2-0-0.json").exists():
+                return key
+        return None
 
     @staticmethod
     def _compute_source_abs(owner_path: str, rel_path: str) -> str:

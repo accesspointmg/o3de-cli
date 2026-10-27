@@ -1205,7 +1205,10 @@ class TestRepoOverlayEdgeCases:
         fake_repo.version = "1.0.0"
         fake_repo.path = Path("/fake/repo")
         fake_repo.data = {}
-        with patch("o3de_cli.core.resolver.Resolver") as mock_res:
+        with (
+            patch("o3de_cli.core.resolver.Resolver") as mock_res,
+            patch("o3de_cli.core.store.get_manifest_remote_urls", return_value=[]),
+        ):
             inst = MagicMock()
             inst.repos = {"org.test.repo": fake_repo}
             mock_res.return_value = inst

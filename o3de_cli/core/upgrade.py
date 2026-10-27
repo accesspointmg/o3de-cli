@@ -1104,7 +1104,9 @@ def _upgrade_project_1_to_2(
     if "executable_name" in data:
         output["executable_name"] = data["executable_name"]
 
-    # Handle engine reference — goes into dependent.engines
+    # Engine reference. The 2.0.0 schema records it twice: as the top-level
+    # ``engine`` (which engine this project uses -- read by cmake_manifest and
+    # ``project list``) and in ``dependent.engines`` (which the solver follows).
     engine_dep = None
     if "engine" in data:
         engine = data["engine"]
@@ -1125,8 +1127,8 @@ def _upgrade_project_1_to_2(
     output = _add_children_and_remote(output, data)
     output = _add_dependent_gems(output, data)
 
-    # Add engine to dependent.engines
     if engine_dep:
+        output["engine"] = engine_dep
         if "dependent" not in output:
             output["dependent"] = {"gems": []}
         output["dependent"]["engines"] = [engine_dep]
