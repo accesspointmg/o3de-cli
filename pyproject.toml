@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "o3de-cli"
-version = "0.1.0"
+# Single source of truth is o3de_cli/__init__.py (__version__).
+dynamic = ["version"]
 description = "Package manager and CLI for the O3DE ecosystem"
 readme = "README.md"
 license = {text = "Apache-2.0 OR MIT"}
@@ -24,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Games/Entertainment",
     "Topic :: Software Development :: Build Tools",
 ]
@@ -47,9 +49,9 @@ dev = [
     "pytest-socket>=0.7",
     # `object hoist` shells out to git filter-repo; its tests run it for real.
     "git-filter-repo>=2.38",
-    "black>=23.0",
     "ruff>=0.4",
     "mypy>=1.0",
+    "types-PyYAML",
 ]
 all = ["o3de-cli[dev]"]
 
@@ -58,11 +60,14 @@ o3de = "o3de_cli.__main__:main"
 o3de-mcp = "o3de_cli.mcp_server:serve"
 
 [project.urls]
-Homepage = "https://github.com/byrcolin/o3de-cli"
-Documentation = "https://github.com/byrcolin/o3de-cli#readme"
-Repository = "https://github.com/byrcolin/o3de-cli.git"
-Issues = "https://github.com/byrcolin/o3de-cli/issues"
-Changelog = "https://github.com/byrcolin/o3de-cli/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/accesspointmg/o3de-cli"
+Documentation = "https://github.com/accesspointmg/o3de-cli#readme"
+Repository = "https://github.com/accesspointmg/o3de-cli.git"
+Issues = "https://github.com/accesspointmg/o3de-cli/issues"
+Changelog = "https://github.com/accesspointmg/o3de-cli/blob/main/CHANGELOG.md"
+
+[tool.setuptools.dynamic]
+version = {attr = "o3de_cli.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -71,10 +76,6 @@ include = ["o3de_cli*"]
 
 [tool.setuptools.package-data]
 o3de_cli = ["schemas/*.json", "schemas/SOURCE"]
-
-[tool.black]
-line-length = 100
-target-version = ["py310", "py311", "py312"]
 
 [tool.ruff]
 line-length = 100

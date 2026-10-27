@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Publish Commands
+# O3DE CLI - Publish Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Publish and validation commands for O3DE objects."""

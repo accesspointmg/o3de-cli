@@ -1,4 +1,4 @@
-# O3DE Pilot - Publish Command Tests
+# O3DE CLI - Publish Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for publish validate, pack, and push commands."""

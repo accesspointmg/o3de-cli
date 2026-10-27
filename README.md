@@ -2,7 +2,11 @@
 
 Package manager and CLI for the [Open 3D Engine](https://o3de.org) ecosystem.
 
-Manage engines, projects, gems, templates, repos, and workspaces from the command line — with optional AI assistance.
+Manage engines, projects, gems, templates, repos, overlays and build workspaces
+from the command line, with npm-style dependency resolution.
+
+> **Status:** pre-alpha. Not yet published to PyPI; install from source (see
+> [Development](#development)).
 
 ## Install
 
@@ -10,62 +14,55 @@ Manage engines, projects, gems, templates, repos, and workspaces from the comman
 pip install o3de-cli
 ```
 
-Or with AI support:
-
-```bash
-pip install "o3de-cli[ai]"
-```
+This installs two commands: `o3de` (the CLI) and `o3de-mcp` (an MCP server for
+AI-enabled editors).
 
 ## Quick Start
 
 ```bash
-# Register an engine
-o3de register --engine-path /path/to/o3de
+# Register an engine you have checked out
+o3de register /path/to/o3de
 
-# Create a new project
-o3de project create --name MyGame --engine o3de
+# Create a project
+o3de init MyGame --path ./MyGame
 
-# Search the registry for gems
+# Find and install a gem from the registered remote repos
 o3de search particle
-
-# Install a gem
 o3de install org.o3de.gem.stars
 
-# Create and build a workspace
-o3de workspace create --project ./MyGame
-o3de workspace build
-
-# AI assistance (optional, BYOK)
-o3de ai setup
-o3de ai ask "How do I add a gem to my project?"
+# Compose a build workspace from the engine and project, then build it
+o3de workspace create mygame-ws --engine /path/to/o3de --project ./MyGame
+o3de workspace build mygame-ws
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `engine` | Manage O3DE engines |
-| `project` | Manage O3DE projects |
-| `gem` | Manage O3DE gems |
-| `template` | Manage O3DE templates |
-| `repo` | Manage object registries |
-| `workspace` | Manage build workspaces (create, solve, build) |
-| `manifest` | Manage the O3DE manifest |
-| `register` / `unregister` | Register/unregister objects |
-| `registry` | Package registry operations (search, install, login) |
-| `publish` | Pack and push objects to a registry |
-| `deps` | Dependency tree and analysis |
-| `audit` | Audit dependency tree for issues |
+| `engine`, `project`, `gem`, `template`, `repo`, `overlay` | Create, list, register and inspect each object type |
+| `register` / `unregister` | Register or unregister any object (upgrading its JSON to Schema 2.0 if needed) |
+| `workspace` | Compose, solve, build, lock and verify build workspaces |
+| `object` | Build/install a single gem as a binary package; split platform code into overlays; hoist a gem into its own repo; declarative composition plans |
+| `manifest` | Show, resolve, upgrade and edit the O3DE manifest |
+| `registry` | Search, install, update and manage remote repos; log in to private registries |
+| `search`, `install`, `init`, `list` | Shortcuts for the most common registry and project operations |
+| `publish` | Validate, pack and push objects to a registry |
+| `deps` | Dependency tree, list and "why is this here?" |
+| `audit` | Check the dependency tree for license, deprecation and security issues |
 | `config` | Manage CLI configuration |
-| `ai` | AI-powered assistance (chat, ask, diagnose, voice) |
-| `mcp` | Start MCP server for IDE integration |
-| `gui` | Launch the GUI (requires [o3de-pilot](https://github.com/byrcolin/o3de-pilot)) |
+| `mcp` | Start the MCP server on stdio |
+| `gui` | Launch the GUI (requires [o3de-pilot](https://github.com/accesspointmg/o3de-pilot)) |
 
-All commands support `--json` for structured output and `--help` for usage details.
+Most commands support `--json` for machine-readable output, and every command
+has `--help`. With `--json`, success prints
+`{"status": "ok", "data": ...}` and exits 0; failure prints
+`{"status": "error", "error": ..., "code": "E_..."}` and exits 1.
 
 ## Schema 2.0
 
-o3de-cli uses the O3DE Schema 2.0 format for all object types. Objects use reverse-DNS naming (`org.o3de.gem.atom`) and semantic versioning with full dependency resolution.
+o3de-cli uses the O3DE Schema 2.0 format for all object types. Objects use
+reverse-DNS naming (`org.o3de.gem.atom`) and semantic versioning with full
+dependency resolution.
 
 ```json
 {
@@ -78,29 +75,14 @@ o3de-cli uses the O3DE Schema 2.0 format for all object types. Objects use rever
 }
 ```
 
-## AI (Optional, BYOK)
-
-AI is an optional layer — everything works without it. Bring your own API key for cloud providers, or use a free local model via Ollama.
-
-**11 providers supported:** Ollama (free/local), Anthropic, OpenAI, Google Gemini, Groq, DeepSeek, Mistral, xAI, OpenRouter, Together, Perplexity.
-
-```bash
-# Free local model (requires Ollama)
-o3de ai local
-
-# Cloud provider setup
-o3de ai setup
-
-# Interactive chat with tool calling
-o3de ai chat
-
-# Voice interaction (optional)
-o3de ai voice
-```
+The canonical JSON schemas live in
+[canonical.o3de.org](https://github.com/accesspointmg/canonical.o3de.org) and
+ship with the package, so validation works offline. Set `O3DE_SCHEMA_DIR` to
+validate against a different copy.
 
 ## MCP Server
 
-Expose the CLI as tools for AI-powered IDEs:
+Expose the CLI as tools for MCP clients such as VS Code or Claude:
 
 ```json
 {
@@ -112,18 +94,21 @@ Expose the CLI as tools for AI-powered IDEs:
 }
 ```
 
-18 tools available: workspace management, registry search/install, manifest operations, dependency analysis, and more.
+It provides 18 tools covering workspaces, registry search and install, the
+manifest, dependency analysis, auditing and configuration.
 
 ## Development
 
 ```bash
-git clone https://github.com/byrcolin/o3de-cli.git
+git clone https://github.com/accesspointmg/o3de-cli.git
 cd o3de-cli
 pip install -e ".[dev]"
 pytest
 ```
 
-1248 tests covering CLI commands, core resolver, dependency solver, AI integration, MCP server, and more.
+Tests run with a throwaway home directory and no network access, so they never
+touch your real `~/.o3de`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+branching model and how to get a change merged.
 
 ## License
 

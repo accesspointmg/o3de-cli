@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - CLI Tests
+# O3DE CLI - CLI Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for CLI commands."""
@@ -13,7 +13,7 @@ def test_cli_version():
     runner = CliRunner()
     result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
-    assert "o3de-pilot" in result.output
+    assert result.output.startswith("o3de, version ")
 
 
 EXPECTED_COMMANDS = {
@@ -28,7 +28,7 @@ def test_cli_help():
     runner = CliRunner()
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
-    assert "O3DE Pilot" in result.output
+    assert "package manager and CLI for the O3DE ecosystem" in result.output
     assert set(cli.commands) == EXPECTED_COMMANDS
     for cmd in EXPECTED_COMMANDS:
         assert f"  {cmd} " in result.output, f"Missing from --help: {cmd}"

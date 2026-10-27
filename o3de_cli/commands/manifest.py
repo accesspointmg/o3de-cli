@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Manifest Commands
+# O3DE CLI - Manifest Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Manifest resolution and management commands."""
@@ -59,7 +59,7 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
 
     if not manifest_path.exists():
         console.print(f"[red]Manifest not found:[/red] {manifest_path}")
-        console.print("Run 'o3de-pilot init' to create a new manifest.")
+        console.print("Run 'o3de init' to create a new manifest.")
         raise SystemExit(1)
 
     with Progress(
@@ -378,7 +378,7 @@ def add_command(path: str, obj_type: str | None, as_json: bool) -> None:
         if not obj_type:
             if as_json:
                 emit_error("Could not detect object type", code="DETECT_FAILED")
-                return
+                raise SystemExit(1)
             console.print("[red]Could not detect object type.[/red]")
             console.print("Use --type to specify explicitly.")
             raise SystemExit(1)
@@ -436,7 +436,7 @@ def remove_command(path: str, as_json: bool) -> None:
     if not manifest_path.exists():
         if as_json:
             emit_error("No manifest found", code="NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
@@ -487,15 +487,15 @@ def set_command(key: str, value: str, as_json: bool) -> None:
     - default.third_party_path: Default third party folder
 
     Examples:
-        o3de-pilot manifest set country.code CA
-        o3de-pilot manifest set default.gems_path C:/O3DE/Gems
+        o3de manifest set country.code CA
+        o3de manifest set default.gems_path C:/O3DE/Gems
     """
     manifest_path = get_manifest_path()
 
     if not manifest_path.exists():
         if as_json:
             emit_error("No manifest found", code="NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
@@ -507,7 +507,7 @@ def set_command(key: str, value: str, as_json: bool) -> None:
     if len(parts) != 2:
         if as_json:
             emit_error(f"Invalid key: {key}", code="INVALID_KEY")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Invalid key:[/red] {key}")
         console.print("Keys should be in format: section.field (e.g., country.code)")
         raise SystemExit(1)
@@ -518,7 +518,7 @@ def set_command(key: str, value: str, as_json: bool) -> None:
     if section not in ["country", "default"]:
         if as_json:
             emit_error(f"Unknown section: {section}", code="UNKNOWN_SECTION")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Unknown section:[/red] {section}")
         console.print("Valid sections: country, default")
         raise SystemExit(1)
@@ -557,16 +557,16 @@ def get_command(key: str | None, as_json: bool) -> None:
     With KEY, shows the specific value.
 
     Examples:
-        o3de-pilot manifest get
-        o3de-pilot manifest get country.code
-        o3de-pilot manifest get default.gems_path
+        o3de manifest get
+        o3de manifest get country.code
+        o3de manifest get default.gems_path
     """
     manifest_path = get_manifest_path()
 
     if not manifest_path.exists():
         if as_json:
             emit_error("No manifest found", code="NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
@@ -597,7 +597,7 @@ def get_command(key: str | None, as_json: bool) -> None:
         if len(parts) != 2:
             if as_json:
                 emit_error(f"Invalid key: {key}", code="INVALID_KEY")
-                return
+                raise SystemExit(1)
             console.print(f"[red]Invalid key:[/red] {key}")
             raise SystemExit(1)
 

@@ -1,4 +1,4 @@
-# O3DE Pilot - Manifest Resolver
+# O3DE CLI - Manifest Resolver
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

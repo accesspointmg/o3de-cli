@@ -1,10 +1,10 @@
-# O3DE Pilot - Path Management
+# O3DE CLI - Path Management
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """
 User folder paths and directory initialization.
 
-On first run, o3de-pilot creates:
+On first run, o3de creates:
 - ~/.o3de/                    - Config, cache, manifest
 - ~/O3DE/                     - Downloaded objects
   ├── Engines/

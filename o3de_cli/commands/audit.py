@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Audit Command
+# O3DE CLI - Audit Command
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Dependency tree audit command."""
@@ -37,7 +37,7 @@ def audit(fix: bool, as_json: bool) -> None:
     """
     manifest_path = get_manifest_path()
     if not manifest_path.exists():
-        console.print("[red]No manifest found.[/red] Run 'o3de-pilot init' first.")
+        console.print("[red]No manifest found.[/red] Run 'o3de init' first.")
         raise SystemExit(1)
 
     resolver = Resolver(manifest_path)

@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Template Commands
+# O3DE CLI - Template Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Template management commands."""
@@ -272,7 +272,7 @@ def info(name: str, as_json: bool) -> None:
     except Exception:
         if as_json:
             emit_error("No resolved manifest. Run 'manifest resolve' first.", code="NO_MANIFEST")
-            return
+            raise SystemExit(1)
         console.print("[yellow]No resolved manifest. Run 'manifest resolve' first.[/yellow]")
         raise SystemExit(1)
 
@@ -286,7 +286,7 @@ def info(name: str, as_json: bool) -> None:
     if not obj_data:
         if as_json:
             emit_error(f"Template not found: {name}", code="NOT_FOUND")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Template not found:[/red] {name}")
         raise SystemExit(1)
 
@@ -339,7 +339,7 @@ def create_template(name: str, path: str | None, source: str | None, as_json: bo
     if tpl_path.exists():
         if as_json:
             emit_error(f"Path already exists: {tpl_path}", code="PATH_EXISTS")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Path already exists:[/red] {tpl_path}")
         raise SystemExit(1)
 
@@ -378,7 +378,7 @@ def create_template(name: str, path: str | None, source: str | None, as_json: bo
         emit_response(data={"name": name, "path": str(tpl_path), "source": source})
         return
     console.print(f"[green]Created template:[/green] {tpl_path}")
-    console.print("[dim]Register it with: o3de-pilot template register <path>[/dim]")
+    console.print("[dim]Register it with: o3de template register <path>[/dim]")
 
 
 @template.command("instance")
@@ -403,7 +403,7 @@ def instance_template(
     if inst_path.exists():
         if as_json:
             emit_error(f"Path already exists: {inst_path}", code="PATH_EXISTS")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Path already exists:[/red] {inst_path}")
         raise SystemExit(1)
 
@@ -422,7 +422,7 @@ def instance_template(
     if not tpl_obj or not tpl_obj.path.exists():
         if as_json:
             emit_error(f"Template not found: {template_name}", code="NOT_FOUND")
-            return
+            raise SystemExit(1)
         console.print(f"[red]Template not found:[/red] {template_name}")
         raise SystemExit(1)
 
@@ -464,7 +464,7 @@ def instance_template(
         )
     else:
         console.print(f"[green]Created instance:[/green] {inst_path} ({len(created)} files)")
-        console.print("[dim]Register it with: o3de-pilot register <path>[/dim]")
+        console.print("[dim]Register it with: o3de register <path>[/dim]")
 
 
 @template.command("register")

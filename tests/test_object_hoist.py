@@ -1,4 +1,4 @@
-# O3DE Pilot - object hoist tests
+# O3DE CLI - object hoist tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for ``o3de object hoist`` (git history split into a family repo)."""

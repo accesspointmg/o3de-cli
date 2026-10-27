@@ -1,4 +1,4 @@
-# O3DE Pilot - H2 Coverage Ratchet Tests
+# O3DE CLI - H2 Coverage Ratchet Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests targeting uncovered branches in audit, workspace, project, deps, and registry."""

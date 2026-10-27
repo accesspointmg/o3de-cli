@@ -1,4 +1,4 @@
-# O3DE Pilot - Registry & Distribution Tests
+# O3DE CLI - Registry & Distribution Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for O2: auth tokens, lockfile, and registry commands."""

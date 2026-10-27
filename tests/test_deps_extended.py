@@ -1,4 +1,4 @@
-# O3DE Pilot - Deps Command Tests
+# O3DE CLI - Deps Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for deps command: tree, list, why."""

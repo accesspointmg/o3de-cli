@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Workspace Commands
+# O3DE CLI - Workspace Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Workspace management commands.
@@ -401,8 +401,8 @@ def create_command(
     dependencies from the manifest.  Use --no-solve for explicit-only mode.
 
     Example:
-        o3de-pilot workspace create my-build -e ./o3de -p ./my-project
-        o3de-pilot workspace create my-build -e ./o3de -p ./my-project --no-solve
+        o3de workspace create my-build -e ./o3de -p ./my-project
+        o3de workspace create my-build -e ./o3de -p ./my-project --no-solve
     """
     if not engine_path and not project_path and not root_opt:
         if as_json:
@@ -2092,8 +2092,8 @@ def solve_command(
     which objects are local, remote, or unknown.
 
     Example:
-        o3de-pilot workspace solve org.o3de.engine.o3de
-        o3de-pilot workspace solve org.o3de.project.myproject --include-store
+        o3de workspace solve org.o3de.engine.o3de
+        o3de workspace solve org.o3de.project.myproject --include-store
     """
     from o3de_cli.core.store import Store
 
@@ -2904,7 +2904,7 @@ def lock_command(name_or_path: str, as_json: bool) -> None:
     `workspace create --frozen` to reproduce exact builds.
 
     Example:
-        o3de-pilot workspace lock my-workspace
+        o3de workspace lock my-workspace
     """
     from o3de_cli.core.json_output import emit_error, emit_response
     from o3de_cli.core.lockfile import generate_lockfile, read_lockfile

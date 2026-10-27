@@ -1,4 +1,4 @@
-# O3DE Pilot - Store Tests
+# O3DE CLI - Store Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.core.store module."""

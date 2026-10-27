@@ -1,4 +1,4 @@
-# O3DE Pilot - Git Utilities
+# O3DE CLI - Git Utilities
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

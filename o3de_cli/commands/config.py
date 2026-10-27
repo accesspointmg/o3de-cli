@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Config Commands
+# O3DE CLI - Config Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Configuration management commands."""
@@ -14,7 +14,7 @@ console = Console()
 
 @click.group()
 def config() -> None:
-    """Manage O3DE Pilot configuration."""
+    """Manage o3de-cli configuration."""
     pass
 
 
@@ -32,15 +32,15 @@ def get(key: str | None, as_json: bool) -> None:
         if as_json:
             from o3de_cli.core.json_output import emit_error, emit_response
 
-            if value is not None:
-                emit_response(data={"key": key, "value": value})
-            else:
+            if value is None:
                 emit_error(f"Key not found: {key}", code="E_KEY_NOT_FOUND")
+                raise SystemExit(1)
+            emit_response(data={"key": key, "value": value})
             return
-        if value is not None:
-            console.print(f"{key} = {value}")
-        else:
+        if value is None:
             console.print(f"[yellow]Key not found:[/yellow] {key}")
+            raise SystemExit(1)
+        console.print(f"{key} = {value}")
     else:
         if as_json:
             from o3de_cli.core.json_output import emit_response

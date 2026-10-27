@@ -1,4 +1,4 @@
-# O3DE Pilot - Overlay & Project Extended Tests
+# O3DE CLI - Overlay & Project Extended Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for overlay and project command branches."""
@@ -288,7 +288,7 @@ class TestProjectInitJson:
         result = runner.invoke(project, [
             "init", "test", "--path", str(target), "--json",
         ])
-        assert result.exit_code == 0
+        assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
         assert data["code"] == "PATH_EXISTS"
@@ -315,7 +315,7 @@ class TestProjectBuildJson:
         result = runner.invoke(project, [
             "build", "--path", str(tmp_path), "--json",
         ])
-        assert result.exit_code == 0
+        assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
         assert data["code"] == "NO_CMAKELISTS"

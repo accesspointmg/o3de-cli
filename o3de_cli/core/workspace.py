@@ -1,4 +1,4 @@
-# O3DE Pilot - Workspace Engine
+# O3DE CLI - Workspace Engine
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

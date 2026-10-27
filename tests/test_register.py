@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Register Command Tests
+# O3DE CLI - Register Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.commands.register module."""

@@ -1,4 +1,4 @@
-# O3DE Pilot - Object Models
+# O3DE CLI - Object Models
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

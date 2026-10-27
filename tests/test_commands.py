@@ -1,4 +1,4 @@
-# O3DE Pilot - Integration Tests for Commands
+# O3DE CLI - Integration Tests for Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Integration tests for CLI commands — tests actual command invocation."""
@@ -60,12 +60,12 @@ class TestCLIRoot:
     def test_version(self, runner):
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "o3de-pilot" in result.output
+        assert result.output.startswith("o3de, version ")
 
     def test_help(self, runner):
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        assert "O3DE Pilot" in result.output
+        assert "package manager and CLI for the O3DE ecosystem" in result.output
 
     def test_help_lists_all_commands(self, runner):
         from tests.test_cli import EXPECTED_COMMANDS

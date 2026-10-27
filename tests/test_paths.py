@@ -1,4 +1,4 @@
-# O3DE Pilot - Path Tests
+# O3DE CLI - Path Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.core.paths module."""

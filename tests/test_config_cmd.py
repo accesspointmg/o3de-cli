@@ -1,4 +1,4 @@
-# O3DE Pilot - Config & Misc Command Tests
+# O3DE CLI - Config & Misc Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for config command and other remaining branches."""

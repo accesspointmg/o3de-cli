@@ -23,6 +23,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.13"]
+        # The oldest supported interpreter, on one platform: catches syntax
+        # and stdlib that only newer Pythons accept (see 5cd55a9).
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
 
     steps:
       # Actions are pinned to commit SHAs (tags can be moved); Dependabot keeps them current.
@@ -39,11 +44,13 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run tests
+        if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13') }}
         run: pytest --tb=short -q
 
+      # One run per job: the coverage run is the test run on this leg.
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
-        run: pytest --cov=o3de_cli --cov-report=term-missing -q
+        run: pytest --tb=short -q --cov=o3de_cli --cov-report=term-missing
 
   lint:
     runs-on: ubuntu-latest

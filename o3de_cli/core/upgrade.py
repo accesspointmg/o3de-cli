@@ -1,4 +1,4 @@
-# O3DE Pilot - Schema Upgrade
+# O3DE CLI - Schema Upgrade
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

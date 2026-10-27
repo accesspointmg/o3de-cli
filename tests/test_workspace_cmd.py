@@ -1,4 +1,4 @@
-# O3DE Pilot - Workspace Command Tests
+# O3DE CLI - Workspace Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for workspace CLI commands."""

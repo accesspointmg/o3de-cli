@@ -1,4 +1,4 @@
-# O3DE Pilot - Lockfile
+# O3DE CLI - Lockfile
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Lockfile support for reproducible dependency resolution.

@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - JSON Output Helper
+# O3DE CLI - JSON Output Helper
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Standardised JSON response format for ``--json`` output.

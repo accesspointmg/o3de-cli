@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Repo Commands
+# O3DE CLI - Repo Commands
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Repo management commands."""
@@ -142,7 +142,7 @@ def create_repo(name: str, path: str | None, template_name: str | None) -> None:
         json.dump(repo_json, f, indent=2)
 
     console.print(f"[green]Created repo:[/green] {repo_path}")
-    console.print("[dim]Register it with: o3de-pilot repo register <path>[/dim]")
+    console.print("[dim]Register it with: o3de repo register <path>[/dim]")
 
 
 @repo.command("register")

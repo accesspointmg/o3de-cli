@@ -1,4 +1,4 @@
-# O3DE Pilot - Registry Authentication
+# O3DE CLI - Registry Authentication
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Token-based authentication for private O3DE registries.

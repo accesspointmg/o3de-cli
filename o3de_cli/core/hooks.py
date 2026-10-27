@@ -1,4 +1,4 @@
-# O3DE Pilot - Hooks Execution Engine
+# O3DE CLI - Hooks Execution Engine
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """

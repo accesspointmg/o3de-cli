@@ -1,4 +1,4 @@
-# O3DE Pilot - Resolver Tests
+# O3DE CLI - Resolver Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Tests for o3de_cli.core.resolver module."""

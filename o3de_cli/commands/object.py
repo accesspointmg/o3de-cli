@@ -1,4 +1,4 @@
-# O3DE Pilot CLI - Object Commands (per-gem build/install)
+# O3DE CLI - Object Commands (per-gem build/install)
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Build and install individual objects (gems) as binary packages.

@@ -1,4 +1,4 @@
-# O3DE Pilot - Extended Command Tests
+# O3DE CLI - Extended Command Tests
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 """Extended tests for CLI command modules — covers create, register, unregister, list, audit."""
