@@ -349,6 +349,53 @@ def upgrade_command(
             console.print("[green]All files at latest schema.[/green]")
 
 
+def detect_object_type(target: Path) -> str | None:
+    """The object type of the directory *target*, from the JSON it holds."""
+    for type_name in ["engine", "project", "gem", "template", "repo", "overlay"]:
+        if (target / f"{type_name}.json").exists() or (target / f"{type_name}.2-0-0.json").exists():
+            return type_name
+    return None
+
+
+def register_in_manifest(target: Path, obj_type: str | None = None) -> tuple[str, str, bool]:
+    """Add the object at *target* to the local manifest.
+
+    Returns (posix path, object type, whether it was newly added).
+
+    Raises:
+        ValueError: if *obj_type* is not given and cannot be detected.
+    """
+    obj_type = obj_type or detect_object_type(target)
+    if not obj_type:
+        raise ValueError(f"Could not detect object type: {target}")
+
+    manifest_path = get_manifest_path()
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            manifest_data = json.load(f)
+    else:
+        manifest_data = {
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
+            "$schemaVersion": "2.0.0",
+            "local": {},
+            "remotes": [],
+            "default": {},
+        }
+
+    local = manifest_data.setdefault("local", {})
+    type_list = local.setdefault(f"{obj_type}s", [])
+
+    # POSIX paths for cross-platform manifests; compare resolved paths
+    path_str = target.as_posix()
+    if target.resolve() in [Path(p).resolve() for p in type_list]:
+        return path_str, obj_type, False
+
+    type_list.append(path_str)
+    with open(manifest_path, "w") as f:
+        json.dump(manifest_data, f, indent=2)
+    return path_str, obj_type, True
+
+
 @manifest.command("add")
 @click.argument("path", type=click.Path(exists=True))
 @click.option(
@@ -365,52 +412,17 @@ def add_command(path: str, obj_type: str | None, as_json: bool) -> None:
     Registers the object at PATH in the local manifest.
     """
     target = Path(path).resolve()
-
-    # Auto-detect type if not specified
-    if not obj_type:
-        for type_name in ["engine", "project", "gem", "template", "repo", "overlay"]:
-            if (target / f"{type_name}.json").exists() or (
-                target / f"{type_name}.2-0-0.json"
-            ).exists():
-                obj_type = type_name
-                break
-
-        if not obj_type:
-            if as_json:
-                emit_error("Could not detect object type", code="DETECT_FAILED")
-                raise SystemExit(1)
-            console.print("[red]Could not detect object type.[/red]")
-            console.print("Use --type to specify explicitly.")
+    try:
+        path_str, obj_type, added = register_in_manifest(target, obj_type)
+    except ValueError:
+        if as_json:
+            emit_error("Could not detect object type", code="DETECT_FAILED")
             raise SystemExit(1)
+        console.print("[red]Could not detect object type.[/red]")
+        console.print("Use --type to specify explicitly.")
+        raise SystemExit(1)
 
-    # Load manifest
-    manifest_path = get_manifest_path()
-    if manifest_path.exists():
-        with open(manifest_path) as f:
-            manifest_data = json.load(f)
-    else:
-        manifest_data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
-            "$schemaVersion": "2.0.0",
-            "local": {},
-            "remotes": [],
-            "default": {},
-        }
-
-    # Add to manifest
-    local = manifest_data.setdefault("local", {})
-    type_list = local.setdefault(f"{obj_type}s", [])
-
-    # Use POSIX paths for cross-platform compatibility
-    path_str = target.as_posix()
-    # Check against resolved paths for comparison
-    resolved_paths = [Path(p).resolve() for p in type_list]
-    if target.resolve() not in resolved_paths:
-        type_list.append(path_str)
-
-        with open(manifest_path, "w") as f:
-            json.dump(manifest_data, f, indent=2)
-
+    if added:
         if as_json:
             emit_response(data={"path": path_str, "type": obj_type, "added": True})
         else:

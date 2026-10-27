@@ -58,6 +58,29 @@ has `--help`. With `--json`, success prints
 `{"status": "ok", "data": ...}` and exits 0; failure prints
 `{"status": "error", "error": ..., "code": "E_..."}` and exits 1.
 
+## Installing from remote repos safely
+
+Remote `repo.json` trees are written by third parties, so o3de-cli treats
+every URL, branch and archive they name as untrusted:
+
+- **Archives** are downloaded over HTTPS only (redirects included) and must
+  publish a SHA-256, which is checked before anything is unpacked. Unpacking
+  refuses entries that would land outside the target folder, and refuses links.
+- **Git clones** accept only `https://` and ssh URLs, and the URL can never be
+  read as a git option.
+- **Hooks** (an object's `post_install` or `pre_build` script) never run
+  silently. You are shown the script and asked first. With `--json`, or with
+  no terminal to ask on, they are skipped unless you pass `--yes-hooks`;
+  `--no-hooks` always skips them. A hook path pointing outside its object is
+  refused.
+
+To loosen this for development or a private setup:
+
+| Option | Effect |
+|--------|--------|
+| `--allow-unverified` (or `O3DE_ALLOW_UNVERIFIED=1`) | Install an archive that publishes no SHA-256 |
+| `O3DE_ALLOW_HTTP=1` | Allow plain-HTTP downloads and clones, e.g. a registry on localhost |
+
 ## Schema 2.0
 
 o3de-cli uses the O3DE Schema 2.0 format for all object types. Objects use

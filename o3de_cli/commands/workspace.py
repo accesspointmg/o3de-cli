@@ -2311,6 +2311,51 @@ def _find_project_path(meta: WorkspaceMeta) -> Path | None:
     return None
 
 
+def _run_pre_build_hooks(
+    ws_path: Path,
+    meta: WorkspaceMeta,
+    no_hooks: bool,
+    yes_hooks: bool,
+    as_json: bool,
+) -> None:
+    """Run the pre_build hook of every object composed into the workspace.
+
+    The script is read from the object's source tree (where it was declared
+    and is checked to live) and runs in the workspace's composed copy, so
+    whatever it generates lands in the workspace, not in the shared source.
+    A failing hook stops the build.
+    """
+    from o3de_cli.core.hooks import hook_policy, run_object_hooks
+    from o3de_cli.core.json_output import emit_error
+
+    policy = hook_policy(no_hooks, yes_hooks, as_json)
+    folders = (
+        ("Engines", meta.sources.engines),
+        ("Projects", meta.sources.projects),
+        ("Gems", meta.sources.gems),
+    )
+    for folder, objects in folders:
+        for name, src in objects.items():
+            if not src:
+                continue
+            run_dir = _workspace_local_dir(ws_path, folder, [name])
+            outcomes = run_object_hooks(
+                Path(src),
+                "pre_build",
+                policy,
+                console=None if as_json else console,
+                run_dir=run_dir,
+            )
+            failed = [o for o in outcomes if o.status in ("failed", "refused")]
+            if failed:
+                msg = f"pre_build hook of {failed[0].object_name} {failed[0].status}"
+                if as_json:
+                    emit_error(msg, code="E_HOOK_FAILED")
+                else:
+                    console.print(f"[red]{msg}; not building.[/red]")
+                raise SystemExit(1)
+
+
 _PLATFORM_BUILD_DIR = {
     "win32": "windows",
     "linux": "linux",
@@ -2546,6 +2591,8 @@ def _run_cmake(
     is_flag=True,
     help="Show what would be done without executing",
 )
+@click.option("--no-hooks", is_flag=True, help="Do not run objects' pre_build hooks")
+@click.option("--yes-hooks", is_flag=True, help="Run objects' pre_build hooks without asking")
 def build_command(
     name_or_path: str,
     config: str,
@@ -2559,11 +2606,17 @@ def build_command(
     generator: str | None,
     as_json: bool,
     dry_run: bool,
+    no_hooks: bool = False,
+    yes_hooks: bool = False,
 ) -> None:
     """Build an O3DE workspace using CMake.
 
     Reads workspace metadata to locate engine, project, and gems,
     then runs CMake configure + build.
+
+    Objects may declare a pre_build hook script. Each one is shown and you
+    are asked before it runs; with --json, or without a terminal to ask on,
+    hooks are skipped unless --yes-hooks is given.
 
     Project-centric mode (default):
         cmake -S <project> -B <project>/build/<platform> -DLY_3RDPARTY_PATH=...
@@ -2711,6 +2764,12 @@ def build_command(
         if _ensure_project_cmake_presets(project_path, engine_path):
             if not as_json:
                 console.print("[dim]Updated project CMakePresets.json with engine include[/dim]")
+
+    # ------------------------------------------------------------------
+    # pre_build hooks (skipped on --dry-run: they could change anything)
+    # ------------------------------------------------------------------
+    if not dry_run:
+        _run_pre_build_hooks(ws_path, meta, no_hooks, yes_hooks, as_json)
 
     # ------------------------------------------------------------------
     # Build configure + build commands

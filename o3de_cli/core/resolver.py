@@ -852,9 +852,9 @@ class Resolver:
             target_path = get_default_path_for_type(remote.object_type)
 
             try:
-                download_path = store.download_sync(
-                    remote, target_path, expected_sha256=remote.source_sha256
-                )
+                # Archives are checked against remote.source_sha256 inside;
+                # O3DE_ALLOW_UNVERIFIED is the only way past a missing one here.
+                download_path = store.download_sync(remote, target_path)
             except Exception as e:
                 logger.error(f"Failed to download {remote.name}: {e}")
                 continue

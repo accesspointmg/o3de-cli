@@ -17,8 +17,10 @@ import logging
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("o3de_cli.hooks")
 
@@ -51,6 +53,24 @@ class HooksEngine:
         self.confirm = confirm
         self.timeout = timeout
         self.dry_run = dry_run
+        # stdout+stderr of the most recent execution, for callers to show
+        self.last_output = ""
+
+    @staticmethod
+    def resolve_script(object_dir: Path, script_path: str) -> Path | None:
+        """The hook script inside *object_dir*, or None if it points outside.
+
+        Hook paths come from object metadata, so ``../../elsewhere`` or an
+        absolute path must not reach files the object does not contain.
+        """
+        candidate = Path(script_path)
+        if candidate.is_absolute() or script_path.startswith(("/", "\\")):
+            return None
+        root = object_dir.resolve()
+        full = (root / candidate).resolve()
+        if full == root or root not in full.parents:
+            return None
+        return full
 
     def run_hook(
         self,
@@ -73,7 +93,14 @@ class HooksEngine:
         Returns:
             True if hook ran successfully (or was skipped in dry-run)
         """
-        full_path = object_dir / script_path
+        resolved = self.resolve_script(object_dir, script_path)
+        if resolved is None:
+            logger.error(
+                f"Hook [{hook_type}] for {object_name} refused: "
+                f"{script_path!r} is outside the object directory"
+            )
+            return False
+        full_path = resolved
 
         if not full_path.exists():
             logger.warning(f"Hook script not found: {full_path}")
@@ -170,6 +197,7 @@ class HooksEngine:
             cmd = [str(script_path)]
 
         logger.info(f"Executing hook [{hook_type}] for {object_name}: {' '.join(cmd)}")
+        self.last_output = ""
 
         try:
             result = subprocess.run(
@@ -179,6 +207,7 @@ class HooksEngine:
                 text=True,
                 timeout=self.timeout,
             )
+            self.last_output = (result.stdout or "") + (result.stderr or "")
 
             if result.stdout:
                 logger.info(f"Hook [{hook_type}] stdout:\n{result.stdout}")
@@ -215,3 +244,165 @@ class HooksEngine:
             return response.strip().lower() in ("y", "yes")
         except (EOFError, KeyboardInterrupt):
             return False
+
+
+# ---------------------------------------------------------------------------
+# Running an object's hooks from a command
+# ---------------------------------------------------------------------------
+
+HOOK_TYPES = ("post_install", "pre_build")
+
+_OBJECT_TYPES = ("engine", "project", "gem", "template", "overlay", "repo")
+
+# Lines of the script shown before asking whether to run it
+_PREVIEW_LINES = 40
+
+
+class HookPolicy(str, Enum):
+    """How a command treats hooks it encounters."""
+
+    PROMPT = "prompt"  # show the script and ask, per hook
+    ALWAYS = "always"  # run without asking (--yes-hooks)
+    NEVER = "never"  # skip (--no-hooks, or nobody to ask)
+
+
+def hook_policy(no_hooks: bool, yes_hooks: bool, as_json: bool) -> HookPolicy:
+    """Pick the policy for one command invocation.
+
+    Asking needs an interactive terminal and a stdout that is not carrying
+    JSON, so without both, hooks are skipped unless --yes-hooks was given.
+    """
+    if no_hooks:
+        return HookPolicy.NEVER
+    if yes_hooks:
+        return HookPolicy.ALWAYS
+    if as_json or not sys.stdin.isatty():
+        return HookPolicy.NEVER
+    return HookPolicy.PROMPT
+
+
+@dataclass
+class HookOutcome:
+    """What happened to one hook."""
+
+    object_name: str
+    hook_type: str
+    script: str
+    status: str  # ran, failed, skipped, declined, refused, missing
+    output: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "object": self.object_name,
+            "hook": self.hook_type,
+            "script": self.script,
+            "status": self.status,
+        }
+
+
+def load_object_data(object_dir: Path) -> tuple[dict, str] | None:
+    """The object JSON in *object_dir* (2.0.0 sidecar first) and its name."""
+    import json
+
+    for type_name in _OBJECT_TYPES:
+        for filename in (f"{type_name}.2-0-0.json", f"{type_name}.json"):
+            path = object_dir / filename
+            if not path.is_file():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                return None
+            header = data.get(type_name)
+            name = header.get("name") if isinstance(header, dict) else data.get(f"{type_name}_name")
+            return data, name or object_dir.name
+    return None
+
+
+def _declared_hooks(data: dict) -> dict:
+    for type_name in _OBJECT_TYPES:
+        section = data.get(type_name)
+        if isinstance(section, dict) and isinstance(section.get("hooks"), dict):
+            return section["hooks"]
+    hooks = data.get("hooks")
+    return hooks if isinstance(hooks, dict) else {}
+
+
+def _preview(script: Path) -> str:
+    try:
+        lines = script.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return "(unreadable)"
+    shown = "\n".join(lines[:_PREVIEW_LINES])
+    if len(lines) > _PREVIEW_LINES:
+        shown += f"\n... ({len(lines) - _PREVIEW_LINES} more lines)"
+    return shown
+
+
+def run_object_hooks(
+    object_dir: Path,
+    hook_type: str,
+    policy: HookPolicy,
+    console: Any = None,
+    run_dir: Path | None = None,
+) -> list[HookOutcome]:
+    """Run *object_dir*'s *hook_type* hook according to *policy*.
+
+    The script must live inside the object. Under PROMPT the script itself
+    is shown before asking, since its name alone says nothing about what it
+    does. *run_dir* is where it runs (default: the object directory), e.g.
+    a workspace's composed copy of the object.
+    """
+    import click
+
+    loaded = load_object_data(object_dir)
+    if loaded is None:
+        return []
+    data, name = loaded
+    script = _declared_hooks(data).get(hook_type)
+    if not script or not isinstance(script, str):
+        return []
+
+    def say(msg: str) -> None:
+        if console is not None:
+            console.print(msg)
+
+    engine = HooksEngine(confirm=False)
+    full = engine.resolve_script(object_dir, script)
+    if full is None:
+        say(f"[red]Refusing {hook_type} hook of {name}:[/red] {script!r} is outside the object")
+        return [HookOutcome(name, hook_type, script, "refused")]
+    if not full.is_file():
+        say(f"[yellow]{hook_type} hook of {name} not found:[/yellow] {script}")
+        return [HookOutcome(name, hook_type, script, "missing")]
+
+    if policy is HookPolicy.NEVER:
+        say(
+            f"[yellow]Skipped {hook_type} hook of {name}[/yellow] ({script}). "
+            "Re-run with --yes-hooks to run it."
+        )
+        return [HookOutcome(name, hook_type, script, "skipped")]
+
+    if policy is HookPolicy.PROMPT:
+        say(f"\n[bold]{name}[/bold] has a [cyan]{hook_type}[/cyan] hook: {script}")
+        say(f"[dim]{'-' * 60}[/dim]")
+        if console is not None:
+            from rich.markup import escape
+
+            console.print(escape(_preview(full)), highlight=False)
+        say(f"[dim]{'-' * 60}[/dim]")
+        if not click.confirm(f"Run this {hook_type} script?", default=False):
+            return [HookOutcome(name, hook_type, script, "declined")]
+
+    cwd = run_dir or object_dir
+    ok = engine._execute(cwd / full.relative_to(object_dir.resolve()), cwd, hook_type, name)
+    status = "ran" if ok else "failed"
+    if ok:
+        say(f"[green]Ran {hook_type} hook of {name}[/green]")
+    else:
+        say(f"[red]{hook_type} hook of {name} failed[/red]")
+        if engine.last_output.strip():
+            from rich.markup import escape
+
+            say(escape(engine.last_output.strip()[-2000:]))
+    return [HookOutcome(name, hook_type, script, status, engine.last_output)]

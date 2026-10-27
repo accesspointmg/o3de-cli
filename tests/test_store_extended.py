@@ -329,19 +329,22 @@ class TestDownloadSync:
                 store.download_sync(obj, target)
 
     def test_zip_download_path(self, tmp_path):
+        import hashlib
+        import io
+        import zipfile
+
         store = _make_store(tmp_path)
-        obj = _make_remote_obj(
-            "org.o3de.gem.zip",
-            download_url="https://example.com/gem.zip",
-        )
         target = tmp_path / "dl"
 
-        # Create a minimal valid zip
-        import zipfile, io
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w") as zf:
             zf.writestr("gem.json", '{"gem": {"name": "test"}}')
         zip_bytes = zip_buf.getvalue()
+        obj = _make_remote_obj(
+            "org.o3de.gem.zip",
+            download_url="https://example.com/gem.zip",
+            source_sha256=hashlib.sha256(zip_bytes).hexdigest(),
+        )
 
         mock_response = MagicMock()
         mock_response.headers = {"content-length": str(len(zip_bytes))}
@@ -355,11 +358,13 @@ class TestDownloadSync:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client.stream.return_value = mock_response
 
-        with patch("o3de_cli.core.store.httpx.Client", return_value=mock_client), \
+        with patch("o3de_cli.core.safety.httpx.Client", return_value=mock_client), \
              patch("o3de_cli.core.store.get_download_path", return_value=tmp_path / "downloads"):
             result = store.download_sync(obj, target)
 
-        assert result.exists()
+        assert (result / "gem.json").exists()
+        # The archive is checked, unpacked, then removed
+        assert not list((tmp_path / "downloads").glob("*.archive"))
 
     def test_no_download_method_raises(self, tmp_path):
         store = _make_store(tmp_path)
@@ -368,19 +373,37 @@ class TestDownloadSync:
         with pytest.raises(StoreError, match="No download method"):
             store.download_sync(obj, tmp_path / "dl")
 
-    def test_integrity_check_on_clone(self, tmp_path):
+    def test_clone_is_not_checked_against_archive_hash(self, tmp_path):
+        """Regression: source_sha256 hashes the release *archive*. Checking a
+        git clone's directory against it could never match, so every object
+        publishing both a repo and a checksum failed to install."""
         store = _make_store(tmp_path)
         obj = _make_remote_obj(
             "org.o3de.gem.integ",
             source_control_url="https://github.com/example/repo.git",
+            source_sha256="a" * 64,
         )
-        target = tmp_path / "dl"
-
-        with patch("subprocess.run") as mock_run, \
-             patch("o3de_cli.core.store.verify_integrity") as mock_verify:
+        with (
+            patch("subprocess.run") as mock_run,
+            patch("o3de_cli.core.store.verify_integrity") as mock_verify,
+        ):
             mock_run.return_value = MagicMock(returncode=0, stderr="")
-            store.download_sync(obj, target, expected_sha256="abc123")
-            mock_verify.assert_called_once()
+            store.download_sync(obj, tmp_path / "dl")
+        mock_verify.assert_not_called()
+
+    def test_clone_url_cannot_be_read_as_an_option(self, tmp_path):
+        store = _make_store(tmp_path)
+        obj = _make_remote_obj(
+            "org.o3de.gem.x", source_control_url="https://github.com/example/repo.git"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            store.download_sync(obj, tmp_path / "dl")
+        args = mock_run.call_args[0][0]
+        assert args[args.index("--") + 1] == "https://github.com/example/repo.git"
+        env = mock_run.call_args[1]["env"]
+        assert env["GIT_ALLOW_PROTOCOL"] == "https:ssh"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
 
 
 # ---------------------------------------------------------------------------

@@ -615,26 +615,36 @@ def _fetch_release_archive(
     expected_sha256: str | None,
     cache_name: str,
     progress: Callable[[str], None],
+    allow_unverified: bool = False,
 ) -> Path:
     """Obtain a release archive (local path, file://, or http(s)) and
-    verify its SHA-256.  Returns the local archive path."""
+    verify its SHA-256.  Returns the local archive path.
+
+    Remote archives must come over HTTPS and publish a SHA-256 (see
+    core.safety); local files are the user's own and need neither.
+    """
     from urllib.parse import urlparse
     from urllib.request import url2pathname
 
     from o3de_cli.core.paths import get_download_path
-    from o3de_cli.core.store import IntegrityError, compute_sha256
+    from o3de_cli.core.safety import (
+        download_client,
+        require_checksum,
+        require_secure_url,
+        verify_file_sha256,
+    )
 
     parsed = urlparse(url)
     if parsed.scheme == "file":
         archive_path = Path(url2pathname(parsed.path))
     elif parsed.scheme in ("http", "https"):
-        import httpx
-
+        require_secure_url(url)
+        require_checksum(url, expected_sha256, allow_unverified)
         download_dir = get_download_path()
         download_dir.mkdir(parents=True, exist_ok=True)
         archive_path = download_dir / cache_name
         progress(f"Downloading {url}")
-        with httpx.Client(timeout=300, follow_redirects=True) as client:
+        with download_client() as client:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
                 with open(archive_path, "wb") as f:
@@ -646,13 +656,7 @@ def _fetch_release_archive(
         raise FileNotFoundError(f"Release archive not found: {archive_path}")
 
     if expected_sha256:
-        actual = compute_sha256(archive_path)
-        if actual != expected_sha256:
-            raise IntegrityError(
-                f"SHA-256 mismatch for {archive_path}:\n"
-                f"  expected: {expected_sha256}\n"
-                f"  actual:   {actual}"
-            )
+        verify_file_sha256(archive_path, expected_sha256)
         progress("SHA-256 verified")
     return archive_path
 
@@ -664,6 +668,7 @@ def download_remote_binary(
     platform: str | None = None,
     force: bool = False,
     on_progress: Callable[[str], None] | None = None,
+    allow_unverified: bool = False,
 ) -> Path:
     """Download + extract a remote binary package into BuiltPackages.
 
@@ -674,7 +679,7 @@ def download_remote_binary(
 
     Returns the package directory.
     """
-    import zipfile
+    from o3de_cli.core.safety import safe_extract
 
     def progress(msg: str) -> None:
         if on_progress:
@@ -701,14 +706,14 @@ def download_remote_binary(
         expected_sha256,
         f"{name}-{version}-{platform}.zip",
         progress,
+        allow_unverified=allow_unverified,
     )
 
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     progress(f"Extracting to {dest}")
-    with zipfile.ZipFile(archive_path) as zf:
-        zf.extractall(dest)
+    safe_extract(archive_path, dest)
 
     if not _has_package_config(dest):
         shutil.rmtree(dest)
@@ -757,6 +762,7 @@ def download_remote_source(
     data: dict,
     force: bool = False,
     on_progress: Callable[[str], None] | None = None,
+    allow_unverified: bool = False,
 ) -> Path:
     """Download + extract a code (source) release into the default gems path.
 
@@ -765,10 +771,8 @@ def download_remote_source(
     at its root.  Returns the extracted object directory, ready to be
     registered as a plain source object.
     """
-    import tarfile
-    import zipfile
-
     from o3de_cli.core.paths import get_default_gems_path
+    from o3de_cli.core.safety import safe_extract
 
     def progress(msg: str) -> None:
         if on_progress:
@@ -793,18 +797,14 @@ def download_remote_source(
         expected_sha256,
         f"{name}-{version}-Source{suffix}",
         progress,
+        allow_unverified=allow_unverified,
     )
 
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     progress(f"Extracting to {dest}")
-    if archive_path.name.endswith((".tar.gz", ".tgz")):
-        with tarfile.open(archive_path, "r:gz") as tf:
-            tf.extractall(dest, filter="data")
-    else:
-        with zipfile.ZipFile(archive_path) as zf:
-            zf.extractall(dest)
+    safe_extract(archive_path, dest)
 
     if not (dest / "gem.json").is_file():
         shutil.rmtree(dest)
