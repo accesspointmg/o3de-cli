@@ -81,8 +81,8 @@ class TestRegistryListRemotes:
         runner = CliRunner()
         with patch("o3de_cli.commands.registry.get_manifest_path", return_value=mp):
             result = runner.invoke(registry, ["list-remotes"])
-        listed = result.output.split()
-        assert "https://a.com" in listed and "https://b.com" in listed
+        listed = {token for token in result.output.split() if token.startswith("https://")}
+        assert listed == {"https://a.com", "https://b.com"}
 
     def test_list_remotes_empty(self, tmp_path):
         from o3de_cli.commands.registry import registry
