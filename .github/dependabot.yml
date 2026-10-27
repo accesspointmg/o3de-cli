@@ -8,6 +8,10 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    # Wait a week before proposing a new release: compromised releases are
+    # usually caught and pulled within days.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "deps(python):"
     groups:
@@ -16,7 +20,8 @@ updates:
           - "pytest*"
           - "ruff"
           - "mypy"
-          - "black"
+          - "types-*"
+          - "git-filter-repo"
         update-types:
           - "minor"
           - "patch"
@@ -29,6 +34,10 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    # Wait a week before proposing a new release: compromised releases are
+    # usually caught and pulled within days.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "deps(actions):"
     groups:
