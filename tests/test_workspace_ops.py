@@ -584,8 +584,9 @@ class TestSolveCreateDependencies:
                 request, assembly, self._deps([resolver], _solver(first, second)), reporter
             )
         assert assembly.solve_result is second
-        # Rebuilt from the fresh solve (plus the project, as before the refactor)
-        assert set(assembly.resolved_objects) == {"proj", "far"}
+        # The original selection plus what the install made local; the
+        # project is not added again under its directory name
+        assert set(assembly.resolved_objects) == {"stale", "far"}
         assert ("installed", 1) in reporter.events
         assert ("progress", "installing x") in reporter.events
         assert not any(e[0] == "unresolved" for e in reporter.events)
@@ -609,6 +610,97 @@ class TestSolveCreateDependencies:
                 solve=_solver(first, _result(conflict="x")),
             )
         assert exc.value.label == "Re-solve after install failed"
+
+    class _Store:
+        def refresh_sync(self, remotes):
+            pass
+
+    def test_auto_install_keeps_explicit_engine_and_its_closure(self, tmp_path):
+        """A gem-rooted workspace keeps its --engine, the engine's closure and
+        the overlays of every solve after auto-installing."""
+        root = (tmp_path / "gem").resolve()
+        eng = (tmp_path / "eng").resolve()
+        resolver = FakeResolver(objects={"org.gem": root, "org.eng": eng})
+        resolver.auto_installed = [{"name": "far"}]
+        request = CreateRequest(
+            root_path=root, engine_path=str(eng), include_store=True, auto_install=True
+        )
+        assembly = WorkspaceAssembly(
+            resolved_objects={"org.eng": (eng, ObjectType.ENGINE)}, overlay_tuples=[]
+        )
+        engine_closure = _result(
+            candidates=[
+                _cand("org.eng", eng, obj_type=ObjectType.ENGINE),
+                _cand("engine.gem", tmp_path / "eg"),
+            ],
+            overlays={"engine.gem": [_entry("ov.eng", extends="engine.gem", path=tmp_path / "oe")]},
+        )
+        solve = _solver(
+            _result(candidates=[_cand("org.gem", root), _cand("far", status=CandidateStatus.REMOTE)]),
+            engine_closure,
+            _result(
+                candidates=[_cand("org.gem", root), _cand("far", tmp_path / "far")],
+                overlays={"far": [_entry("ov.far", extends="far", path=tmp_path / "of")]},
+            ),
+            engine_closure,
+        )
+        with patch("o3de_cli.core.store.Store", self._Store):
+            solve_create_dependencies(
+                request, assembly, self._deps([resolver], solve), RecordingReporter()
+            )
+        assert set(assembly.resolved_objects) == {"org.eng", "engine.gem", "far"}
+        assert assembly.resolved_objects["org.eng"] == (eng, ObjectType.ENGINE)
+        assert {p for p, *_ in assembly.overlay_tuples} == {
+            (tmp_path / "oe").resolve(),
+            (tmp_path / "of").resolve(),
+        }
+
+    def test_auto_install_does_not_add_the_root_twice(self, tmp_path):
+        """With -e and -p the project is the root: it is not re-added under
+        its directory name, and objects already selected are not duplicated
+        under another name."""
+        proj = (tmp_path / "proj").resolve()
+        eng = (tmp_path / "eng").resolve()
+        resolver = FakeResolver(objects={"org.proj": proj, "org.eng": eng})
+        resolver.auto_installed = [{"name": "far"}]
+        request = CreateRequest(
+            root_path=proj,
+            engine_path=str(eng),
+            project_path=str(proj),
+            explicit_overlays=(str(tmp_path / "explicit"),),
+            include_store=True,
+            auto_install=True,
+        )
+        assembly = WorkspaceAssembly(
+            resolved_objects={"org.eng": (eng, ObjectType.ENGINE)},
+            overlay_tuples=explicit_overlay_tuples(request.explicit_overlays, False),
+        )
+        proj_cand = _cand("org.proj", proj, obj_type=ObjectType.PROJECT)
+        eng_cand = _cand("org.eng", eng, obj_type=ObjectType.ENGINE)
+        first = _result(
+            candidates=[proj_cand, eng_cand, _cand("far", status=CandidateStatus.REMOTE)],
+            overlays={"org.eng": [_entry("ov.e", extends="org.eng", path=tmp_path / "oe")]},
+        )
+        second = _result(
+            candidates=[
+                proj_cand,
+                eng_cand,
+                _cand("far", tmp_path / "far"),
+                # The same directory under another name: not linked twice
+                _cand("alias.eng", eng, obj_type=ObjectType.ENGINE),
+            ]
+        )
+        with patch("o3de_cli.core.store.Store", self._Store):
+            solve_create_dependencies(
+                request, assembly, self._deps([resolver], _solver(first, second)), RecordingReporter()
+            )
+        assert set(assembly.resolved_objects) == {"org.eng", "far"}
+        assert all(p.resolve() != proj for p, _t in assembly.resolved_objects.values())
+        # The explicit overlay and the first solve's overlay are both kept
+        assert [p for p, *_ in assembly.overlay_tuples] == [
+            (tmp_path / "explicit").resolve(),
+            (tmp_path / "oe").resolve(),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +749,7 @@ class TestResync:
             def add_resolved_object(self, name, path, obj_type):
                 calls.append(("object", name, obj_type))
 
-            def add_overlay(self, path, precedence):
+            def add_overlay(self, path, precedence, extends=None):
                 calls.append(("overlay", path.name, precedence))
 
             def update(self):
@@ -680,6 +772,34 @@ class TestResync:
             ("overlay", "o1", 0),
             ("overlay", "o2", 1),
             ("update",),
+        ]
+
+    def test_resync_uses_recorded_names_types_and_overlay_bases(self, tmp_path):
+        """Re-sync links objects under the names (and types) recorded in
+        workspace.json, so overlays find the object they extend."""
+        eng = tmp_path / "engine-src"  # directory name != object name
+        _write_json(eng / "engine.2-0-0.json", {})  # no legacy engine.json
+        ov = _overlay_dir(tmp_path, "ov-src", "org.ov", "org.e.o3de>=1.0.0")
+        meta = _meta(tmp_path, engines={"org.e.o3de": str(eng)}, overlays={"org.ov": str(ov)})
+        calls: list = []
+
+        class FakeWorkspace:
+            def __init__(self, **kwargs):
+                pass
+
+            def add_resolved_object(self, name, path, obj_type):
+                calls.append(("object", name, obj_type))
+
+            def add_overlay(self, path, precedence, extends=None):
+                calls.append(("overlay", path.name, precedence, extends))
+
+            def update(self):
+                pass
+
+        apply_resync(tmp_path, plan_resync(tmp_path, meta, []), workspace_cls=FakeWorkspace)
+        assert calls == [
+            ("object", "org.e.o3de", ObjectType.ENGINE),
+            ("overlay", "ov-src", 0, "org.e.o3de"),
         ]
 
 
