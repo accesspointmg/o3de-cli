@@ -1,123 +1,106 @@
-# Tests for workspace schema, Pydantic model, file_owners, GUI tab, and migration
+# Tests for workspace schema, Pydantic model, file ownership and migration
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-"""I-series tests: workspace schema + model + GUI tab."""
+"""I-series tests: workspace schema + model + legacy migration."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pytest
-from click.testing import CliRunner
+
+SCHEMA_URL = (
+    "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/"
+    "o3de-workspace-2.0.0.json"
+)
+
+
+def _workspace_validator():
+    from o3de_cli.core.schema import WORKSPACE_SCHEMA_FILENAME, build_validator
+
+    return build_validator(WORKSPACE_SCHEMA_FILENAME)
+
+
+def _current_format(**overrides) -> dict:
+    """A workspace.json in the current format (categorised sources)."""
+    data = {
+        "$schema": SCHEMA_URL,
+        "$schemaVersion": "2.0.0",
+        "workspace": {"name": "test-build"},
+        "created": "2026-05-25T12:00:00",
+        "root_object": "/home/user/engine",
+        "root_type": "engine",
+        "sources": {
+            "engines": {"org.o3de.engine.o3de": "/home/user/engine"},
+            "projects": {"org.o3de.project.game": "/home/user/project"},
+            "gems": {},
+            "templates": {},
+            "overlays": {"org.o3de.overlay.console": "/home/user/console-overlay"},
+        },
+        "file_links": {"/home/user/engine/engine.json": "Engines/o3de/engine.json"},
+    }
+    data.update(overrides)
+    return data
 
 
 # ── I1: Schema validation ──────────────────────────────────────────
 
 class TestWorkspaceSchema:
-    """Validate the canonical workspace JSON Schema."""
+    """The canonical workspace JSON Schema, as bundled with the package."""
 
-    def test_schema_file_exists(self):
-        """o3de-workspace-2.0.0.json exists in canonical dir."""
-        from o3de_cli.core.schema import find_schema_directory
-        schema_dir = find_schema_directory()
-        if schema_dir is None:
-            pytest.skip("canonical schema directory not found")
-        assert (schema_dir / "o3de-workspace-2.0.0.json").exists()
+    def test_schema_is_bundled(self):
+        from o3de_cli.core.schema import BUNDLED_SCHEMA_DIR, WORKSPACE_SCHEMA_FILENAME
 
-    def test_schema_is_valid_json(self):
-        from o3de_cli.core.schema import find_schema_directory
-        schema_dir = find_schema_directory()
-        if schema_dir is None:
-            pytest.skip("canonical schema directory not found")
-        with open(schema_dir / "o3de-workspace-2.0.0.json") as f:
-            data = json.load(f)
+        assert (BUNDLED_SCHEMA_DIR / WORKSPACE_SCHEMA_FILENAME).is_file()
+        assert (BUNDLED_SCHEMA_DIR / "SOURCE").is_file()
+
+    def test_schema_shape(self):
+        from o3de_cli.core.schema import BUNDLED_SCHEMA_DIR, WORKSPACE_SCHEMA_FILENAME
+
+        data = json.loads(
+            (BUNDLED_SCHEMA_DIR / WORKSPACE_SCHEMA_FILENAME).read_text(encoding="utf-8")
+        )
         assert data["title"] == "O3DE Workspace Schema 2.0.0"
-        assert "workspace" in data["properties"]
-        assert "file_owners" in data["properties"]
-        assert "sources" in data["properties"]
+        for key in ("workspace", "sources", "file_links", "root_object", "overlay_order"):
+            assert key in data["properties"]
 
     def test_validate_valid_workspace(self):
-        """A well-formed workspace dict passes schema validation."""
-        from o3de_cli.core.schema import find_schema_directory
-        schema_dir = find_schema_directory()
-        if schema_dir is None:
-            pytest.skip("canonical schema directory not found")
-        try:
-            import jsonschema
-            import referencing
-            import referencing.jsonschema
-        except ImportError:
-            pytest.skip("jsonschema not installed")
-
-        with open(schema_dir / "o3de-workspace-2.0.0.json") as f:
-            schema = json.load(f)
-        resources = []
-        for jf in schema_dir.glob("*.json"):
-            try:
-                with open(jf) as fp:
-                    s = json.load(fp)
-                if isinstance(s, dict):
-                    sid = s.get("$id", f"./{jf.name}")
-                    res = referencing.Resource.from_contents(
-                        s, default_specification=referencing.jsonschema.DRAFT7
-                    )
-                    resources.append((sid, res))
-            except Exception:
-                continue
-        registry = referencing.Registry().with_resources(resources)
-        validator = jsonschema.Draft7Validator(schema, registry=registry)
-
-        valid_data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
-            "$schemaVersion": "2.0.0",
-            "workspace": {"name": "test-build"},
-            "created": "2026-05-25T12:00:00",
-            "sources": ["/home/user/engine"],
-        }
-        errors = list(validator.iter_errors(valid_data))
+        errors = list(_workspace_validator().iter_errors(_current_format()))
         assert errors == []
 
     def test_validate_invalid_workspace_missing_workspace(self):
-        """Missing required 'workspace' field is caught."""
+        data = _current_format()
+        del data["workspace"]
+        assert list(_workspace_validator().iter_errors(data))
+
+    def test_model_output_validates(self):
+        """What WorkspaceMeta writes is what the schema accepts."""
+        from o3de_cli.commands.workspace import _build_workspace_meta
+
+        meta = _build_workspace_meta(
+            name="ws",
+            root_path=Path("/e"),
+            root_type="engine",
+            sources={"engines": {"org.o3de.engine.o3de": "/e"}},
+            platforms=["linux"],
+            attributions="object",
+        )
+        data = json.loads(json.dumps(meta.model_dump(by_alias=True, exclude_none=True)))
+        errors = [e.message for e in _workspace_validator().iter_errors(data)]
+        assert errors == []
+
+    def test_env_override(self, tmp_path, monkeypatch):
         from o3de_cli.core.schema import find_schema_directory
-        schema_dir = find_schema_directory()
-        if schema_dir is None:
-            pytest.skip("canonical schema directory not found")
-        try:
-            import jsonschema
-            import referencing
-            import referencing.jsonschema
-        except ImportError:
-            pytest.skip("jsonschema not installed")
 
-        with open(schema_dir / "o3de-workspace-2.0.0.json") as f:
-            schema = json.load(f)
-        resources = []
-        for jf in schema_dir.glob("*.json"):
-            try:
-                with open(jf) as fp:
-                    s = json.load(fp)
-                if isinstance(s, dict):
-                    sid = s.get("$id", f"./{jf.name}")
-                    res = referencing.Resource.from_contents(
-                        s, default_specification=referencing.jsonschema.DRAFT7
-                    )
-                    resources.append((sid, res))
-            except Exception:
-                continue
-        registry = referencing.Registry().with_resources(resources)
-        validator = jsonschema.Draft7Validator(schema, registry=registry)
+        monkeypatch.setenv("O3DE_SCHEMA_DIR", str(tmp_path))
+        assert find_schema_directory() == tmp_path
 
-        invalid_data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
-            "$schemaVersion": "2.0.0",
-            "created": "2026-05-25T12:00:00",
-            "sources": [],
-        }
-        errors = list(validator.iter_errors(invalid_data))
-        assert len(errors) > 0
+    def test_env_override_missing_dir_falls_back(self, tmp_path, monkeypatch):
+        from o3de_cli.core.schema import BUNDLED_SCHEMA_DIR, find_schema_directory
+
+        monkeypatch.setenv("O3DE_SCHEMA_DIR", str(tmp_path / "nope"))
+        assert find_schema_directory() == BUNDLED_SCHEMA_DIR
 
 
 # ── I1: Pydantic model ─────────────────────────────────────────────
@@ -127,42 +110,39 @@ class TestWorkspaceMeta:
 
     def test_round_trip(self):
         from o3de_cli.core.models import WorkspaceMeta
-        data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
-            "$schemaVersion": "2.0.0",
-            "workspace": {"name": "my-build", "version": "1.0.0"},
-            "created": "2026-05-25T12:00:00",
-            "root_object": "/home/user/engine",
-            "root_type": "engine",
-            "sources": ["/home/user/engine", "/home/user/project"],
-            "overlays": ["/home/user/console-overlay"],
-            "file_owners": {"engine.json": "org.o3de.engine.o3de"},
-        }
-        meta = WorkspaceMeta.model_validate(data)
+
+        meta = WorkspaceMeta.model_validate(
+            _current_format(workspace={"name": "my-build", "version": "1.0.0"})
+        )
         assert meta.workspace.name == "my-build"
         assert meta.workspace.version == "1.0.0"
         assert meta.root_type == "engine"
-        assert len(meta.sources) == 2
-        assert meta.file_owners["engine.json"] == "org.o3de.engine.o3de"
+        assert meta.sources.engines == {"org.o3de.engine.o3de": "/home/user/engine"}
+        assert meta.sources.overlays == {
+            "org.o3de.overlay.console": "/home/user/console-overlay"
+        }
+        assert meta.file_links["/home/user/engine/engine.json"] == "Engines/o3de/engine.json"
 
-        # Round-trip
         dumped = meta.model_dump(by_alias=True, exclude_none=True)
         meta2 = WorkspaceMeta.model_validate(dumped)
         assert meta2.workspace.name == meta.workspace.name
-        assert meta2.file_owners == meta.file_owners
+        assert meta2.sources == meta.sources
+        assert meta2.file_links == meta.file_links
 
     def test_minimal_valid(self):
         from o3de_cli.core.models import WorkspaceMeta
-        data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
+
+        meta = WorkspaceMeta.model_validate({
+            "$schema": SCHEMA_URL,
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "minimal"},
             "created": "2026-01-01T00:00:00",
-        }
-        meta = WorkspaceMeta.model_validate(data)
+        })
         assert meta.workspace.name == "minimal"
-        assert meta.sources == []
-        assert meta.file_owners == {}
+        assert meta.sources.engines == {}
+        assert meta.sources.overlays == {}
+        assert meta.file_links == {}
+        assert meta.overrides == {}
 
     def test_missing_workspace_raises(self):
         from o3de_cli.core.models import WorkspaceMeta
@@ -210,13 +190,38 @@ class TestWorkspaceMigration:
         assert _find_workspace_meta(tmp_path) is None
 
     def test_read_legacy_format(self, tmp_path):
+        """The oldest files: a bare source list, no header, no candidates."""
         from o3de_cli.commands.workspace import _read_workspace_meta
-        legacy = {"sources": ["/a", "/b"], "overlays": [], "name": "old-ws"}
-        (tmp_path / ".workspace.json").write_text(json.dumps(legacy))
-        meta = _read_workspace_meta(tmp_path)
+
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        (engine / "engine.json").write_text("{}")
+        project = tmp_path / "MyGame"
+        project.mkdir()
+        (project / "project.json").write_text("{}")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        legacy = {"sources": [str(project), str(engine)], "overlays": [], "name": "old-ws"}
+        (ws / ".workspace.json").write_text(json.dumps(legacy))
+
+        meta = _read_workspace_meta(ws)
         assert meta is not None
         assert meta.workspace.name == "old-ws"
-        assert meta.sources == ["/a", "/b"]
+        assert meta.sources.engines == {"engine": str(engine)}
+        assert meta.sources.projects == {"MyGame": str(project)}
+        # The first listed source was the root
+        assert meta.root_object == str(project)
+
+    def test_legacy_source_without_object_json_is_skipped(self, tmp_path):
+        from o3de_cli.core.models import WorkspaceMeta
+
+        meta = WorkspaceMeta.model_validate({
+            "workspace": {"name": "w"},
+            "created": "",
+            "sources": [str(tmp_path / "not-an-object")],
+        })
+        assert meta.sources.engines == {}
+        assert meta.sources.projects == {}
 
     def test_write_creates_new_name(self, tmp_path):
         from o3de_cli.commands.workspace import (
@@ -226,13 +231,13 @@ class TestWorkspaceMigration:
             name="test",
             root_path=Path("/engine"),
             root_type="engine",
-            sources=["/engine"],
-            overlays=[],
+            sources={"engines": {"org.o3de.engine.o3de": "/engine"}},
         )
         _write_workspace_meta(tmp_path, meta)
         assert (tmp_path / WORKSPACE_META).exists()
         data = json.loads((tmp_path / WORKSPACE_META).read_text())
         assert data["workspace"]["name"] == "test"
+        assert data["sources"]["engines"] == {"org.o3de.engine.o3de": "/engine"}
         assert "$schema" in data
         assert "$schemaVersion" in data
 
@@ -347,13 +352,12 @@ class TestResolvedCandidate:
         assert rc.path is None
 
 
-class TestWorkspaceMetaWithCandidates:
-    """WorkspaceMeta model with resolved_candidates field."""
+class TestLegacyCandidatesMigration:
+    """Older files listed resolved_candidates; they become categorised sources."""
 
-    def test_round_trip_with_candidates(self):
-        from o3de_cli.core.models import WorkspaceMeta
+    def _legacy(self, **extra) -> dict:
         data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
+            "$schema": SCHEMA_URL,
             "$schemaVersion": "2.0.0",
             "workspace": {"name": "solved-ws"},
             "created": "2026-05-31T12:00:00",
@@ -365,88 +369,37 @@ class TestWorkspaceMetaWithCandidates:
                  "object_type": "gem", "status": "remote"},
             ],
         }
-        meta = WorkspaceMeta.model_validate(data)
-        assert len(meta.resolved_candidates) == 2
-        assert meta.resolved_candidates[0].name == "org.o3de.engine.o3de"
-        assert meta.resolved_candidates[1].path is None
+        data.update(extra)
+        return data
 
-        # Round-trip
-        dumped = meta.model_dump(by_alias=True, exclude_none=True)
-        meta2 = WorkspaceMeta.model_validate(dumped)
-        assert len(meta2.resolved_candidates) == 2
-        assert meta2.resolved_candidates[0].version == "1.0.0"
-
-    def test_backward_compat_no_candidates(self):
+    def test_candidates_become_sources(self):
         from o3de_cli.core.models import WorkspaceMeta
-        data = {
-            "$schema": "x", "$schemaVersion": "2.0.0",
-            "workspace": {"name": "legacy"}, "created": "2026-01-01",
-        }
-        meta = WorkspaceMeta.model_validate(data)
-        assert meta.resolved_candidates == []
 
-    def test_json_file_round_trip(self, tmp_path):
+        meta = WorkspaceMeta.model_validate(self._legacy())
+        assert meta.sources.engines == {"org.o3de.engine.o3de": "/engine"}
+        # A remote candidate had no local path yet
+        assert meta.sources.gems == {"org.o3de.gem.atom": ""}
+
+    def test_file_owners_become_file_links(self):
         from o3de_cli.core.models import WorkspaceMeta
-        data = {
-            "$schema": "x", "$schemaVersion": "2.0.0",
-            "workspace": {"name": "file-test"}, "created": "2026-01-01",
-            "sources": [],
-            "resolved_candidates": [
-                {"name": "org.o3de.gem.x", "version": "0.1.0",
-                 "object_type": "gem", "status": "unknown"},
-            ],
+
+        meta = WorkspaceMeta.model_validate(
+            self._legacy(file_owners={"Engines/o3de/engine.json": "org.o3de.engine.o3de"})
+        )
+        assert meta.file_links == {
+            "/engine/Engines/o3de/engine.json": "Engines/o3de/engine.json"
         }
-        meta = WorkspaceMeta.model_validate(data)
-        json_path = tmp_path / "workspace.json"
-        json_path.write_text(json.dumps(
-            meta.model_dump(by_alias=True, exclude_none=True), indent=2
-        ))
-        loaded = json.loads(json_path.read_text())
-        meta2 = WorkspaceMeta.model_validate(loaded)
-        assert len(meta2.resolved_candidates) == 1
-        assert meta2.resolved_candidates[0].object_type == "gem"
 
-    def test_schema_validates_resolved_candidates(self):
-        """Canonical JSON Schema accepts workspace with resolved_candidates."""
-        from o3de_cli.core.schema import find_schema_directory
-        schema_dir = find_schema_directory()
-        if schema_dir is None:
-            pytest.skip("canonical schema directory not found")
-        try:
-            import jsonschema
-            import referencing
-            import referencing.jsonschema
-        except ImportError:
-            pytest.skip("jsonschema not installed")
+    def test_migrated_file_round_trips(self, tmp_path):
+        from o3de_cli.commands.workspace import _read_workspace_meta, _write_workspace_meta
 
-        with open(schema_dir / "o3de-workspace-2.0.0.json") as f:
-            schema = json.load(f)
-        resources = []
-        for jf in schema_dir.glob("*.json"):
-            try:
-                with open(jf) as fp:
-                    s = json.load(fp)
-                if isinstance(s, dict):
-                    sid = s.get("$id", f"./{jf.name}")
-                    res = referencing.Resource.from_contents(
-                        s, default_specification=referencing.jsonschema.DRAFT7
-                    )
-                    resources.append((sid, res))
-            except Exception:
-                continue
-        registry = referencing.Registry().with_resources(resources)
-        validator = jsonschema.Draft7Validator(schema, registry=registry)
+        (tmp_path / "workspace.json").write_text(json.dumps(self._legacy()))
+        meta = _read_workspace_meta(tmp_path)
+        _write_workspace_meta(tmp_path, meta)
 
-        valid_data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-workspace-2.0.0.json",
-            "$schemaVersion": "2.0.0",
-            "workspace": {"name": "test-build"},
-            "created": "2026-05-31T12:00:00",
-            "sources": ["/engine"],
-            "resolved_candidates": [
-                {"name": "org.o3de.engine.o3de", "version": "1.0.0",
-                 "object_type": "engine", "status": "local", "path": "/engine"},
-            ],
-        }
-        errors = list(validator.iter_errors(valid_data))
-        assert errors == [], f"Unexpected schema errors: {errors}"
+        written = json.loads((tmp_path / "workspace.json").read_text())
+        # Legacy keys are dropped on write; the current format is what remains
+        for key in ("resolved_candidates", "file_owners", "overlays"):
+            assert key not in written
+        assert written["sources"]["engines"] == {"org.o3de.engine.o3de": "/engine"}
+        assert list(_workspace_validator().iter_errors(written)) == []

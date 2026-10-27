@@ -198,7 +198,7 @@ class TestRegistryUninstall:
         from o3de_cli.commands.registry import registry
         mp = _manifest(tmp_path)
         runner = CliRunner()
-        with patch("o3de_cli.commands.registry.get_manifest_path", return_value=mp):
+        with patch("o3de_cli.core.paths.get_manifest_path", return_value=mp):
             result = runner.invoke(registry, ["uninstall", "nope"])
         assert "not found" in result.output
 
@@ -207,7 +207,7 @@ class TestRegistryUpdate:
     def test_update_all(self, tmp_path):
         from o3de_cli.commands.registry import registry
         runner = CliRunner()
-        with patch("o3de_cli.commands.registry.Store") as MockStore:
+        with patch("o3de_cli.core.store.Store") as MockStore:
             MockStore.return_value.refresh_sync.return_value = None
             result = runner.invoke(registry, ["update"])
         assert "Refreshing" in result.output or "updated" in result.output
@@ -215,7 +215,7 @@ class TestRegistryUpdate:
     def test_update_specific_not_found(self, tmp_path):
         from o3de_cli.commands.registry import registry
         runner = CliRunner()
-        with patch("o3de_cli.commands.registry.Store") as MockStore:
+        with patch("o3de_cli.core.store.Store") as MockStore:
             MockStore.return_value.search.return_value = []
             result = runner.invoke(registry, ["update", "nonexistent"])
         assert "not found" in result.output

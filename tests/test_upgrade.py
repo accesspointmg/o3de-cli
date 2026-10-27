@@ -463,7 +463,10 @@ class TestUpgrade1To2:
             "engine": "o3de"
         }
         result = upgrade_1_to_2(data, "project")
+        # Top-level engine is what cmake_manifest and `project list` read;
+        # dependent.engines is what the solver follows. Both must be set.
         assert result["engine"] == "org.o3de.engine.o3de>=1.0.0"
+        assert result["dependent"]["engines"] == ["org.o3de.engine.o3de>=1.0.0"]
 
 
 class TestUpgradeToLatest:

@@ -131,7 +131,7 @@ class TestRefreshSync:
             "$schemaVersion": "2.0.0",
             "gems": [],
         }
-        with patch.object(store, "fetch_json_sync", return_value=repo_data):
+        with patch.object(store, "_fetch_json_with_client", return_value=repo_data):
             count = store.refresh_sync(["https://example.com/repo.json"])
         assert count >= 0
 
@@ -139,7 +139,7 @@ class TestRefreshSync:
         store = _make_store(tmp_path)
         call_count = 0
 
-        def mock_fetch(url, **kw):
+        def mock_fetch(client, url, **kw):
             nonlocal call_count
             call_count += 1
             if "repo.json" in url:
@@ -153,7 +153,7 @@ class TestRefreshSync:
                 "$schemaVersion": "2.0.0",
             }
 
-        with patch.object(store, "fetch_json_sync", side_effect=mock_fetch):
+        with patch.object(store, "_fetch_json_with_client", side_effect=mock_fetch):
             store.refresh_sync(["https://example.com/repo.json"])
 
         assert call_count == 2  # repo + gem
@@ -161,14 +161,14 @@ class TestRefreshSync:
     def test_cycle_detection(self, tmp_path):
         store = _make_store(tmp_path)
 
-        def mock_fetch(url, **kw):
+        def mock_fetch(client, url, **kw):
             return {
                 "repo": {"name": "org.test.repo.cycle"},
                 "$schemaVersion": "2.0.0",
                 "repos": ["https://example.com/repo.json"],  # cycle back
             }
 
-        with patch.object(store, "fetch_json_sync", side_effect=mock_fetch):
+        with patch.object(store, "_fetch_json_with_client", side_effect=mock_fetch):
             count = store.refresh_sync(["https://example.com/repo.json"])
         # Should not infinite loop
         assert count >= 0
@@ -176,10 +176,10 @@ class TestRefreshSync:
     def test_fetch_error_skips(self, tmp_path):
         store = _make_store(tmp_path)
 
-        def mock_fetch(url, **kw):
+        def mock_fetch(client, url, **kw):
             raise FetchError("down")
 
-        with patch.object(store, "fetch_json_sync", side_effect=mock_fetch):
+        with patch.object(store, "_fetch_json_with_client", side_effect=mock_fetch):
             count = store.refresh_sync(["https://example.com/repo.json"])
         assert count == 0
 
@@ -187,10 +187,10 @@ class TestRefreshSync:
         store = _make_store(tmp_path)
         calls = []
 
-        def mock_fetch(url, **kw):
+        def mock_fetch(client, url, **kw):
             return {"gem": {"name": "org.test.gem.x", "version": "1.0.0"}, "$schemaVersion": "2.0.0"}
 
-        with patch.object(store, "fetch_json_sync", side_effect=mock_fetch):
+        with patch.object(store, "_fetch_json_with_client", side_effect=mock_fetch):
             store.refresh_sync(
                 ["https://example.com/gem.json"],
                 progress_callback=lambda msg, cur, tot: calls.append((msg, cur, tot)),

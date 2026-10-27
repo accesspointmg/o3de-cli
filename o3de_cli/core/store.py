@@ -425,36 +425,42 @@ class Store:
         force_refresh: bool = False,
     ) -> dict:
         """Synchronous version of fetch_json."""
-        # Check cache first
-        if use_cache and not force_refresh:
-            cached = self.cache.get(url)
-            if cached and not self.cache.is_stale(url):
-                logger.debug(f"Using cached: {url}")
-                return cached
+        with httpx.Client(timeout=self.timeout) as client:
+            return self._fetch_json_with_client(
+                client, url, use_cache=use_cache, force_refresh=force_refresh
+            )
 
-        # Fetch from remote
+    def _fetch_json_with_client(
+        self,
+        client: httpx.Client,
+        url: str,
+        use_cache: bool = True,
+        force_refresh: bool = False,
+    ) -> dict:
+        """Fetch one JSON document through *client*, with caching.
+
+        A fresh cache entry is returned without a request. On a failed
+        request a stale cache entry is returned if there is one; otherwise
+        FetchError is raised. Shared by ``fetch_json_sync`` and the parallel
+        ``refresh_sync``, which reuses one client across many fetches.
+        """
+        cached = self.cache.get(url) if use_cache else None
+        if cached and not force_refresh and not self.cache.is_stale(url):
+            logger.debug(f"Using cached: {url}")
+            return cached
+
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url)
-                response.raise_for_status()
+            response = client.get(url)
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            if cached:
+                logger.warning(f"Fetch failed, using stale cache: {url}")
+                return cached
+            raise FetchError(f"Failed to fetch {url}: {e}") from e
 
-                data = response.json()
-                etag = response.headers.get("etag")
-
-                # Cache the result
-                self.cache.put(url, data, etag)
-
-                return data
-
-        except httpx.HTTPError as e:
-            # Try to use stale cache
-            if use_cache:
-                cached = self.cache.get(url)
-                if cached:
-                    logger.warning(f"Fetch failed, using stale cache: {url}")
-                    return cached
-
-            raise FetchError(f"Failed to fetch {url}: {e}")
+        self.cache.put(url, data, response.headers.get("etag"))
+        return data
 
     async def refresh(
         self,
@@ -556,22 +562,9 @@ class Store:
 
             def _fetch_one(url: str) -> tuple[str, dict | None]:
                 """Fetch a single URL, returning (url, data_or_None)."""
-                # Check cache first
-                cached = self.cache.get(url)
-                if cached and not self.cache.is_stale(url):
-                    return (url, cached)
                 try:
-                    response = client.get(url)
-                    response.raise_for_status()
-                    data = response.json()
-                    etag = response.headers.get("etag")
-                    self.cache.put(url, data, etag)
-                    return (url, data)
-                except (httpx.HTTPError, json.JSONDecodeError) as e:
-                    # Try stale cache
-                    if cached:
-                        logger.warning(f"Fetch failed, using stale cache: {url}")
-                        return (url, cached)
+                    return (url, self._fetch_json_with_client(client, url))
+                except FetchError as e:
                     logger.warning(f"Skipping {url}: {e}")
                     return (url, None)
 

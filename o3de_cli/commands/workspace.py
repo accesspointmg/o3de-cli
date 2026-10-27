@@ -44,7 +44,7 @@ from o3de_cli.core.solver import (
     SolveResult,
     solve_for_workspace,
 )
-from o3de_cli.core.workspace import Workspace, create_workspace, detect_root_type
+from o3de_cli.core.workspace import Workspace, WorkspaceError, create_workspace, detect_root_type
 
 console = Console()
 
@@ -1806,11 +1806,16 @@ def update_command(
     new_overlays = [Path(o).resolve() for o in overlay]
     all_overlays = existing_overlays + new_overlays
 
-    # Determine root object path and type
-    root_source = sources[0] if sources else workspace_path
+    # Root object: the one recorded at creation. Guessing from the sources
+    # would pick the engine (engines are listed first) and silently turn a
+    # project- or gem-rooted workspace into an engine-rooted one.
+    if meta.root_object:
+        root_source = Path(meta.root_object)
+    else:
+        root_source = sources[0] if sources else workspace_path
     try:
-        root_type = detect_root_type(root_source)
-    except Exception:
+        root_type = ObjectType(meta.root_type) if meta.root_type else detect_root_type(root_source)
+    except (ValueError, WorkspaceError):
         root_type = ObjectType.ENGINE  # fallback
 
     with Progress(
