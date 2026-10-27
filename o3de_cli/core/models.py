@@ -547,7 +547,7 @@ class WorkspaceMeta(BaseO3DEObject):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_legacy_format(cls, data: dict) -> dict:  # type: ignore[override]
+    def _migrate_legacy_format(cls, data: dict) -> dict:
         """Convert legacy workspace.json (sources as list) to new format."""
         if not isinstance(data, dict):
             return data
@@ -769,24 +769,23 @@ def get_object_name(obj: O3DEObject | dict) -> str:
 
         return ""
 
-    # Pydantic model
-    obj_type = get_object_type(obj)
-    if obj_type == ObjectType.ENGINE:
+    # Pydantic model (same dispatch as get_object_type)
+    if isinstance(obj, Engine):
         return obj.engine.name
-    elif obj_type == ObjectType.PROJECT:
+    elif isinstance(obj, Project):
         return obj.project.name
-    elif obj_type == ObjectType.GEM:
+    elif isinstance(obj, Gem):
         return obj.gem.name
-    elif obj_type == ObjectType.TEMPLATE:
+    elif isinstance(obj, Template):
         return obj.template.name
-    elif obj_type == ObjectType.REPO:
+    elif isinstance(obj, Repo):
         return obj.repo.name
-    elif obj_type == ObjectType.OVERLAY:
+    elif isinstance(obj, Overlay):
         return obj.overlay.name
-    elif obj_type == ObjectType.MANIFEST:
+    elif isinstance(obj, Manifest):
         return obj.o3de_manifest.name
 
-    return ""
+    raise ValueError(f"Unknown object type: {type(obj)}")
 
 
 def get_object_version(obj: O3DEObject | dict) -> str:
@@ -811,19 +810,20 @@ def get_object_version(obj: O3DEObject | dict) -> str:
 
         return "0.0.0"
 
-    # Pydantic model
-    obj_type = get_object_type(obj)
-    if obj_type == ObjectType.ENGINE:
+    # Pydantic model (same dispatch as get_object_type)
+    if isinstance(obj, Engine):
         return obj.engine.version
-    elif obj_type == ObjectType.PROJECT:
+    elif isinstance(obj, Project):
         return obj.project.version
-    elif obj_type == ObjectType.GEM:
+    elif isinstance(obj, Gem):
         return obj.gem.version
-    elif obj_type == ObjectType.TEMPLATE:
+    elif isinstance(obj, Template):
         return obj.template.version
-    elif obj_type == ObjectType.REPO:
+    elif isinstance(obj, Repo):
         return obj.repo.version
-    elif obj_type == ObjectType.OVERLAY:
+    elif isinstance(obj, Overlay):
         return obj.overlay.version
+    elif isinstance(obj, Manifest):
+        return "0.0.0"
 
-    return "0.0.0"
+    raise ValueError(f"Unknown object type: {type(obj)}")

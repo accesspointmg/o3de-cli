@@ -287,6 +287,22 @@ class TestManifestUpgrade:
         result = runner.invoke(manifest, ["upgrade", str(tmp_path), "--dry-run"])
         assert result.exit_code == 0
 
+    def test_upgrade_file_without_upgrade_path(self, tmp_path):
+        """Restricted objects have no 2.0.0 form: report a skip, don't crash.
+
+        Regression: upgrade_file returns None here and the command indexed
+        it, raising TypeError.
+        """
+        from o3de_cli.commands.manifest import manifest
+        rf = tmp_path / "restricted.json"
+        _write_json(rf, {"restricted_name": "acme"})
+        runner = CliRunner()
+        result = runner.invoke(manifest, ["upgrade", str(rf)])
+        assert result.exit_code == 0, result.output
+        assert result.exception is None
+        assert "Skipped" in result.output
+        assert not (tmp_path / "restricted.2-0-0.json").exists()
+
 
 # ═══════════════════════════════════════════════════════════════
 # manifest add/remove/set/get --json

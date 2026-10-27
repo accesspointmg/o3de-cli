@@ -74,6 +74,26 @@ class TestAuth:
             # Same origin, different path should match
             assert get_token("https://r.example.com/other/path") == "tok"
 
+    def test_credentials_path_is_under_dot_o3de(self, tmp_path):
+        """Regression: get_credentials_path imported a function that does
+        not exist (get_o3de_home), so every unpatched call -- `o3de registry
+        login/logout/whoami` -- raised ImportError."""
+        from o3de_cli.core.auth import get_credentials_path
+        with patch("o3de_cli.core.paths.get_dot_o3de_path", return_value=tmp_path):
+            assert get_credentials_path() == tmp_path / "credentials.json"
+
+    def test_login_whoami_unpatched(self, tmp_path):
+        """End to end through the CLI, with no auth helpers mocked."""
+        from o3de_cli.commands.registry import registry
+        runner = CliRunner()
+        with patch("o3de_cli.core.paths.get_dot_o3de_path", return_value=tmp_path):
+            r = runner.invoke(registry, ["login", "https://r.example.com", "-t", "tok-12345678"])
+            assert r.exit_code == 0, r.output
+            r = runner.invoke(registry, ["whoami", "https://r.example.com"])
+            assert r.exit_code == 0, r.output
+            assert "Authenticated" in r.output
+        assert (tmp_path / "credentials.json").exists()
+
 
 # ── Lockfile Tests ──────────────────────────────────────────────────
 

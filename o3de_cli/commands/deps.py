@@ -4,6 +4,7 @@
 """Dependency tree visualization and management commands."""
 
 import json
+from typing import Any
 
 import click
 from rich.console import Console
@@ -194,7 +195,7 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
                     "status": "resolved" if candidate else "missing",
                 }
             )
-        data = {"object": name, "dependencies": deps_data}
+        data: dict[str, Any] = {"object": name, "dependencies": deps_data}
         if transitive:
             data["transitive"] = resolver.locked_dependencies.get(name, {})
         emit_response(data=data)

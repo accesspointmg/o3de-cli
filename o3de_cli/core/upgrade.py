@@ -379,7 +379,7 @@ SCHEMA_HOSTS = {
 }
 
 
-def upgrade_1_to_2(data: dict, object_type: str, *, file_path: Path | None = None) -> dict:
+def upgrade_1_to_2(data: dict, object_type: str, *, file_path: Path | None = None) -> dict | None:
     """
     Upgrade from version 1.0.0 to version 2.0.0.
 
@@ -570,7 +570,7 @@ def _add_icon_and_docs(output: dict, data: dict) -> dict:
 
 def _add_children_and_remote(output: dict, data: dict) -> dict:
     """Split collections into children (local) and remote (URLs)."""
-    children = {
+    children: dict[str, list] = {
         "engines": [],
         "projects": [],
         "gems": [],
@@ -578,7 +578,7 @@ def _add_children_and_remote(output: dict, data: dict) -> dict:
         "repos": [],
         "overlays": [],
     }
-    remote = {
+    remote: dict[str, list] = {
         "engines": [],
         "projects": [],
         "gems": [],
@@ -955,7 +955,7 @@ def _upgrade_manifest_1_to_2(data: dict, output: dict, reversed_domain: str) -> 
 
 def _add_local_and_remote(output: dict, data: dict) -> dict:
     """Split collections into local (disk paths) and remote (URLs) for manifest."""
-    local = {
+    local: dict[str, list] = {
         "engines": [],
         "projects": [],
         "gems": [],
@@ -963,7 +963,7 @@ def _add_local_and_remote(output: dict, data: dict) -> dict:
         "repos": [],
         "overlays": [],
     }
-    remote = {
+    remote: dict[str, list] = {
         "engines": [],
         "projects": [],
         "gems": [],
@@ -1393,9 +1393,10 @@ def upgrade_to_latest(
 
     # Upgrade 1.0.0 → 2.0.0
     if current_version in ("1.0", "1.0.0"):
-        upgraded = upgrade_1_to_2(upgraded, current_type, file_path=file_path)
-        if upgraded is None:
+        upgraded_v2 = upgrade_1_to_2(upgraded, current_type, file_path=file_path)
+        if upgraded_v2 is None:
             return None
+        upgraded = upgraded_v2
         current_version = "2.0.0"
 
     return upgraded
@@ -1490,7 +1491,7 @@ def upgrade_directory(
         "overlay.json",
     ]
 
-    paths = []
+    paths: list[Path] = []
     if recursive:
         for pattern in json_files:
             paths.extend(root.rglob(pattern))

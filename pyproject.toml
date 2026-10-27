@@ -52,6 +52,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.0",
     "types-PyYAML",
+    "types-jsonschema",
 ]
 all = ["o3de-cli[dev]"]
 
@@ -98,10 +99,20 @@ ignore = [
 ]
 
 [tool.mypy]
+# Checked in CI (the `typecheck` job). Annotations are not required
+# (no disallow_untyped_defs / warn_return_any), but the bodies of
+# unannotated functions are still checked, which is where the useful
+# None-handling errors turn up.
 python_version = "3.10"
-warn_return_any = true
+check_untyped_defs = true
 warn_unused_ignores = true
-disallow_untyped_defs = true
+
+# Third-party modules with no type information: o3de_pilot_gui is an
+# optional package that is not installed in CI, and git_filter_repo
+# ships no stubs or py.typed marker.
+[[tool.mypy.overrides]]
+module = ["o3de_pilot_gui.*", "git_filter_repo"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

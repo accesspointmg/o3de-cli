@@ -431,7 +431,7 @@ _SERVER_INFO = {
     "version": __version__,
 }
 
-_CAPABILITIES = {
+_CAPABILITIES: dict[str, dict[str, Any]] = {
     "tools": {},
 }
 

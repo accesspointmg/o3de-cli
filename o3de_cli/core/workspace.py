@@ -674,7 +674,7 @@ def create_workspace(
             if len(entry) == 3:
                 overlay_path, precedence, extends = entry
             else:
-                overlay_path, precedence = entry  # type: ignore[misc]
+                overlay_path, precedence = entry
                 extends = None
             if extends is None:
                 extends = _overlay_extends_name(Path(overlay_path))

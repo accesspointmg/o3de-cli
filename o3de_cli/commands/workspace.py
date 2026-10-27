@@ -18,6 +18,7 @@ import sys
 from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
+from typing import Any, NoReturn
 
 import click
 from rich.console import Console
@@ -42,6 +43,7 @@ from o3de_cli.core.models import (
 from o3de_cli.core.paths import rmtree_force
 from o3de_cli.core.solver import (
     CandidateStatus,
+    OverlayEntry,
     SolveResult,
     solve_for_workspace,
 )
@@ -241,7 +243,7 @@ def _select_overlays_for_platforms(
     has_criteria = selected is not None or tags is not None
 
     # Index all entries by name and find dependency targets
-    all_entries: dict[str, object] = {}
+    all_entries: dict[str, OverlayEntry] = {}
     dep_targets: set[str] = set()
     for entries in overlay_groups.values():
         for ov in entries:
@@ -444,6 +446,8 @@ def create_command(
         root_path = Path(project_path).resolve()
         root_type = detect_root_type(root_path)
     else:
+        # One of --root/--engine/--project is required (checked above)
+        assert engine_path is not None
         root_path = Path(engine_path).resolve()
         root_type = detect_root_type(root_path)
 
@@ -481,7 +485,7 @@ def create_command(
         resolved_objects[eng_name] = (eng_path, ObjectType.ENGINE)
 
     # Collect overlays with precedence
-    overlay_tuples = (
+    overlay_tuples: list[tuple[Path, int, str | None]] = (
         [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)] if not no_overlays else []
     )
 
@@ -886,14 +890,6 @@ def create_command(
             console.print(f"  Platforms: {', '.join(selected_platforms)}")
 
 
-def _resolve_workspace_path(name_or_path: str) -> Path | None:
-    """Locate a workspace directory by path or registered name."""
-    ws_path = Path(name_or_path)
-    if not ws_path.exists():
-        ws_path = get_default_workspaces_path() / name_or_path
-    return ws_path if ws_path.exists() else None
-
-
 def _workspace_root_name(meta: WorkspaceMeta, resolver: Resolver) -> str | None:
     """Map the workspace's root_object path back to a manifest object name."""
     if not meta.root_object:
@@ -1065,7 +1061,7 @@ def candidates_command(
                 chosen[cname] = ("", type_name, cpath)
 
     names = [object_name] if object_name else sorted(chosen)
-    objects_out = []
+    objects_out: list[dict[str, Any]] = []
     for cname in names:
         version, type_name, path = chosen.get(cname, ("", "", ""))
         cands = list_candidates(cname, resolver, store)
@@ -1161,7 +1157,7 @@ def override_command(
     from o3de_cli.core.models import ObjectOverride
     from o3de_cli.core.solver import find_local_binary_install
 
-    def _fail(msg: str, code: str) -> None:
+    def _fail(msg: str, code: str) -> NoReturn:
         if as_json:
             emit_error(msg, code=code)
         else:
@@ -1190,6 +1186,8 @@ def override_command(
             _fail(f"No override present for {object_name}", "E_NO_OVERRIDE")
         del new_overrides[object_name]
     else:
+        # --version is required unless --clear (checked above)
+        assert pin_version is not None
         override = ObjectOverride(version=pin_version, artifact=artifact)
         if artifact == "local-binary":
             binary = find_local_binary_install(object_name, pin_version)
@@ -1221,7 +1219,6 @@ def override_command(
                 )
             except Exception as e:
                 _fail(f"Remote binary unavailable: {e}", "E_NO_REMOTE_BINARY")
-                return
             override.path = str(pkg)
         elif artifact == "remote-source":
             from o3de_cli.core.gem_package import download_remote_source
@@ -1244,7 +1241,6 @@ def override_command(
                 )
             except Exception as e:
                 _fail(f"Remote source unavailable: {e}", "E_NO_REMOTE_SOURCE")
-                return
             # Register the extracted source and re-resolve so the pinned
             # version becomes a LOCAL source candidate; once materialized
             # it is a plain source override.
@@ -1401,7 +1397,7 @@ def _read_overlay_info(path: Path) -> dict:
 
     from o3de_cli.core.resolver import ObjectNameVersion
 
-    info = {"name": path.name, "extends": None, "precedence": 0, "deps": []}
+    info: dict[str, Any] = {"name": path.name, "extends": None, "precedence": 0, "deps": []}
     for fname in ("overlay.2-0-0.json", "overlay.json"):
         candidate = path / fname
         if not candidate.exists():
@@ -1530,7 +1526,7 @@ def update_command(
     attr_change = attributions is not None and attributions != (meta.attributions or "workspace")
     if add_overlay or remove_overlay or overlay_order or attr_change:
 
-        def _fail(msg: str, code: str) -> None:
+        def _fail(msg: str, code: str) -> NoReturn:
             if as_json:
                 emit_error(msg, code=code)
             else:
@@ -1864,7 +1860,7 @@ def list_command(as_json: bool) -> None:
                 seen.add(resolved)
                 ws_dirs.append(rp)
 
-    workspaces = []
+    workspaces: list[dict[str, Any]] = []
     for ws_dir in ws_dirs:
         meta = _read_workspace_meta(ws_dir)
         if meta is not None:
@@ -2977,6 +2973,7 @@ def lock_command(name_or_path: str, as_json: bool) -> None:
 
     if as_json:
         lockdata = read_lockfile(ws_path)
+        assert lockdata is not None  # generate_lockfile just wrote it
         emit_response(
             data={
                 "lockfile": str(lockfile_path),

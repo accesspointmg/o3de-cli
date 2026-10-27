@@ -344,3 +344,32 @@ class TestUpgradeFlow:
         
         result = upgrade_to_latest(data, "gem")
         assert result.get("$schemaVersion") == "2.0.0"
+
+
+class TestEnsureManifest2:
+    def test_upgrades_legacy_manifest(self, tmp_path):
+        """A pre-2.0 ~/.o3de/o3de_manifest.json is upgraded to a sidecar.
+
+        Regression: ensure_manifest_2 passed target_version= to upgrade_file,
+        which does not take it, so `o3de register` raised TypeError on any
+        machine with only a legacy manifest.
+        """
+        from unittest.mock import patch
+        from o3de_cli.commands.register import ensure_manifest_2
+
+        legacy = tmp_path / "o3de_manifest.json"
+        legacy.write_text(json.dumps({
+            "o3de_manifest_name": "legacy",
+            "engines": [],
+            "projects": [],
+            "external_subdirectories": [],
+            "templates": [],
+            "repos": [],
+        }))
+
+        with patch("o3de_cli.core.paths.get_dot_o3de_path", return_value=tmp_path):
+            result = ensure_manifest_2()
+
+        assert result == tmp_path / "o3de_manifest.2-0-0.json"
+        assert result.exists()
+        assert legacy.exists()  # the original is never modified

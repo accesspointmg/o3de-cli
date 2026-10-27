@@ -803,7 +803,7 @@ class Store:
                 Schema 2.0.0 ``children`` relative paths against the
                 repo's own location.
         """
-        urls = []
+        urls: list[str] = []
 
         # Check for nested remote structure (manifest / repo 2.0.0 style)
         # remote.* entries are absolute URLs to OTHER objects (federation)
