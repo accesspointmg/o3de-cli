@@ -364,7 +364,7 @@ def unregister_gem(name: str, remote: bool, as_json: bool) -> None:
             emit_error(f"Gem '{name}' not found in {section_key} manifest", code="E_NOT_FOUND")
             raise SystemExit(1)
         console.print(f"[yellow]Gem '{name}' not found in {section_key} manifest.[/yellow]")
-        return
+        raise SystemExit(1)
 
     section["gems"] = gems_list
     manifest[section_key] = section

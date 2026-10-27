@@ -254,7 +254,7 @@ def unregister_project(name: str, remote: bool) -> None:
 
     if len(projects_list) == original_len:
         console.print(f"[yellow]Project '{name}' not found in {section_key} manifest.[/yellow]")
-        return
+        raise SystemExit(1)
 
     section["projects"] = projects_list
     manifest[section_key] = section

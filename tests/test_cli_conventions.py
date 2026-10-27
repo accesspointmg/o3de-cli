@@ -424,3 +424,30 @@ def test_click_usage_error_under_json_stays_with_click(capsys):
     assert exc.value.code == 2
     assert out.out == ""
     assert "No such option" in out.err
+
+
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("group", ["engine", "gem", "template", "project", "repo", "overlay"])
+def test_unregister_missing_exits_1_in_text_mode(group, tmp_path):
+    """Text mode agrees with --json: "not found" is a failure."""
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    from o3de_cli.__main__ import cli
+
+    manifest = tmp_path / "o3de_manifest.json"
+    manifest.write_text(_json.dumps({"local": {}, "remote": {}}))
+    with _patch("o3de_cli.core.paths.get_manifest_path", return_value=manifest):
+        result = CliRunner().invoke(cli, [group, "unregister", "org.nobody.missing"])
+    assert result.exit_code == 1, result.output
+    assert "not found" in result.output.lower()
+
+
+def test_audit_has_no_fix_flag():
+    """--fix was accepted and silently did nothing."""
+    from o3de_cli.__main__ import cli
+
+    result = CliRunner().invoke(cli, ["audit", "--fix"])
+    assert result.exit_code == 2

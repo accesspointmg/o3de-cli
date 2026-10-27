@@ -225,7 +225,7 @@ def unregister_repo(name: str, remote: bool) -> None:
 
     if len(repos_list) == original_len:
         console.print(f"[yellow]Repo '{name}' not found in {section_key} manifest.[/yellow]")
-        return
+        raise SystemExit(1)
 
     section["repos"] = repos_list
     manifest[section_key] = section

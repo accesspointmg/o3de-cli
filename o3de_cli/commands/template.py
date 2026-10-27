@@ -540,7 +540,7 @@ def unregister_template(name: str, remote: bool) -> None:
 
     if len(templates_list) == original_len:
         console.print(f"[yellow]Template '{name}' not found in {section_key} manifest.[/yellow]")
-        return
+        raise SystemExit(1)
 
     section["templates"] = templates_list
     manifest[section_key] = section

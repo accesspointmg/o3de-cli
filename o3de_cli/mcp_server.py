@@ -165,14 +165,11 @@ _TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "audit",
-        "description": "Audit schema compliance for o3de objects.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path to audit."},
-            },
-            "required": ["path"],
-        },
+        "description": (
+            "Audit the dependency tree of every registered object for license, "
+            "deprecation, security and integrity issues."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "config_get",
@@ -320,7 +317,7 @@ def _tool_to_cli_args(name: str, arguments: dict[str, Any]) -> list[str]:
         return base + ["project", "list", "--json"]
 
     if name == "audit":
-        return base + ["audit", arguments["path"], "--json"]
+        return base + ["audit", "--json"]
 
     if name == "config_get":
         cmd = base + ["config", "get", "--json"]

@@ -419,7 +419,8 @@ class TestManifestAddRemoveRoundTrip:
         from unittest.mock import patch
         with patch("o3de_cli.commands.manifest.get_manifest_path", return_value=manifest):
             result = runner.invoke(cli, ["manifest", "remove", str(tmp_path / "no_such_gem")])
-            assert result.exit_code == 0
+            # "not found" is a failure, in text mode as in --json
+            assert result.exit_code == 1
             assert "Not found" in result.output
 
 

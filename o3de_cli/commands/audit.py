@@ -22,9 +22,8 @@ console = Console()
 
 
 @click.command("audit")
-@click.option("--fix", is_flag=True, help="Attempt to auto-fix issues")
 @click.option("--json", "as_json", is_flag=True, help="Output results as JSON")
-def audit(fix: bool, as_json: bool) -> None:
+def audit(as_json: bool) -> None:
     """Audit the dependency tree for issues.
 
     Scans for:
