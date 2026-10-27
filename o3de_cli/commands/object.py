@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NoReturn
 
@@ -31,6 +33,27 @@ from o3de_cli.core.gem_package import (
     filter_gem_targets,
     install_gem_package,
     load_codemodel_targets,
+)
+from o3de_cli.core.hoist import (
+    HoistPlan,
+    HoistResult,
+    execute_hoist,
+    locate_source,
+    plan_hoist,
+    register_family_repo,
+    require_filter_repo,
+    run_git,
+)
+from o3de_cli.core.split_platforms import (
+    ObjectOpError,
+    SplitPlan,
+    create_overlays,
+    find_platform_dirs,
+    load_object_json,
+    plan_split,
+    register_overlays,
+    remove_split_dirs,
+    split_overlay_name,
 )
 
 console = Console()
@@ -595,139 +618,25 @@ def package_command(
 
 # ── split-platforms ─────────────────────────────────────────────────
 
-_SPLIT_SKIP_DIRS = {
-    ".git",
-    ".svn",
-    ".vs",
-    "__pycache__",
-    "build",
-    "Cache",
-    "External",
-    "node_modules",
-    "user",
-}
-
-#: Directory name that marks a common (platform-agnostic fallback) payload.
-_COMMON_PLATFORM = "Common"
+# Historical private names, kept importable from this module.
+_find_platform_dirs = find_platform_dirs
+_split_overlay_name = split_overlay_name
 
 
-def _load_object_json(object_path: Path) -> tuple[dict, str]:
-    """Load the object JSON at *object_path*.
-
-    Returns (data, type_token).  Prefers 2.0.0 sidecars.  Raises
-    ``FileNotFoundError`` when no object JSON exists.
-    """
-    for suffix in ("2-0-0.json", "json"):
-        for type_token in ("engine", "project", "gem", "template"):
-            candidate = object_path / f"{type_token}.{suffix}"
-            if candidate.exists():
-                with open(candidate, encoding="utf-8-sig") as f:
-                    return json.load(f), type_token
-    raise FileNotFoundError(f"No engine/project/gem/template JSON at: {object_path}")
+@contextmanager
+def _op_errors(as_json: bool) -> Iterator[None]:
+    """Report an :class:`ObjectOpError` raised in the block as a CLI failure."""
+    try:
+        yield
+    except ObjectOpError as e:
+        _fail(str(e), e.code, as_json)
 
 
-def _find_platform_dirs(object_root: Path) -> dict[str, list[Path]]:
-    """Find PAL ``Platform/<Name>`` directories under *object_root*.
-
-    Returns platform name → list of absolute platform directories.
-    Walks the tree skipping VCS/build folders; every child directory of
-    a directory literally named ``Platform`` is a platform payload.
-    """
-    found: dict[str, list[Path]] = {}
-
-    def walk(directory: Path) -> None:
-        for child in sorted(directory.iterdir()):
-            if not child.is_dir() or child.name in _SPLIT_SKIP_DIRS:
-                continue
-            if child.name == "Platform":
-                for plat_dir in sorted(child.iterdir()):
-                    if plat_dir.is_dir():
-                        found.setdefault(plat_dir.name, []).append(plat_dir)
-            else:
-                walk(child)
-
-    walk(object_root)
-    return found
-
-
-def _split_overlay_name(base_name: str, suffix: str) -> str:
-    """Derive an overlay name from *base_name* and a platform *suffix*.
-
-    ``org.o3de.gem.achievementstest`` + ``windows`` →
-    ``org.o3de.overlay.achievementstest.windows``.  Falls back to
-    appending ``.overlay`` when no type token is present.
-    """
-    parts = base_name.split(".")
-    for i, part in enumerate(parts):
-        if part in ("gem", "project", "engine", "template"):
-            parts[i] = "overlay"
-            return ".".join(parts) + f".{suffix.lower()}"
-    return base_name + f".overlay.{suffix.lower()}"
-
-
-def _family_repo_name(base_name: str) -> str:
-    """Derive a family repo object name from an object name.
-
-    ``org.o3de.gem.achievements`` → ``org.o3de.repo.achievements``.
-    """
-    parts = base_name.split(".")
-    for i, part in enumerate(parts):
-        if part in ("gem", "project", "engine", "template"):
-            parts[i] = "repo"
-            return ".".join(parts)
-    return base_name + ".repo"
-
-
-def _build_overlay_meta(
-    ov_name: str,
-    plat: str,
-    is_common: bool,
-    base_name: str,
-    base_version: str,
-    ov_version: str,
-    type_token: str,
-    precedence: int,
-    origin: dict | None,
-    licenses: list[dict],
-    user_tags: list[str],
-    common_name: str | None,
-) -> dict:
-    """Build the overlay.json document for a split-out platform payload."""
-    display_base = base_name.split(".")[-1]
-    meta: dict = {
-        "$schemaVersion": "2.0.0",
-        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-overlay-2.0.0.json",
-        "overlay": {
-            "name": ov_name,
-            "version": ov_version,
-            "display_name": f"{display_base} {plat}",
-            "description": (
-                f"Shared platform-common payload for the {display_base} "
-                f"{type_token}. Platform overlays depend on this overlay."
-                if is_common
-                else f"{plat} platform delivery for the {display_base} "
-                f"{type_token}, composed into the {type_token} tree at "
-                f"workspace compose time."
-            ),
-            "type": "code",
-        },
-        "extends": f"{base_name}>={base_version}",
-        "precedence": 0 if is_common else precedence,
-    }
-    if origin:
-        meta["origin"] = origin
-    if licenses:
-        meta["licenses"] = licenses
-    meta["canonical_tags"] = ["Overlay"]
-    if user_tags:
-        meta["user_tags"] = user_tags
-    if not is_common:
-        meta["platforms"] = [plat]
-        if common_name:
-            meta["dependent"] = {
-                "overlays": [f"{common_name}>={ov_version}"],
-            }
-    return meta
+def _load_object_or_fail(obj_root: Path, as_json: bool) -> tuple[dict, str]:
+    try:
+        return load_object_json(obj_root)
+    except FileNotFoundError as e:
+        _fail(str(e), "E_NOT_AN_OBJECT", as_json)
 
 
 @object_group.command("split-platforms")
@@ -796,217 +705,75 @@ def split_platforms_command(
     Example:
         o3de object split-platforms ./Gems/MyGem -o ./overlays --remove
     """
-    import shutil
-
-    from o3de_cli.core.json_output import emit_response
-    from o3de_cli.core.models import get_object_name, get_object_version
-
     obj_root = Path(object_path).resolve()
-    try:
-        obj_data, type_token = _load_object_json(obj_root)
-    except FileNotFoundError as e:
-        _fail(str(e), "E_NOT_AN_OBJECT", as_json)
+    obj_data, type_token = _load_object_or_fail(obj_root, as_json)
 
-    base_name = get_object_name(obj_data) or obj_root.name
-    base_version = get_object_version(obj_data)
-    ov_version = overlay_version or base_version or "1.0.0"
-
-    # Detect platform payloads
-    detected = _find_platform_dirs(obj_root)
-    if not detected:
-        _fail(
-            f"No Platform/<Name> directories found in {obj_root}",
-            "E_NO_PLATFORM_DIRS",
-            as_json,
+    with _op_errors(as_json):
+        plan = plan_split(
+            obj_root,
+            obj_data,
+            type_token,
+            platforms=platforms_opt,
+            output=output,
+            overlay_version=overlay_version,
+            tags=tags_opt,
+            precedence=precedence,
         )
-
-    # Filter selection
-    selected: list[str] | None = None
-    if platforms_opt:
-        selected = []
-        for value in platforms_opt:
-            for token in value.split(","):
-                token = token.strip()
-                if token:
-                    selected.append(token)
-        unknown = [p for p in selected if p.lower() not in {d.lower() for d in detected}]
-        if unknown:
-            _fail(
-                f"Platforms not present in the object: {', '.join(unknown)} "
-                f"(detected: {', '.join(sorted(detected))})",
-                "E_PLATFORM_NOT_FOUND",
-                as_json,
-            )
-        keep = {p.lower() for p in selected}
-        # Common is always split when any platform is (dependency target)
-        detected = {
-            name: dirs
-            for name, dirs in detected.items()
-            if name.lower() in keep or name == _COMMON_PLATFORM
-        }
-
-    out_dir = Path(output).resolve() if output else obj_root.parent
-
-    # Ordered so the common overlay is created first (dependency target)
-    plat_names = sorted(detected, key=lambda n: (n != _COMMON_PLATFORM, n))
-
-    user_tags: list[str] = []
-    for value in tags_opt:
-        for token in value.split(","):
-            token = token.strip()
-            if token and token not in user_tags:
-                user_tags.append(token)
-
-    common_name = _split_overlay_name(base_name, "common") if _COMMON_PLATFORM in detected else None
-
-    plan: list[dict] = []
-    for plat in plat_names:
-        is_common = plat == _COMMON_PLATFORM
-        ov_name = _split_overlay_name(base_name, plat)
-        files = [f for d in detected[plat] for f in sorted(d.rglob("*")) if f.is_file()]
-        plan.append(
-            {
-                "platform": plat,
-                "overlay": ov_name,
-                "path": str(out_dir / ov_name),
-                "files": len(files),
-                "common": is_common,
-            }
-        )
-
     if dry_run:
-        if as_json:
-            emit_response(data={"object": base_name, "overlays": plan})
-        else:
-            console.print(f"[bold]Would split {base_name}:[/bold]")
-            for entry in plan:
-                console.print(
-                    f"  {entry['platform']:<12} → {entry['overlay']} ({entry['files']} files)"
-                )
+        _render_split_plan(plan, as_json)
         return
 
-    # Licenses travelling to each overlay: entries whose file exists at
-    # the object root (relative_path licenses are object-root metadata)
-    licenses = []
-    for lic in obj_data.get("licenses", []):
-        rel = lic.get("relative_path")
-        if rel and (obj_root / rel).is_file():
-            licenses.append(lic)
+    with _op_errors(as_json):
+        created = create_overlays(plan)
+    removed = remove_split_dirs(plan) if do_remove else []
+    registered = register_overlays(created) if do_register else []
+    _render_split_result(plan, created, removed, registered, as_json)
 
-    origin = obj_data.get("origin")
 
-    created: list[dict] = []
-    for plat in plat_names:
-        is_common = plat == _COMMON_PLATFORM
-        ov_name = _split_overlay_name(base_name, plat)
-        ov_root = out_dir / ov_name
-        if ov_root.exists():
-            _fail(f"Overlay path already exists: {ov_root}", "E_OVERLAY_EXISTS", as_json)
-        payload_root = ov_root / "Overlay"
+def _render_split_plan(plan: SplitPlan, as_json: bool) -> None:
+    from o3de_cli.core.json_output import emit_response
 
-        # Copy platform payload preserving the object-relative layout
-        for plat_dir in detected[plat]:
-            rel = plat_dir.relative_to(obj_root)
-            shutil.copytree(plat_dir, payload_root / rel)
+    if as_json:
+        emit_response(data=plan.dry_run_payload())
+        return
+    console.print(f"[bold]Would split {plan.base_name}:[/bold]")
+    for ov in plan.overlays:
+        console.print(f"  {ov.platform:<12} → {ov.name} ({ov.files} files)")
 
-        # Copy license files
-        for lic in licenses:
-            shutil.copy2(obj_root / lic["relative_path"], ov_root / lic["relative_path"])
 
-        meta = _build_overlay_meta(
-            ov_name=ov_name,
-            plat=plat,
-            is_common=is_common,
-            base_name=base_name,
-            base_version=base_version,
-            ov_version=ov_version,
-            type_token=type_token,
-            precedence=precedence,
-            origin=origin,
-            licenses=licenses,
-            user_tags=user_tags,
-            common_name=common_name,
-        )
-        with open(ov_root / "overlay.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
-            f.write("\n")
-
-        created.append(
-            {
-                "platform": plat,
-                "overlay": ov_name,
-                "path": str(ov_root),
-            }
-        )
-
-    # Remove split payloads from the source object
-    removed: list[str] = []
-    if do_remove:
-        for plat in plat_names:
-            for plat_dir in detected[plat]:
-                shutil.rmtree(plat_dir)
-                removed.append(str(plat_dir.relative_to(obj_root)))
-                # Prune the parent Platform dir when empty
-                parent = plat_dir.parent
-                if parent.name == "Platform" and not any(parent.iterdir()):
-                    parent.rmdir()
-
-    # Register created overlays in the manifest
-    registered: list[str] = []
-    if do_register:
-        from o3de_cli.core.paths import get_manifest_path
-
-        manifest_path = get_manifest_path()
-        if manifest_path and manifest_path.exists():
-            with open(manifest_path, encoding="utf-8-sig") as f:
-                manifest = json.load(f)
-            section = manifest.setdefault("local", {})
-            overlays_list = section.setdefault("overlays", [])
-            for entry in created:
-                path_str = Path(entry["path"]).as_posix()
-                if path_str not in overlays_list:
-                    overlays_list.append(path_str)
-                    registered.append(entry["overlay"])
-            with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2)
+def _render_split_result(
+    plan: SplitPlan,
+    created: list[dict],
+    removed: list[str],
+    registered: list[str],
+    as_json: bool,
+) -> None:
+    from o3de_cli.core.json_output import emit_response
 
     if as_json:
         emit_response(
             data={
-                "object": base_name,
-                "version": base_version,
+                "object": plan.base_name,
+                "version": plan.base_version,
                 "overlays": created,
                 "removed": removed,
                 "registered": registered,
             }
         )
-    else:
-        console.print(f"[green]Split {base_name}:[/green]")
-        for entry in created:
-            console.print(f"  {entry['platform']:<12} → {entry['path']}")
-        if removed:
-            console.print(f"[yellow]Removed from source:[/yellow] {', '.join(removed)}")
-        if registered:
-            console.print(f"[dim]Registered: {', '.join(registered)}[/dim]")
+        return
+    console.print(f"[green]Split {plan.base_name}:[/green]")
+    for entry in created:
+        console.print(f"  {entry['platform']:<12} → {entry['path']}")
+    if removed:
+        console.print(f"[yellow]Removed from source:[/yellow] {', '.join(removed)}")
+    if registered:
+        console.print(f"[dim]Registered: {', '.join(registered)}[/dim]")
 
 
 # ── hoist ───────────────────────────────────────────────────────────
 
-
-def _run_git(args: list[str], cwd: Path | None = None, env: dict | None = None) -> tuple[int, str]:
-    """Run a git command, returning (returncode, combined output)."""
-    import os
-    import subprocess
-
-    full_env = {**os.environ, **(env or {})}
-    result = subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        env=full_env,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode, (result.stdout + result.stderr).strip()
+# Historical private name, kept importable from this module.
+_run_git = run_git
 
 
 @object_group.command("hoist")
@@ -1081,351 +848,74 @@ def hoist_command(
     Example:
         o3de object hoist ./o3de/Gems/Achievements --register
     """
-    import shutil
-    import subprocess
-
-    from o3de_cli.core.json_output import emit_response
-    from o3de_cli.core.models import get_object_name, get_object_version
-
     obj_root = Path(object_path).resolve()
-    try:
-        obj_data, type_token = _load_object_json(obj_root)
-    except FileNotFoundError as e:
-        _fail(str(e), "E_NOT_AN_OBJECT", as_json)
+    obj_data, type_token = _load_object_or_fail(obj_root, as_json)
 
-    base_name = get_object_name(obj_data) or obj_root.name
-    base_version = get_object_version(obj_data)
-    ov_version = overlay_version or base_version or "1.0.0"
-    family = base_name.split(".")[-1]
-    family_repo_name = repo_name or _family_repo_name(base_name)
-
-    # Locate the enclosing git repository
-    rc, git_root_str = _run_git(
-        ["rev-parse", "--show-toplevel"],
-        cwd=obj_root,
+    with _op_errors(as_json):
+        source = locate_source(obj_root, branch)
+        require_filter_repo()
+    plan = plan_hoist(
+        source,
+        obj_data,
+        type_token,
+        output=output,
+        repo_name=repo_name,
+        overlay_version=overlay_version,
+        tags=tags_opt,
+        precedence=precedence,
     )
-    if rc != 0:
-        _fail(f"Not inside a git repository: {obj_root}", "E_NOT_A_GIT_REPO", as_json)
-    git_root = Path(git_root_str)
-    try:
-        gem_rel = obj_root.relative_to(git_root).as_posix()
-    except ValueError:
-        _fail(f"{obj_root} is not under git root {git_root}", "E_NOT_IN_REPO", as_json)
-
-    if branch is None:
-        rc, branch = _run_git(
-            ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=git_root,
-        )
-        if rc != 0 or branch == "HEAD":
-            _fail(
-                "Cannot determine the source branch (detached HEAD?) — pass --branch",
-                "E_NO_BRANCH",
-                as_json,
-            )
-
-    # git filter-repo availability
-    try:
-        import git_filter_repo  # noqa: F401
-    except ImportError:
-        _fail(
-            "git-filter-repo is not installed. Install it with: pip install git-filter-repo",
-            "E_NO_FILTER_REPO",
-            as_json,
-        )
-
-    # Detect platform payloads in the working tree
-    detected = _find_platform_dirs(obj_root)
-
-    # Build the filter-repo argument list: keep the gem's history and
-    # rename each platform dir into its overlay's payload location.
-    # Platform renames must precede the (optional) gem-root rename so a
-    # renamed path no longer matches the gem prefix.
-    _type_subdirs = {"gem": "Gems", "template": "Templates", "project": "Projects"}
-    obj_subdir = _type_subdirs.get(type_token, "Gems")
-    gem_target = f"{obj_subdir}/{obj_root.name}"
-    filter_args = ["--path", f"{gem_rel}/"]
-    overlay_dirs: dict[str, str] = {}  # overlay dir name → platform
-    renames: list[tuple[str, str]] = []
-    common_name = _split_overlay_name(base_name, "common") if _COMMON_PLATFORM in detected else None
-    for plat, dirs in sorted(detected.items()):
-        ov_dir = f"{family}.{plat.lower()}"
-        overlay_dirs[ov_dir] = plat
-        for plat_dir in dirs:
-            src = plat_dir.relative_to(git_root).as_posix()
-            obj_rel = plat_dir.relative_to(obj_root).as_posix()
-            dst = f"Overlays/{ov_dir}/Overlay/{obj_rel}"
-            renames.append((src, dst))
-            filter_args += ["--path-rename", f"{src}/:{dst}/"]
-    if gem_rel != gem_target:
-        filter_args += ["--path-rename", f"{gem_rel}/:{gem_target}/"]
-
-    out_dir = Path(output).resolve() if output else git_root.parent / f"o3de-{family}"
-
     if dry_run:
-        plan = {
-            "object": base_name,
-            "repo": family_repo_name,
-            "path": str(out_dir),
-            "branch": branch,
-            "gem_dir": gem_target,
-            "overlays": [
-                {
-                    "dir": f"Overlays/{d}",
-                    "platform": p,
-                    "overlay": _split_overlay_name(base_name, p),
-                }
-                for d, p in sorted(overlay_dirs.items())
-            ],
-        }
-        if as_json:
-            emit_response(data=plan)
-        else:
-            console.print(f"[bold]Would hoist {base_name}:[/bold]")
-            console.print(f"  Family repo: {family_repo_name} → {out_dir}")
-            console.print(f"  Branch: {branch}")
-            console.print(f"  Gem: {gem_rel} → {gem_target}")
-            for src, dst in renames:
-                console.print(f"  {src} → {dst}")
+        _render_hoist_plan(plan, as_json)
         return
 
-    if out_dir.exists():
-        _fail(f"Output path already exists: {out_dir}", "E_OUTPUT_EXISTS", as_json)
+    def on_progress(msg: str) -> None:
+        console.print(f"[dim]{msg}[/dim]")
 
-    # Fresh clone (filter-repo requirement); skip LFS smudge — pointers
-    # filter fine and the gem may not have LFS content at all
-    if not as_json:
-        console.print(f"[dim]Cloning {git_root} (branch {branch})...[/dim]")
-    rc, out = _run_git(
-        [
-            "clone",
-            "--no-local",
-            "--single-branch",
-            "--branch",
-            branch,
-            f"file://{git_root.as_posix()}",
-            str(out_dir),
-        ],
-        env={"GIT_LFS_SKIP_SMUDGE": "1"},
-    )
-    if rc != 0:
-        _fail(f"Clone failed: {out}", "E_CLONE_FAILED", as_json)
+    with _op_errors(as_json):
+        result = execute_hoist(plan, on_progress=None if as_json else on_progress)
+    registered = register_family_repo(plan.out_dir) if do_register else False
+    _render_hoist_result(plan, result, registered, as_json)
 
-    if not as_json:
-        console.print("[dim]Filtering history (git filter-repo)...[/dim]")
-    result = subprocess.run(
-        [sys.executable, "-m", "git_filter_repo", *filter_args],
-        cwd=out_dir,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        shutil.rmtree(out_dir, ignore_errors=True)
-        _fail(f"filter-repo failed: {result.stdout}{result.stderr}", "E_FILTER_FAILED", as_json)
 
-    # ── LFS carry-over ────────────────────────────────────────────────
-    # The split repo inherits LFS *pointer* blobs but neither the root
-    # .gitattributes (it lived outside the gem's paths) nor the LFS
-    # objects themselves.  Carry the source repo's LFS patterns over,
-    # and copy the objects for the files at HEAD from the source repo's
-    # local LFS store so checkouts and pushes work.
-    src_attributes = git_root / ".gitattributes"
-    if src_attributes.is_file() and not (out_dir / ".gitattributes").exists():
-        shutil.copy2(src_attributes, out_dir / ".gitattributes")
-    rc, lfs_files = _run_git(
-        ["lfs", "ls-files", "--name-only"],
-        cwd=out_dir,
-    )
-    if rc == 0 and lfs_files.strip():
-        copied = 0
-        for rel in lfs_files.splitlines():
-            rel = rel.strip()
-            if not rel:
-                continue
-            # Read the pointer's oid from the working-tree pointer file
-            try:
-                ptr = (out_dir / rel).read_text(encoding="utf-8")
-                oid = next(
-                    line.split(":", 1)[1].strip()
-                    for line in ptr.splitlines()
-                    if line.startswith("oid sha256:")
-                )
-            except Exception:
-                continue
-            src_obj = git_root / ".git" / "lfs" / "objects" / oid[:2] / oid[2:4] / oid
-            dst_obj = out_dir / ".git" / "lfs" / "objects" / oid[:2] / oid[2:4] / oid
-            if src_obj.is_file() and not dst_obj.exists():
-                dst_obj.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_obj, dst_obj)
-                copied += 1
-        # Historical pointers may lack objects locally; allow pushes
-        _run_git(["config", "lfs.allowincompletepush", "true"], cwd=out_dir)
-        # Materialize the working tree now that objects are present
-        _run_git(["lfs", "checkout"], cwd=out_dir)
-        if not as_json and copied:
-            console.print(f"[dim]LFS: carried {copied} objects[/dim]")
+def _render_hoist_plan(plan: HoistPlan, as_json: bool) -> None:
+    from o3de_cli.core.json_output import emit_response
 
-    # ── Metadata commit on top of the split history ──────────────────
-    gem_dir = out_dir / gem_target
+    if as_json:
+        emit_response(data=plan.dry_run_payload())
+        return
+    console.print(f"[bold]Would hoist {plan.base_name}:[/bold]")
+    console.print(f"  Family repo: {plan.repo_name} → {plan.out_dir}")
+    console.print(f"  Branch: {plan.source.branch}")
+    console.print(f"  Gem: {plan.source.gem_rel} → {plan.gem_target}")
+    for src, dst in plan.renames:
+        console.print(f"  {src} → {dst}")
 
-    # Licenses travel from the gem to each overlay and to the repo root
-    licenses = []
-    for lic in obj_data.get("licenses", []):
-        rel = lic.get("relative_path")
-        if rel and (gem_dir / rel).is_file():
-            licenses.append(lic)
-    origin = obj_data.get("origin")
 
-    user_tags: list[str] = []
-    for value in tags_opt:
-        for token in value.split(","):
-            token = token.strip()
-            if token and token not in user_tags:
-                user_tags.append(token)
-
-    created_overlays: list[str] = []
-    for ov_dir, plat in sorted(overlay_dirs.items()):
-        ov_root = out_dir / "Overlays" / ov_dir
-        if not ov_root.is_dir():
-            continue  # platform had no history (nothing to overlay)
-        is_common = plat == _COMMON_PLATFORM
-        ov_name = _split_overlay_name(base_name, plat)
-        meta = _build_overlay_meta(
-            ov_name=ov_name,
-            plat=plat,
-            is_common=is_common,
-            base_name=base_name,
-            base_version=base_version,
-            ov_version=ov_version,
-            type_token=type_token,
-            precedence=precedence,
-            origin=origin,
-            licenses=licenses,
-            user_tags=user_tags,
-            common_name=common_name,
-        )
-        with open(ov_root / "overlay.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
-            f.write("\n")
-        for lic in licenses:
-            shutil.copy2(gem_dir / lic["relative_path"], ov_root / lic["relative_path"])
-        created_overlays.append(ov_name)
-
-    # Repo root licenses
-    for lic in licenses:
-        shutil.copy2(gem_dir / lic["relative_path"], out_dir / lic["relative_path"])
-
-    # repo.json — the family repo object
-    display_family = family.capitalize()
-    repo_meta: dict = {
-        "$schemaVersion": "2.0.0",
-        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-repo-2.0.0.json",
-        "repo": {
-            "name": family_repo_name,
-            "display_name": f"{display_family} Family Repo",
-            "description": (
-                f"Family repository for the {display_family} {type_token}: "
-                f"the {type_token} plus one overlay per platform, hoisted "
-                f"from the engine with full git history."
-            ),
-            "type": "repo",
-        },
-    }
-    if origin:
-        repo_meta["origin"] = origin
-    if licenses:
-        repo_meta["licenses"] = licenses
-    repo_meta["canonical_tags"] = ["Repo"]
-    # Point children at the 2.0.0 sidecar when the gem ships one — the
-    # remote crawler fetches the literal child path, and the legacy
-    # gem.json would resolve under its legacy short name
-    obj_json_name = (
-        f"{type_token}.2-0-0.json"
-        if (gem_dir / f"{type_token}.2-0-0.json").is_file()
-        else f"{type_token}.json"
-    )
-    children = {
-        "engines": [],
-        "projects": [],
-        "gems": [],
-        "templates": [],
-        "repos": [],
-        "overlays": [
-            f"Overlays/{d}/overlay.json"
-            for d in sorted(overlay_dirs)
-            if (out_dir / "Overlays" / d).is_dir()
-        ],
-    }
-    # Place the object reference under the correct child type
-    _child_key = {"gem": "gems", "template": "templates", "project": "projects"}
-    children[_child_key.get(type_token, "gems")].append(f"{gem_target}/{obj_json_name}")
-    repo_meta["children"] = children
-    repo_meta["remote"] = {
-        "engines": [],
-        "projects": [],
-        "gems": [],
-        "templates": [],
-        "repos": [],
-        "overlays": [],
-    }
-    with open(out_dir / "repo.json", "w", encoding="utf-8") as f:
-        json.dump(repo_meta, f, indent=2)
-        f.write("\n")
-
-    rc, out = _run_git(["add", "-A"], cwd=out_dir)
-    if rc == 0:
-        rc, out = _run_git(
-            [
-                "commit",
-                "-m",
-                f"Hoist {base_name} into family repo {family_repo_name}\n\n"
-                f"repo.json + per-platform overlay objects laid over the\n"
-                f"filter-repo split of the {type_token}'s git history.",
-            ],
-            cwd=out_dir,
-        )
-    if rc != 0:
-        _fail(f"Metadata commit failed: {out}", "E_COMMIT_FAILED", as_json)
-
-    # Register the family repo (repo-level registration only — the
-    # resolver exposes the gem and overlays through repo.json children)
-    registered = False
-    if do_register:
-        from o3de_cli.core.paths import get_manifest_path
-
-        manifest_path = get_manifest_path()
-        if manifest_path and manifest_path.exists():
-            with open(manifest_path, encoding="utf-8-sig") as f:
-                manifest = json.load(f)
-            section = manifest.setdefault("local", {})
-            repos_list = section.setdefault("repos", [])
-            path_str = out_dir.as_posix()
-            if path_str not in repos_list:
-                repos_list.append(path_str)
-                registered = True
-            with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2)
+def _render_hoist_result(
+    plan: HoistPlan, result: HoistResult, registered: bool, as_json: bool
+) -> None:
+    from o3de_cli.core.json_output import emit_response
 
     if as_json:
         emit_response(
             data={
-                "object": base_name,
-                "repo": family_repo_name,
-                "path": str(out_dir),
-                "branch": branch,
-                "overlays": created_overlays,
+                "object": plan.base_name,
+                "repo": plan.repo_name,
+                "path": str(plan.out_dir),
+                "branch": plan.source.branch,
+                "overlays": result.overlays,
                 "registered": registered,
             }
         )
-    else:
-        console.print(f"[green]Hoisted {base_name}:[/green] {out_dir}")
-        console.print(f"  Repo object: {family_repo_name}")
-        console.print(f"  Gem: {gem_target}")
-        for ov in created_overlays:
-            console.print(f"  Overlay: {ov}")
-        if registered:
-            console.print("[dim]Registered family repo in manifest[/dim]")
-        console.print(
-            "[dim]Upstream sync: re-run the same hoist to a scratch path "
-            "after upstream merges, then fetch+merge from it[/dim]"
-        )
+        return
+    console.print(f"[green]Hoisted {plan.base_name}:[/green] {plan.out_dir}")
+    console.print(f"  Repo object: {plan.repo_name}")
+    console.print(f"  Gem: {plan.gem_target}")
+    for ov in result.overlays:
+        console.print(f"  Overlay: {ov}")
+    if registered:
+        console.print("[dim]Registered family repo in manifest[/dim]")
+    console.print(
+        "[dim]Upstream sync: re-run the same hoist to a scratch path "
+        "after upstream merges, then fetch+merge from it[/dim]"
+    )
