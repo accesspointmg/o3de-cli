@@ -20,9 +20,9 @@ _CREDENTIALS_FILE = "credentials.json"
 
 def get_credentials_path() -> Path:
     """Return the path to the credentials file."""
-    from o3de_cli.core.paths import get_o3de_home
+    from o3de_cli.core.paths import get_dot_o3de_path
 
-    return get_o3de_home() / _CREDENTIALS_FILE
+    return get_dot_o3de_path() / _CREDENTIALS_FILE
 
 
 def get_token(registry_url: str) -> str | None:

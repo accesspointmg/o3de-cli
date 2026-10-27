@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 from rich.console import Console
@@ -43,7 +44,7 @@ def object_group() -> None:
     pass
 
 
-def _fail(msg: str, code: str, as_json: bool) -> None:
+def _fail(msg: str, code: str, as_json: bool) -> NoReturn:
     from o3de_cli.core.json_output import emit_error
 
     if as_json:
@@ -112,7 +113,6 @@ def _discover_targets(
         codemodel = ensure_codemodel(build_dir, on_progress, force=reconfigure)
     except RuntimeError as e:
         _fail(str(e), "E_CONFIGURE_FAILED", as_json)
-        raise
     if codemodel is None:
         _fail(
             "Could not obtain a CMake File API codemodel reply.",
@@ -201,7 +201,6 @@ def build_command(
     ws_path = _resolve_workspace_path(workspace_arg)
     if ws_path is None:
         _fail(f"Workspace not found: {workspace_arg}", "E_WS_NOT_FOUND", as_json)
-        return
 
     gem_dir, canonical, version = _locate_gem(ws_path, object_name, as_json)
     build_dir, gem_targets = _discover_targets(
@@ -291,7 +290,6 @@ def install_command(
     ws_path = _resolve_workspace_path(workspace_arg)
     if ws_path is None:
         _fail(f"Workspace not found: {workspace_arg}", "E_WS_NOT_FOUND", as_json)
-        return
 
     gem_dir, canonical, version = _locate_gem(ws_path, object_name, as_json)
     build_dir, gem_targets = _discover_targets(
@@ -338,10 +336,8 @@ def install_command(
             "E_ALREADY_INSTALLED",
             as_json,
         )
-        return
     except FileNotFoundError as e:
         _fail(str(e), "E_ARTIFACT_MISSING", as_json)
-        return
 
     if as_json:
         emit_response(
@@ -455,7 +451,6 @@ def package_command(
     ws_path = _resolve_workspace_path(workspace_arg)
     if ws_path is None:
         _fail(f"Workspace not found: {workspace_arg}", "E_WS_NOT_FOUND", as_json)
-        return
 
     gem_dir, canonical, version = _locate_gem(ws_path, object_name, as_json)
 
@@ -550,7 +545,6 @@ def package_command(
         )
     except FileNotFoundError as e:
         _fail(str(e), "E_ARTIFACT_MISSING", as_json)
-        return
 
     out = output_dir if output_dir is not None else Path.cwd()
     zip_path, sha256 = package_gem_archive(
@@ -812,7 +806,6 @@ def split_platforms_command(
         obj_data, type_token = _load_object_json(obj_root)
     except FileNotFoundError as e:
         _fail(str(e), "E_NOT_AN_OBJECT", as_json)
-        raise
 
     base_name = get_object_name(obj_data) or obj_root.name
     base_version = get_object_version(obj_data)
@@ -1099,7 +1092,6 @@ def hoist_command(
         obj_data, type_token = _load_object_json(obj_root)
     except FileNotFoundError as e:
         _fail(str(e), "E_NOT_AN_OBJECT", as_json)
-        raise
 
     base_name = get_object_name(obj_data) or obj_root.name
     base_version = get_object_version(obj_data)
@@ -1119,7 +1111,6 @@ def hoist_command(
         gem_rel = obj_root.relative_to(git_root).as_posix()
     except ValueError:
         _fail(f"{obj_root} is not under git root {git_root}", "E_NOT_IN_REPO", as_json)
-        raise
 
     if branch is None:
         rc, branch = _run_git(

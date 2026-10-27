@@ -282,6 +282,12 @@ def upgrade_command(
             return
 
         result = upgrade_file(target)
+        if result is None:
+            # e.g. restricted objects: there is no upgrade path to 2.0.0
+            console.print(
+                f"[yellow]Skipped:[/yellow] {target} ({obj_type} objects have no upgrade path)"
+            )
+            return
         console.print(f"[green]Upgraded:[/green] {result[0]} ({result[1]} → {result[2]})")
 
     else:
@@ -324,8 +330,8 @@ def upgrade_command(
 
                 if upgradeable:
                     console.print(f"[yellow]Would upgrade {len(upgradeable)} files:[/yellow]")
-                    for f, v in upgradeable[:20]:
-                        console.print(f"  {f} ({v} → 2.0.0)")
+                    for json_file, v in upgradeable[:20]:
+                        console.print(f"  {json_file} ({v} → 2.0.0)")
                     if len(upgradeable) > 20:
                         console.print(f"  ... and {len(upgradeable) - 20} more")
                 else:
@@ -341,8 +347,8 @@ def upgrade_command(
 
         if results:
             console.print(f"[green]Upgraded {len(results)} files:[/green]")
-            for path, old_v, new_v in results[:10]:
-                console.print(f"  {path.name} ({old_v} → {new_v})")
+            for upgraded, old_v, new_v in results[:10]:
+                console.print(f"  {upgraded.name} ({old_v} → {new_v})")
             if len(results) > 10:
                 console.print(f"  ... and {len(results) - 10} more")
         else:

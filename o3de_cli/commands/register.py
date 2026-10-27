@@ -261,7 +261,7 @@ def ensure_manifest_2() -> Path:
 
             # Upgrade legacy manifest
             console.print("[yellow]Upgrading manifest to schema 2.0.0...[/yellow]")
-            result = upgrade_file(legacy, target_version="2.0.0", backup=True)
+            result = upgrade_file(legacy, backup=True)
             if result:
                 console.print("[green]Manifest upgraded to 2.0.0[/green]")
                 # The upgrade_file should create the versioned file

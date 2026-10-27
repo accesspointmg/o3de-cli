@@ -611,9 +611,9 @@ class Resolver:
                         if child_idx:
                             children.append(child_idx["name"])
 
-            for obj_type in ["engines", "projects", "gems", "templates"]:
+            for collection in ["engines", "projects", "gems", "templates"]:
                 # Standard format: list of URLs
-                for obj_url in data.get(obj_type, []):
+                for obj_url in data.get(collection, []):
                     if isinstance(obj_url, str):
                         # Extract name from URL: use parent path segment if
                         # the filename is generic (gem.json, template.json, etc.)
@@ -634,7 +634,7 @@ class Resolver:
                         if child_name not in remote_objects and child_name not in self.objects:
                             remote_objects[child_name] = {
                                 "url": obj_url,
-                                "type": obj_type.rstrip("s"),
+                                "type": collection.rstrip("s"),
                                 "version": "",
                                 "children": [],
                                 "remotes": [],
@@ -645,9 +645,9 @@ class Resolver:
                         children.append(child_name)
 
                 # Legacy format: gems_data, projects_data, etc.
-                for item in data.get(f"{obj_type}_data", []):
+                for item in data.get(f"{collection}_data", []):
                     if isinstance(item, dict):
-                        type_singular = obj_type.rstrip("s")
+                        type_singular = collection.rstrip("s")
                         child_name = (
                             item.get(f"{type_singular}_name")
                             or item.get("name")
@@ -968,6 +968,8 @@ class Resolver:
         if not path.exists():
             logger.warning(f"Object path does not exist: {path}")
             return None
+
+        json_path: Path | None
 
         # Handle paths pointing directly to JSON files
         if path.is_file() and path.suffix == ".json":
@@ -1650,6 +1652,7 @@ class Resolver:
         """
         # Use default data as-is; we do NOT convert restricteds_path to overlays_path
         # because restricted and overlay are different concepts
+        assert self.manifest_data is not None, "save() requires resolve() first"
         default_data = dict(self.manifest_data.get("default", {}))
 
         # First pass: compute dependents by inverting dependencies
@@ -1846,8 +1849,8 @@ class Resolver:
                     # Add children of this remote (advertised objects)
                     for child in robj.get("children", []):
                         if child not in seen:
-                            cobj = remote_objects.get(child, {})
-                            ctype = cobj.get("type", "")
+                            child_data = remote_objects.get(child, {})
+                            ctype = child_data.get("type", "")
                             if not ctype and child in self.objects:
                                 ctype = self.objects[child].object_type.value
                             all_remote_set.append({"name": child, "type": ctype})
@@ -1893,7 +1896,7 @@ class Resolver:
 
         # Compute all_children (transitive closure) for manifest root
         root_all_children: list[dict] = []
-        ac_seen: set[str] = set()
+        ac_seen = set()
         ac_queue = list(root_children)
         while ac_queue:
             cn = ac_queue.pop(0)
@@ -1918,7 +1921,7 @@ class Resolver:
 
         root_all_remotes: list[dict] = []
         if all_obj_remote_names:
-            seen: set[str] = set()
+            seen = set()
             queue = list(all_obj_remote_names)
             while queue:
                 rn = queue.pop(0)
@@ -1930,8 +1933,8 @@ class Resolver:
                 root_all_remotes.append({"name": rn, "type": rtype})
                 for child in robj.get("children", []):
                     if child not in seen:
-                        cobj = remote_objects.get(child, {})
-                        ctype = cobj.get("type", "")
+                        child_data = remote_objects.get(child, {})
+                        ctype = child_data.get("type", "")
                         if not ctype and child in self.objects:
                             ctype = self.objects[child].object_type.value
                         root_all_remotes.append({"name": child, "type": ctype})

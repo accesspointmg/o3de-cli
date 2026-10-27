@@ -308,10 +308,11 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
     build_cmd = ["cmake", "--build", str(build_dir), "--config", cmake_config, "--parallel"]
 
     if dry_run:
-        plan = {"project": str(project_path), "config": cmake_config, "commands": []}
+        steps: list[dict[str, object]] = []
+        plan = {"project": str(project_path), "config": cmake_config, "commands": steps}
         if configure_cmd:
-            plan["commands"].append({"step": "configure", "cmd": configure_cmd})
-        plan["commands"].append({"step": "build", "cmd": build_cmd})
+            steps.append({"step": "configure", "cmd": configure_cmd})
+        steps.append({"step": "build", "cmd": build_cmd})
         if as_json:
             emit_response(data=plan)
         else:

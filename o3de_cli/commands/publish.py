@@ -146,7 +146,7 @@ def pack_command(path: str, output: str | None, as_json: bool) -> None:
     # Determine name and version from the object JSON
     obj_dir = target if target.is_dir() else target.parent
     json_path, data = _find_object_json(obj_dir)
-    if json_path is None:
+    if json_path is None or data is None:
         console.print("[red]No O3DE object JSON found.[/red]")
         raise SystemExit(1)
 
@@ -236,7 +236,7 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
     # Extract object metadata
     obj_dir = target if target.is_dir() else target.parent
     json_path, data = _find_object_json(obj_dir)
-    if json_path is None:
+    if json_path is None or data is None:
         console.print("[red]No O3DE object JSON found.[/red]")
         raise SystemExit(1)
 
@@ -330,6 +330,7 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
     warnings: list[str] = []
 
     # Find the JSON file
+    json_path: Path | None
     if target.is_file() and target.suffix == ".json":
         json_path = target
     elif target.is_dir():

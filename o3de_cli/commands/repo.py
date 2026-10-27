@@ -40,9 +40,9 @@ def list_repos(as_json: bool) -> None:
             store.refresh_sync(remote_urls)
         except Exception:
             pass
-        for obj in store.objects.values():
-            if obj.object_type == ObjectType.REPO:
-                remote_repos.append(obj)
+        for remote_obj in store.objects.values():
+            if remote_obj.object_type == ObjectType.REPO:
+                remote_repos.append(remote_obj)
 
     if as_json:
         import json as json_mod
@@ -52,9 +52,14 @@ def list_repos(as_json: bool) -> None:
             items.append(
                 {"name": obj.name, "version": obj.version, "path": str(obj.path), "source": "local"}
             )
-        for obj in remote_repos:
+        for remote_obj in remote_repos:
             items.append(
-                {"name": obj.name, "version": obj.version, "path": obj.url, "source": "remote"}
+                {
+                    "name": remote_obj.name,
+                    "version": remote_obj.version,
+                    "path": remote_obj.url,
+                    "source": "remote",
+                }
             )
         click.echo(json_mod.dumps(items, indent=2))
         return
@@ -70,8 +75,8 @@ def list_repos(as_json: bool) -> None:
 
     for name, obj in repos.items():
         table.add_row(obj.name, "local", str(obj.path))
-    for obj in remote_repos:
-        table.add_row(obj.name, "remote", obj.url)
+    for remote_obj in remote_repos:
+        table.add_row(remote_obj.name, "remote", remote_obj.url)
 
     console.print(table)
 

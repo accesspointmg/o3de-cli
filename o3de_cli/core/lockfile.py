@@ -147,7 +147,7 @@ def _get_version(candidate) -> str:
 def _get_type(candidate) -> str:
     """Extract type from a candidate."""
     if isinstance(candidate, dict):
-        t = candidate.get("type", candidate.get("object_type", ""))
+        t: object = candidate.get("type", candidate.get("object_type", ""))
         return t.value if hasattr(t, "value") else str(t)
     t = getattr(candidate, "object_type", getattr(candidate, "type", ""))
     return t.value if hasattr(t, "value") else str(t)

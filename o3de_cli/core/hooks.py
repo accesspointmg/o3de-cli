@@ -78,7 +78,7 @@ class HooksEngine:
         script_path: str,
         object_dir: Path,
         object_name: str,
-        confirm_callback: Callable[[str, Path, str], bool] | None = None,
+        confirm_callback: Callable[[str, str, str], bool] | None = None,
     ) -> bool:
         """Run a single hook script.
 
@@ -129,7 +129,7 @@ class HooksEngine:
         object_dir: Path,
         object_name: str,
         hook_filter: list[str] | None = None,
-        confirm_callback: Callable[[str, Path, str], bool] | None = None,
+        confirm_callback: Callable[[str, str, str], bool] | None = None,
     ) -> dict[str, bool]:
         """Run all hooks defined in an object's data.
 

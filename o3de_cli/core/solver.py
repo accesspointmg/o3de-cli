@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -224,9 +224,9 @@ class O3DEProvider(AbstractProvider):
     def get_preference(
         self,
         identifier: str,
-        resolutions: dict[str, Candidate],
-        candidates: dict[str, Sequence[Candidate]],
-        information: dict[str, Any],
+        resolutions: Mapping[str, Candidate],
+        candidates: Mapping[str, Iterable[Candidate]],
+        information: Mapping[str, Any],
         backtrack_causes: Sequence[Any],
     ) -> int:
         """
@@ -240,8 +240,8 @@ class O3DEProvider(AbstractProvider):
     def find_matches(
         self,
         identifier: str,
-        requirements: dict[str, Sequence[Requirement]],
-        incompatibilities: dict[str, Sequence[Candidate]],
+        requirements: Mapping[str, Iterable[Requirement]],
+        incompatibilities: Mapping[str, Iterable[Candidate]],
     ) -> list[Candidate]:
         """
         Return candidates matching *all* requirements for `identifier`,
