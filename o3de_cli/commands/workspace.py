@@ -12,6 +12,7 @@ Workspaces are symlinked build directories that combine:
 This allows efficient builds without copying files.
 """
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -24,6 +25,7 @@ import click
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
+from rich.text import Text
 from rich.tree import Tree
 
 from o3de_cli.core import (
@@ -173,13 +175,32 @@ def _exit_with_error(
     raise SystemExit(exit_code)
 
 
-def _spinner() -> Progress:
-    """The status spinner the long-running commands show."""
+def _spinner(disable: bool = False) -> Progress:
+    """The status spinner the long-running commands show.
+
+    Pass ``disable=as_json``: under ``--json`` stdout carries only the
+    JSON document, and Rich prints the spinner's last frame to a
+    non-terminal stdout when it stops.
+    """
     return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
+        disable=disable,
     )
+
+
+def _emit_json_document(data: Any) -> None:
+    """Write *data* to stdout as one plain JSON document.
+
+    For the commands whose ``--json`` output predates the response
+    envelope.  ``console.print_json`` is not used: Rich adds colour codes
+    when it thinks stdout is a terminal (e.g. ``FORCE_COLOR``), which
+    breaks parsers.
+    """
+    from o3de_cli.core.json_output import emit
+
+    emit(json.dumps(data, indent=2, default=str))
 
 
 def _load_workspace(
@@ -359,7 +380,10 @@ def create_command(
             "Use 'workspace update' to update, or delete first.",
         )
 
-    root_path, root_type = select_root(root_opt, project_path, engine_path)
+    try:
+        root_path, root_type = select_root(root_opt, project_path, engine_path)
+    except WorkspaceError as e:
+        _exit_with_error(as_json, str(e), "E_NOT_AN_OBJECT")
     # No --platforms / --tags means all overlays (no filtering)
     selection = OverlaySelection(
         platforms=_expand_platform_selection(platforms_opt),
@@ -382,9 +406,10 @@ def create_command(
         overlay_tuples=explicit_overlay_tuples(overlay, no_overlays),
     )
 
-    with _spinner() as progress:
+    warnings: list[str] = []
+    with _spinner(disable=as_json) as progress:
         if not no_solve:
-            _create_solve_phase(progress, request, assembly)
+            warnings = _create_solve_phase(progress, request, assembly, as_json)
         _create_assemble_phase(
             progress,
             name,
@@ -394,19 +419,30 @@ def create_command(
             assembly,
             overlay_order_opt,
             attributions,
+            as_json,
         )
 
-    _render_created(as_json, output_path, root_path, assembly, selection.platforms)
+    _render_created(as_json, output_path, root_path, assembly, selection.platforms, warnings)
 
 
 class _ConsoleCreateReporter(CreateReporter):
-    """Drives the create spinner and prints solve warnings to the console."""
+    """Drives the create spinner and prints solve warnings to the console.
 
-    def __init__(self, progress: Progress, task: Any) -> None:
+    Under ``--json`` nothing is printed: warnings are collected in
+    :attr:`warnings` (as plain text) for the response envelope, so stdout
+    carries only the JSON document.
+    """
+
+    def __init__(self, progress: Progress, task: Any, as_json: bool = False) -> None:
         self._progress = progress
         self._task = task
+        self._as_json = as_json
+        self.warnings: list[str] = []
 
     def _print_paused(self, *lines: str) -> None:
+        if self._as_json:
+            self.warnings.extend(Text.from_markup(line).plain.lstrip("⚠ ") for line in lines)
+            return
         # Stop the spinner so warnings aren't interleaved with it
         self._progress.stop()
         for line in lines:
@@ -423,15 +459,18 @@ class _ConsoleCreateReporter(CreateReporter):
         )
 
     def remote_installed(self, count: int) -> None:
-        console.print(f"[green]Installed {count} remote dependencies[/green]")
+        if not self._as_json:
+            console.print(f"[green]Installed {count} remote dependencies[/green]")
 
     def auto_install_needs_store(self) -> None:
         self._print_paused("[yellow]⚠ --auto-install requires --include-store[/yellow]")
 
     def root_not_registered(self) -> None:
-        console.print(
-            "[dim]Root object not registered in manifest — skipping dependency resolution[/dim]"
-        )
+        message = "Root object not registered in manifest — skipping dependency resolution"
+        if self._as_json:
+            self.warnings.append(message)
+            return
+        console.print(f"[dim]{message}[/dim]")
         self._progress.start()
 
     def unresolved(self, root_name: str, remote_count: int, unknown_count: int) -> None:
@@ -448,22 +487,27 @@ class _ConsoleCreateReporter(CreateReporter):
 
 
 def _create_solve_phase(
-    progress: Progress, request: CreateRequest, assembly: WorkspaceAssembly
-) -> None:
-    """Phase 1 of create: dependency resolution, reported on the spinner."""
+    progress: Progress, request: CreateRequest, assembly: WorkspaceAssembly, as_json: bool
+) -> list[str]:
+    """Phase 1 of create: dependency resolution, reported on the spinner.
+
+    Returns the warnings collected under ``--json`` (empty otherwise:
+    in console mode they are printed as they happen).
+    """
     task = progress.add_task("Resolving manifest...", total=None)
     deps = SolveDeps(
         resolver_cls=Resolver,
         solve=solve_for_workspace,
         install_overlay=_install_remote_overlay,
     )
+    reporter = _ConsoleCreateReporter(progress, task, as_json)
     try:
-        solve_create_dependencies(request, assembly, deps, _ConsoleCreateReporter(progress, task))
+        solve_create_dependencies(request, assembly, deps, reporter)
     except SolveFailedError as e:
         progress.stop()
-        console.print(f"[red]{e.label}:[/red] {e.detail}")
-        raise SystemExit(1) from None
+        _exit_with_error(as_json, e.message, e.code, f"[red]{e.label}:[/red] {e.detail}")
     progress.update(task, description="Dependencies resolved")
+    return reporter.warnings
 
 
 def _create_assemble_phase(
@@ -475,6 +519,7 @@ def _create_assemble_phase(
     assembly: WorkspaceAssembly,
     overlay_order_opt: tuple[str, ...],
     attributions: str,
+    as_json: bool,
 ) -> None:
     """Phase 2 of create: order overlays, compose, write metadata and CMake manifest."""
     task = progress.add_task("Creating workspace...", total=None)
@@ -483,8 +528,7 @@ def _create_assemble_phase(
             assembly.overlay_tuples, overlay_order_opt
         )
     except WorkspaceOpError as e:
-        console.print(f"[red]{e.message}[/red]")
-        raise SystemExit(1) from None
+        _exit_with_error(as_json, e.message, e.code)
 
     meta = assemble_workspace(
         output_path,
@@ -507,6 +551,7 @@ def _render_created(
     root_path: Path,
     assembly: WorkspaceAssembly,
     platforms: list[str] | None,
+    warnings: list[str] | None = None,
 ) -> None:
     solve_result = assembly.solve_result
     objects = len(assembly.resolved_objects) + 1
@@ -525,7 +570,7 @@ def _render_created(
             data["resolved_remote"] = solve_result.remote_count
         if platforms:
             data["platforms"] = platforms
-        emit_response(data=data)
+        emit_response(data=data, warnings=warnings)
         return
 
     console.print(f"[green]Created workspace:[/green] {output_path}")
@@ -811,11 +856,14 @@ def _install_remote_overlay(name: str) -> Path | None:
     target = get_default_path_for_type(ObjectType.OVERLAY)
     installed = store.download_sync(remote_obj, target)
 
-    # Register in the manifest so the resolver can see it
+    # Register in the manifest so the resolver can see it.  Its status
+    # line goes to stderr: stdout is the calling command's (one JSON
+    # document under --json).
     from o3de_cli.commands.manifest import add_command
 
     ctx = click.Context(add_command)
-    ctx.invoke(add_command, path=str(installed))
+    with contextlib.redirect_stdout(sys.stderr):
+        ctx.invoke(add_command, path=str(installed))
     return installed
 
 
@@ -888,7 +936,7 @@ def update_command(
         return
 
     plan = plan_resync(workspace_path, meta, overlay)
-    with _spinner() as progress:
+    with _spinner(disable=as_json) as progress:
         task = progress.add_task("Updating workspace...", total=None)
         apply_resync(workspace_path, plan, workspace_cls=Workspace)
         progress.update(task, description="Done")
@@ -1014,7 +1062,7 @@ def list_command(as_json: bool) -> None:
             )
 
     if as_json:
-        console.print_json(json.dumps(workspaces))
+        _emit_json_document(workspaces)
     else:
         if not workspaces:
             console.print("[dim]No workspaces found.[/dim]")
@@ -1042,22 +1090,10 @@ def list_command(as_json: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def show_command(name_or_path: str, as_json: bool) -> None:
     """Show workspace details."""
-    # Find workspace
-    ws_path = Path(name_or_path)
-    if not ws_path.exists():
-        ws_path = get_default_workspaces_path() / name_or_path
-
-    if not ws_path.exists():
-        console.print(f"[red]Workspace not found:[/red] {name_or_path}")
-        raise SystemExit(1)
-
-    meta = _read_workspace_meta(ws_path)
-    if meta is None:
-        console.print(f"[red]Not a valid workspace:[/red] {ws_path}")
-        raise SystemExit(1)
+    ws_path, meta = _load_workspace(name_or_path, as_json)
 
     if as_json:
-        console.print_json(json.dumps(meta.model_dump(by_alias=True, exclude_none=True), indent=2))
+        _emit_json_document(meta.model_dump(by_alias=True, exclude_none=True))
     else:
         console.print(f"[bold]Workspace:[/bold] {meta.workspace.name or ws_path.name}")
         console.print(f"[dim]Path:[/dim] {ws_path}")
@@ -1121,8 +1157,12 @@ def delete_command(name_or_path: str, force: bool, as_json: bool, dry_run: bool)
         return
 
     if not force:
-        if not click.confirm(f"Delete workspace '{ws_path.name}'?"):
-            console.print("[dim]Cancelled.[/dim]")
+        # Under --json the prompt goes to stderr, keeping stdout for the document
+        if not click.confirm(f"Delete workspace '{ws_path.name}'?", err=as_json):
+            if as_json:
+                emit_response(data={"action": "cancelled", "workspace": str(ws_path)})
+            else:
+                console.print("[dim]Cancelled.[/dim]")
             return
 
     rmtree_force(ws_path)
@@ -1197,11 +1237,7 @@ def solve_command(
     """
     from o3de_cli.core.store import Store
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
+    with _spinner(disable=as_json) as progress:
         task = progress.add_task("Resolving manifest...", total=None)
 
         resolver = Resolver()
@@ -1228,8 +1264,6 @@ def solve_command(
         progress.update(task, description="Done")
 
     if as_json:
-        import json as json_mod
-
         data = {
             "root": result.root_name,
             "root_version": result.root_version,
@@ -1264,7 +1298,10 @@ def solve_command(
                 for base, entries in result.overlays.items()
             },
         }
-        console.print_json(json_mod.dumps(data, indent=2))
+        _emit_json_document(data)
+        # A failed solve is an error in either mode
+        if not result.is_resolved:
+            raise SystemExit(1)
         return
 
     if not result.is_resolved:
@@ -1615,7 +1652,10 @@ def _run_cmake(
                     proc.kill()
         except Exception:
             proc.kill()
-        console.print("\n[yellow]Build cancelled.[/yellow]")
+        if on_line is not None:
+            on_line("Build cancelled.")
+        else:
+            console.print("\n[yellow]Build cancelled.[/yellow]")
         return -15
 
 
@@ -1840,6 +1880,10 @@ def _render_build_dry_run(
             console.print(f"  [dim]$ {' '.join(cmd)}[/dim]")
 
 
+def _print_to_stderr(line: str) -> None:
+    print(line, file=sys.stderr, flush=True)
+
+
 def _run_build_steps(
     as_json: bool,
     meta: WorkspaceMeta,
@@ -1848,14 +1892,19 @@ def _run_build_steps(
     configure_cmd: list[str] | None,
     build_cmd: list[str] | None,
 ) -> None:
-    """Run CMake configure (if planned) and build; exit with CMake's code on failure."""
+    """Run CMake configure (if planned) and build; exit with CMake's code on failure.
+
+    Under ``--json`` CMake's output is streamed to stderr, so stdout
+    carries only the JSON document.
+    """
     from o3de_cli.core.json_output import emit_response
 
+    on_line = _print_to_stderr if as_json else None
     if configure_cmd:
         if not as_json:
             console.print("\n[bold]Configuring...[/bold]")
             console.print(f"[dim]$ {' '.join(configure_cmd)}[/dim]")
-        rc = _run_cmake(configure_cmd, cwd=layout.source_dir)
+        rc = _run_cmake(configure_cmd, cwd=layout.source_dir, on_line=on_line)
         if rc != 0:
             _exit_with_error(as_json, "CMake configure failed.", "E_CONFIGURE_FAILED", exit_code=rc)
         if not as_json:
@@ -1876,7 +1925,7 @@ def _run_build_steps(
     if not as_json:
         console.print("\n[bold]Building...[/bold]")
         console.print(f"[dim]$ {' '.join(build_cmd)}[/dim]")
-    rc = _run_cmake(build_cmd, cwd=layout.source_dir)
+    rc = _run_cmake(build_cmd, cwd=layout.source_dir, on_line=on_line)
     if rc != 0:
         _exit_with_error(as_json, "Build failed.", "E_BUILD_FAILED", exit_code=rc)
 
@@ -2001,14 +2050,7 @@ def verify_lock_command(name_or_path: str, as_json: bool) -> None:
     matches, mismatches = verify_lockfile(ws_path, candidates)
 
     if as_json:
-        console.print_json(
-            json.dumps(
-                {
-                    "verified": matches,
-                    "mismatches": mismatches,
-                }
-            )
-        )
+        _emit_json_document({"verified": matches, "mismatches": mismatches})
     else:
         if matches:
             console.print("[green]Lockfile verified — all packages match.[/green]")

@@ -629,7 +629,7 @@ def _overlay_extends_name(overlay_path: Path) -> str | None:
                 data = json.load(f)
             extends = data.get("extends", "")
             if extends:
-                return re.split(r"[><=~!\s]", extends, 1)[0]
+                return re.split(r"[><=~!\s]", extends, maxsplit=1)[0]
         except Exception:
             continue
     return None

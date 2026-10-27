@@ -725,11 +725,41 @@ def merge_engine_closure(
                 and cand_name not in resolved
             ):
                 resolved[cand_name] = (cand.path, cand.object_type)
-    for base, entries in eng_solve.overlays.items():
+    merge_overlay_groups(overlay_groups, eng_solve.overlays)
+
+
+def merge_overlay_groups(
+    overlay_groups: dict[str, list[OverlayEntry]],
+    new_groups: dict[str, list[OverlayEntry]],
+) -> None:
+    """Merge *new_groups* into *overlay_groups* by overlay name.
+
+    An overlay already in a base's group keeps its entry.  Each group
+    touched is re-sorted by precedence.
+    """
+    for base, entries in new_groups.items():
         group = overlay_groups.setdefault(base, [])
         existing = {e.name for e in group}
         group.extend(e for e in entries if e.name not in existing)
         group.sort(key=lambda e: e.precedence)
+
+
+def merge_new_objects(resolved: ObjectMap, solve_result: SolveResult, root_path: Path) -> None:
+    """Add the LOCAL objects of *solve_result* that *resolved* lacks.
+
+    An object is already there when its manifest name is, or when its
+    resolved path is (the root counts: create_workspace adds it itself).
+    What was selected first is kept, so an explicit ``--engine`` keeps
+    its path and no directory is linked twice under two names.
+    """
+    seen = {path.resolve() for path, _type in resolved.values()}
+    seen.add(root_path)
+    for cand_name, (path, obj_type) in local_objects(solve_result).items():
+        resolved_path = path.resolve()
+        if cand_name in resolved or resolved_path in seen:
+            continue
+        resolved[cand_name] = (path, obj_type)
+        seen.add(resolved_path)
 
 
 def add_selected_overlays(
@@ -974,7 +1004,7 @@ def solve_create_dependencies(
     unknown_count = solve_result.unknown_count
     if remote_count and request.auto_install and store:
         installed = _auto_install_remote(
-            request, assembly, deps, reporter, resolver, store, root_name
+            request, assembly, deps, reporter, resolver, store, root_name, overlay_groups
         )
         if installed and assembly.solve_result is not None:
             remote_count = assembly.solve_result.remote_count
@@ -994,13 +1024,18 @@ def _auto_install_remote(
     resolver: Resolver,
     store: Any,
     root_name: str,
+    overlay_groups: dict[str, list[OverlayEntry]],
 ) -> bool:
     """Install missing remote dependencies, then re-solve into *assembly*.
 
-    Returns True when anything was installed (and the solve was redone).
-    The rebuilt object map comes from the fresh solve alone, as before
-    the refactor: secondary-engine closures are not re-merged, and with
-    both --engine and --project the project is added by directory name.
+    Returns True when anything was installed (and the solves were redone).
+    The objects and overlays already selected are kept, and what the
+    re-solves add is merged in (see :func:`merge_new_objects`): the
+    root's re-solve, then the re-solve of each secondary engine closure,
+    since the install may have completed those too.  *overlay_groups* are
+    the overlays of the solves before the install.  Overlay selection
+    runs over the overlays of every solve; overlays already selected are
+    not added twice.
     """
     reporter.progress("Installing remote dependencies...")
     installed = resolver.auto_install_missing(
@@ -1022,16 +1057,23 @@ def _auto_install_remote(
     assembly.solve_result = solve_result
 
     resolved = assembly.resolved_objects
-    resolved.clear()
-    if request.engine_path and request.project_path:
-        proj_path = Path(request.project_path).resolve()
-        resolved[proj_path.name] = (proj_path, ObjectType.PROJECT)
-    resolved.update(local_objects(solve_result, exclude_path=request.root_path))
+    merge_new_objects(resolved, solve_result, request.root_path)
+    # The re-solves' overlay entries come first: an overlay that was
+    # remote before the install is local now
+    groups = {base: list(entries) for base, entries in solve_result.overlays.items()}
+    for eng_name in engines_needing_closure(resolved, solve_result):
+        if eng_name not in resolver.objects:
+            continue
+        reporter.progress(f"Solving engine {eng_name}...")
+        eng_solve = _solve_or_raise(
+            deps, eng_name, resolver, store, reporter, "Engine dependency resolution failed"
+        )
+        merge_new_objects(resolved, eng_solve, request.root_path)
+        merge_overlay_groups(groups, eng_solve.overlays)
+    merge_overlay_groups(groups, overlay_groups)
 
-    # Re-process overlays (same selection)
     if not request.no_overlays:
-        assembly.overlay_tuples = explicit_overlay_tuples(request.explicit_overlays, False)
-        add_selected_overlays(assembly.overlay_tuples, solve_result.overlays, request.selection)
+        add_selected_overlays(assembly.overlay_tuples, groups, request.selection)
     return True
 
 
@@ -1090,6 +1132,8 @@ class ResyncPlan:
     root_type: ObjectType
     sources: list[Path]
     overlays: list[Path]
+    # Name and type workspace.json records for each source path
+    recorded: dict[Path, tuple[str, ObjectType]] = field(default_factory=dict)
 
 
 def plan_resync(ws_path: Path, meta: WorkspaceMeta, extra_overlays: Iterable[str]) -> ResyncPlan:
@@ -1099,17 +1143,18 @@ def plan_resync(ws_path: Path, meta: WorkspaceMeta, extra_overlays: Iterable[str
     is the object recorded at creation.  Guessing it from the sources
     would pick the engine (engines are listed first) and silently turn a
     project- or gem-rooted workspace into an engine-rooted one.
+
+    Each source keeps the canonical name and type it was recorded under,
+    so the re-sync links it where creation did and overlays find the
+    object they extend.
     """
     sources: list[Path] = []
-    for type_dict in (
-        meta.sources.engines,
-        meta.sources.projects,
-        meta.sources.gems,
-        meta.sources.templates,
-    ):
-        for _name, path in type_dict.items():
+    recorded: dict[Path, tuple[str, ObjectType]] = {}
+    for bucket, obj_type in _SOURCE_BUCKETS:
+        for obj_name, path in getattr(meta.sources, bucket).items():
             if path:
                 sources.append(Path(path))
+                recorded[Path(path)] = (obj_name, obj_type)
     overlays = [Path(p) for p in meta.sources.overlays.values()]
     overlays += [Path(o).resolve() for o in extra_overlays]
 
@@ -1121,7 +1166,7 @@ def plan_resync(ws_path: Path, meta: WorkspaceMeta, extra_overlays: Iterable[str
         root_type = ObjectType(meta.root_type) if meta.root_type else detect_root_type(root_source)
     except (ValueError, WorkspaceError):
         root_type = ObjectType.ENGINE  # fallback
-    return ResyncPlan(root_source, root_type, sources, overlays)
+    return ResyncPlan(root_source, root_type, sources, overlays, recorded)
 
 
 def apply_resync(
@@ -1129,16 +1174,27 @@ def apply_resync(
     plan: ResyncPlan,
     workspace_cls: Callable[..., Workspace] = Workspace,
 ) -> None:
-    """Relink every source and overlay of *plan* into the workspace."""
+    """Relink every source and overlay of *plan* into the workspace.
+
+    Sources use their recorded name and type (directory name and detected
+    type for any not recorded).  Each overlay is given the base it
+    extends, read from its overlay.json as at creation; without it the
+    composer cannot place the overlay and skips it.
+    """
+    from o3de_cli.core.workspace import _overlay_extends_name
+
     workspace_obj = workspace_cls(
         root_path=ws_path,
         root_object_path=plan.root_source,
         root_object_type=plan.root_type,
     )
     for source in plan.sources:
-        workspace_obj.add_resolved_object(source.name, source, detect_source_type(source))
+        name, obj_type = plan.recorded.get(source) or (source.name, detect_source_type(source))
+        workspace_obj.add_resolved_object(name, source, obj_type)
     for i, overlay_path in enumerate(plan.overlays):
-        workspace_obj.add_overlay(overlay_path, precedence=i)
+        workspace_obj.add_overlay(
+            overlay_path, precedence=i, extends=_overlay_extends_name(overlay_path)
+        )
     workspace_obj.update()
 
 
