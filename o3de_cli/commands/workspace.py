@@ -48,24 +48,60 @@ from o3de_cli.core.solver import (
     solve_for_workspace,
 )
 from o3de_cli.core.workspace import Workspace, WorkspaceError, create_workspace, detect_root_type
+from o3de_cli.core.workspace_ops import (
+    CMAKE_CONFIGS,
+    WORKSPACE_META,
+    BuildLayout,
+    BuildOptions,
+    CreateReporter,
+    CreateRequest,
+    OverlayChange,
+    OverlayChangeResult,
+    OverlaySelection,
+    OverrideRequest,
+    SolveDeps,
+    SolveFailedError,
+    WorkspaceAssembly,
+    WorkspaceOpError,
+    apply_overlay_order,
+    apply_override,
+    apply_resync,
+    assemble_workspace,
+    attributions_change,
+    build_layout,
+    build_source_paths,
+    change_overlays,
+    explicit_overlay_tuples,
+    parse_tag_selection,
+    plan_cmake_commands,
+    plan_resync,
+    root_gem_target,
+    secondary_engine_objects,
+    select_root,
+    solve_create_dependencies,
+)
+
+# Helpers that moved to core.workspace_ops, kept under their old names
+# for the other commands here and for callers that import them.
+from o3de_cli.core.workspace_ops import HOST_PLATFORM_MAP as _HOST_PLATFORM_MAP
+from o3de_cli.core.workspace_ops import LEGACY_WORKSPACE_META as _LEGACY_WORKSPACE_META
+from o3de_cli.core.workspace_ops import build_workspace_meta as _build_workspace_meta
+from o3de_cli.core.workspace_ops import expand_platform_selection as _expand_platform_selection
+from o3de_cli.core.workspace_ops import find_engine_path as _find_engine_path
+from o3de_cli.core.workspace_ops import find_project_path as _find_project_path
+from o3de_cli.core.workspace_ops import find_workspace_meta as _find_workspace_meta
+from o3de_cli.core.workspace_ops import overlays_for_base as _overlays_for_base
+from o3de_cli.core.workspace_ops import read_overlay_info as _read_overlay_info
+from o3de_cli.core.workspace_ops import read_workspace_meta as _read_workspace_meta
+from o3de_cli.core.workspace_ops import relink_object as _relink_object
+from o3de_cli.core.workspace_ops import (
+    select_overlays_for_platforms as _select_overlays_for_platforms,
+)
+from o3de_cli.core.workspace_ops import workspace_local_dir as _workspace_local_dir
+from o3de_cli.core.workspace_ops import workspace_root_name as _workspace_root_name
+from o3de_cli.core.workspace_ops import write_workspace_meta as _write_workspace_meta
 
 console = Console()
-
-# Workspace metadata filename (visible, standard pattern)
-WORKSPACE_META = "workspace.json"
-# Legacy hidden filename for fallback reads
-_LEGACY_WORKSPACE_META = ".workspace.json"
-
-
-def _find_workspace_meta(ws_path: Path) -> Path | None:
-    """Find workspace metadata file, preferring new name with legacy fallback."""
-    meta = ws_path / WORKSPACE_META
-    if meta.exists():
-        return meta
-    legacy = ws_path / _LEGACY_WORKSPACE_META
-    if legacy.exists():
-        return legacy
-    return None
 
 
 def _register_workspace(ws_path: Path) -> None:
@@ -105,67 +141,6 @@ def _get_registered_workspaces() -> list[Path]:
     return [Path(p) for p in manifest.get("workspaces", [])]
 
 
-def _read_workspace_meta(ws_path: Path) -> WorkspaceMeta | None:
-    """Read and validate workspace metadata via Pydantic model.
-
-    Handles legacy `.workspace.json` files that lack `$schema`,
-    `$schemaVersion`, and `workspace` header by injecting defaults.
-    """
-    meta_path = _find_workspace_meta(ws_path)
-    if meta_path is None:
-        return None
-    with open(meta_path) as f:
-        data = json.load(f)
-    # Inject defaults for legacy files missing required fields
-    if "$schema" not in data:
-        data["$schema"] = f"{SCHEMA_BASE_URL}/o3de-workspace-{SCHEMA_VERSION}.json"
-    if "$schemaVersion" not in data:
-        data["$schemaVersion"] = SCHEMA_VERSION
-    if "workspace" not in data:
-        data["workspace"] = {"name": data.get("name", ws_path.name)}
-    if "created" not in data:
-        data["created"] = ""
-    return WorkspaceMeta.model_validate(data)
-
-
-def _write_workspace_meta(ws_path: Path, meta: WorkspaceMeta) -> None:
-    """Write workspace metadata as workspace.json."""
-    meta_path = ws_path / WORKSPACE_META
-    data = meta.model_dump(by_alias=True, exclude_none=True)
-    # Remove legacy fields that may linger from backward-compat loading
-    for key in ("overlays", "file_owners", "resolved_candidates"):
-        data.pop(key, None)
-    with open(meta_path, "w") as f:
-        json.dump(data, f, indent=2)
-
-
-def _build_workspace_meta(
-    name: str,
-    root_path: Path,
-    root_type: str,
-    sources: dict[str, dict[str, str]],
-    file_links: dict[str, str] | None = None,
-    platforms: list[str] | None = None,
-    attributions: str | None = None,
-) -> WorkspaceMeta:
-    """Build a WorkspaceMeta model for a new workspace."""
-    data = {
-        "$schema": f"{SCHEMA_BASE_URL}/o3de-workspace-{SCHEMA_VERSION}.json",
-        "$schemaVersion": SCHEMA_VERSION,
-        "workspace": {"name": name},
-        "created": datetime.now().isoformat(),
-        "root_object": str(root_path),
-        "root_type": root_type,
-        "sources": sources,
-        "file_links": file_links or {},
-    }
-    if platforms:
-        data["platforms"] = platforms
-    if attributions and attributions != "workspace":
-        data["attributions"] = attributions
-    return WorkspaceMeta.model_validate(data)
-
-
 @click.group()
 def workspace() -> None:
     """Manage build workspaces.
@@ -176,122 +151,83 @@ def workspace() -> None:
     pass
 
 
-_HOST_PLATFORM_MAP = {"Windows": "Windows", "Linux": "Linux", "Darwin": "Mac"}
+def _exit_with_error(
+    as_json: bool,
+    message: str,
+    code: str,
+    *console_lines: str,
+    exit_code: int = 1,
+) -> NoReturn:
+    """Report an error as a JSON error response or console text, then exit.
 
-
-def _expand_platform_selection(platforms: tuple[str, ...]) -> list[str] | None:
-    """Expand a --platforms selection into canonical platform names.
-
-    Accepts repeated and comma-separated values.  Special tokens:
-    ``host`` expands to the host platform; ``all`` disables filtering
-    (returns None, same as omitting --platforms entirely).
+    *console_lines* are printed in console mode; by default the message
+    is printed in red.
     """
-    if not platforms:
-        return None
-    import platform as platform_mod
+    if as_json:
+        from o3de_cli.core.json_output import emit_error
 
-    names: list[str] = []
-    for value in platforms:
-        for token in value.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            if token.lower() == "all":
-                return None
-            if token.lower() == "host":
-                token = _HOST_PLATFORM_MAP.get(platform_mod.system(), platform_mod.system())
-            names.append(token)
-    # De-dupe preserving order, case-insensitive
-    seen: set[str] = set()
-    result: list[str] = []
-    for n in names:
-        if n.lower() not in seen:
-            seen.add(n.lower())
-            result.append(n)
-    return result or None
+        emit_error(message, code=code)
+    else:
+        for line in console_lines or (f"[red]{message}[/red]",):
+            console.print(line)
+    raise SystemExit(exit_code)
 
 
-def _select_overlays_for_platforms(
-    overlay_groups: dict,
-    selected_platforms: list[str] | None,
-    include: set[str] | None = None,
-    exclude: set[str] | None = None,
-    selected_tags: list[str] | None = None,
-) -> dict:
-    """Filter solved overlay groups by criteria and explicit picks.
+def _spinner() -> Progress:
+    """The status spinner the long-running commands show."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    )
 
-    Selection rules (per overlay-selection design):
-    - No criteria (platforms and tags both None) → all overlays.
-    - Criteria combine with OR: an overlay is auto-selected if it
-      delivers ANY selected platform OR carries ANY selected user tag.
-    - Family/common overlays (no ``platforms``) that other overlays
-      depend on are NOT criteria-matched — they are pulled transitively
-      via ``dependent.overlays`` of included overlays.
-    - Platform-agnostic overlays that nothing depends on apply
-      universally and are always included.
-    - ``include`` names are force-included (with their dependencies);
-      ``exclude`` names are always dropped and never traversed.
+
+def _load_workspace(
+    name_or_path: str, as_json: bool, *invalid_hint: str
+) -> tuple[Path, WorkspaceMeta]:
+    """Find a workspace by path or by name under the default workspaces dir.
+
+    Exits with ``E_WS_NOT_FOUND`` / ``E_WS_INVALID``; *invalid_hint*
+    lines follow the console error for a directory without metadata.
     """
-    include = include or set()
-    exclude = exclude or set()
-
-    if selected_platforms is None and not selected_tags and not include and not exclude:
-        return overlay_groups
-
-    selected = {p.lower() for p in selected_platforms} if selected_platforms else None
-    tags = {t.lower() for t in selected_tags} if selected_tags else None
-    has_criteria = selected is not None or tags is not None
-
-    # Index all entries by name and find dependency targets
-    all_entries: dict[str, OverlayEntry] = {}
-    dep_targets: set[str] = set()
-    for entries in overlay_groups.values():
-        for ov in entries:
-            all_entries[ov.name] = ov
-            dep_targets.update(ov.overlay_deps)
-
-    included: set[str] = set()
-    queue: list[str] = []
-    for name, ov in all_entries.items():
-        if name in exclude:
-            continue
-        if name in include:
-            queue.append(name)
-            continue
-        if not has_criteria:
-            # No criteria: everything (minus exclusions)
-            queue.append(name)
-            continue
-        plat_match = bool(
-            selected and ov.platforms and {p.lower() for p in ov.platforms} & selected
+    ws_path = Path(name_or_path)
+    if not ws_path.exists():
+        ws_path = get_default_workspaces_path() / name_or_path
+    if not ws_path.exists():
+        _exit_with_error(
+            as_json,
+            f"Workspace not found: {name_or_path}",
+            "E_WS_NOT_FOUND",
+            f"[red]Workspace not found:[/red] {name_or_path}",
         )
-        tag_match = bool(
-            tags and getattr(ov, "user_tags", None) and {t.lower() for t in ov.user_tags} & tags
+    meta = _read_workspace_meta(ws_path)
+    if meta is None:
+        _exit_with_error(
+            as_json,
+            f"Not a valid workspace: {ws_path}",
+            "E_WS_INVALID",
+            f"[red]Not a valid workspace:[/red] {ws_path}",
+            *invalid_hint,
         )
-        if plat_match or tag_match:
-            queue.append(name)
-        elif not ov.platforms and name not in dep_targets:
-            # Platform-agnostic and not a dependency target: applies always
-            queue.append(name)
+    return ws_path, meta
 
-    # Transitively pull overlay dependencies of included overlays
-    while queue:
-        name = queue.pop()
-        if name in included or name in exclude:
-            continue
-        included.add(name)
-        ov = all_entries.get(name)
-        if ov is not None:
-            for dep in ov.overlay_deps:
-                if dep not in included:
-                    queue.append(dep)
 
-    filtered: dict = {}
-    for base, entries in overlay_groups.items():
-        kept = [ov for ov in entries if ov.name in included]
-        if kept:
-            filtered[base] = kept
-    return filtered
+def _write_cmake_manifest(
+    ws_path: Path, meta: WorkspaceMeta, overrides: dict | None = None
+) -> None:
+    """(Re)write the workspace-scoped CMake resolved manifest.
+
+    The compose-time solve realized on disk: CMake consumes this instead
+    of re-resolving against the user manifest.
+    """
+    from o3de_cli.core.cmake_manifest import generate_cmake_manifest
+
+    tp = _find_third_party_path(meta=meta)
+    generate_cmake_manifest(
+        ws_path,
+        third_party_path=str(tp) if tp else "",
+        overrides=overrides,
+    )
 
 
 @workspace.command("create")
@@ -408,577 +344,200 @@ def create_command(
         o3de workspace create my-build -e ./o3de -p ./my-project --no-solve
     """
     if not engine_path and not project_path and not root_opt:
-        if as_json:
-            from o3de_cli.core.json_output import emit_error
+        _exit_with_error(as_json, "Must specify --root, --engine or --project", "E_INVALID_ARGS")
 
-            emit_error("Must specify --root, --engine or --project", code="E_INVALID_ARGS")
-        else:
-            console.print("[red]Must specify --root, --engine or --project[/red]")
-        raise SystemExit(1)
-
-    # Determine output path
     if output:
         output_path = Path(output).resolve() / name
     else:
         output_path = get_default_workspaces_path() / name
-
     if output_path.exists():
-        if as_json:
-            from o3de_cli.core.json_output import emit_error
+        _exit_with_error(
+            as_json,
+            f"Workspace already exists: {output_path}",
+            "E_WS_EXISTS",
+            f"[red]Workspace already exists:[/red] {output_path}",
+            "Use 'workspace update' to update, or delete first.",
+        )
 
-            emit_error(f"Workspace already exists: {output_path}", code="E_WS_EXISTS")
-        else:
-            console.print(f"[red]Workspace already exists:[/red] {output_path}")
-            console.print("Use 'workspace update' to update, or delete first.")
-        raise SystemExit(1)
-
-    # Determine root object.  The root anchors the dependency solve
-    # (dependencies radiate from it), so when a project is given it is
-    # the root — its dependent.engines/dependent.gems pull everything
-    # else in.  An explicit --engine alongside it composes that engine
-    # as a secondary object.  Engine-only workspaces (no project) root
-    # at the engine — valid for engine development.  --root wins over
-    # both and accepts any object type (gem/template development).
-    if root_opt:
-        root_path = Path(root_opt).resolve()
-        root_type = detect_root_type(root_path)
-    elif project_path:
-        root_path = Path(project_path).resolve()
-        root_type = detect_root_type(root_path)
-    else:
-        # One of --root/--engine/--project is required (checked above)
-        assert engine_path is not None
-        root_path = Path(engine_path).resolve()
-        root_type = detect_root_type(root_path)
-
-    root_type_str = root_type.value
-
-    # Expand platform selection (None = all platforms, no filtering)
-    selected_platforms = _expand_platform_selection(platforms_opt)
-    selected_tags: list[str] | None = None
-    if tags_opt:
-        selected_tags = []
-        for value in tags_opt:
-            for token in value.split(","):
-                token = token.strip()
-                if token and token.lower() not in {t.lower() for t in selected_tags}:
-                    selected_tags.append(token)
-        selected_tags = selected_tags or None
-    overlay_includes = set(include_overlay)
-    overlay_excludes = set(exclude_overlay)
-
-    # Build resolved_objects: name → (path, ObjectType)
-    resolved_objects: dict[str, tuple[Path, ObjectType]] = {}
-    solve_result: SolveResult | None = None
-
-    if engine_path and Path(engine_path).resolve() != root_path:
-        # Explicit engine alongside a non-engine root — compose it as a
-        # secondary object (the root's dependent.engines normally
-        # resolves an engine anyway; an explicit path wins if they
-        # differ, and gem/template roots have no engine dependency at
-        # all, so this is how their workspaces get an engine to build
-        # against)
-        eng_path = Path(engine_path).resolve()
-        from o3de_cli.core.workspace import _object_name_from_path
-
-        eng_name = _object_name_from_path(eng_path, eng_path.name)
-        resolved_objects[eng_name] = (eng_path, ObjectType.ENGINE)
-
-    # Collect overlays with precedence
-    overlay_tuples: list[tuple[Path, int, str | None]] = (
-        [(Path(o).resolve(), i, None) for i, o in enumerate(overlay)] if not no_overlays else []
+    root_path, root_type = select_root(root_opt, project_path, engine_path)
+    # No --platforms / --tags means all overlays (no filtering)
+    selection = OverlaySelection(
+        platforms=_expand_platform_selection(platforms_opt),
+        tags=parse_tag_selection(tags_opt),
+        include=set(include_overlay),
+        exclude=set(exclude_overlay),
+    )
+    request = CreateRequest(
+        root_path=root_path,
+        engine_path=engine_path,
+        project_path=project_path,
+        explicit_overlays=overlay,
+        no_overlays=no_overlays,
+        selection=selection,
+        include_store=include_store,
+        auto_install=auto_install,
+    )
+    assembly = WorkspaceAssembly(
+        resolved_objects=secondary_engine_objects(engine_path, root_path),
+        overlay_tuples=explicit_overlay_tuples(overlay, no_overlays),
     )
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        # ------------------------------------------------------------------
-        # Phase 1: Dependency resolution (unless --no-solve)
-        # ------------------------------------------------------------------
+    with _spinner() as progress:
         if not no_solve:
-            task = progress.add_task("Resolving manifest...", total=None)
-
-            resolver = Resolver()
-            resolver.resolve()
-
-            # Force-included overlays that aren't installed locally are
-            # acquired from registered remote repos before solving
-            missing_includes = [n for n in overlay_includes if n not in resolver.overlays]
-            if missing_includes:
-                progress.update(task, description="Downloading remote overlays...")
-                installed_any = False
-                for ov_name in missing_includes:
-                    if _install_remote_overlay(ov_name) is not None:
-                        installed_any = True
-                    else:
-                        progress.stop()
-                        console.print(
-                            f"[yellow]⚠ Overlay {ov_name} not installed and "
-                            f"not found in remote repos — skipping[/yellow]"
-                        )
-                        progress.start()
-                if installed_any:
-                    resolver = Resolver()
-                    resolver.resolve()
-
-            store = None
-            if include_store:
-                from o3de_cli.core.store import Store
-
-                progress.update(task, description="Refreshing store...")
-                store = Store()
-                store.refresh_sync(resolver.manifest_remotes)
-
-            progress.update(task, description="Solving dependencies...")
-
-            # Determine the root object name in the manifest
-            root_name = root_path.name
-            # Try to find a better name from the resolver's object index
-            for obj_name, obj in resolver.objects.items():
-                if obj.path and obj.path.resolve() == root_path:
-                    root_name = obj_name
-                    break
-
-            # Only run the solver if the root is known to the resolver
-            # (i.e. registered in the manifest).  If the user points at a
-            # path that hasn't been registered yet, skip solving — the
-            # explicit --engine / --project paths are sufficient.
-            if root_name in resolver.objects:
-
-                def on_progress(msg: str) -> None:
-                    progress.update(task, description=msg)
-
-                solve_result = solve_for_workspace(
-                    root_name=root_name,
-                    resolver=resolver,
-                    store=store,
-                    progress_callback=on_progress,
-                )
-
-                if not solve_result.is_resolved:
-                    progress.stop()
-                    console.print(
-                        f"[red]Dependency resolution failed:[/red] {solve_result.conflict_message}"
-                    )
-                    raise SystemExit(1)
-
-                # Convert solved candidates + children → resolved_objects
-                # (only LOCAL candidates can be assembled into the workspace)
-                for cand_name, cand in solve_result.candidates.items():
-                    if cand.status == CandidateStatus.LOCAL and cand.path:
-                        if cand.path.resolve() == root_path:
-                            continue  # Root is added by create_workspace itself
-                        resolved_objects[cand_name] = (cand.path, cand.object_type)
-
-                for child_name, child in solve_result.children.items():
-                    if child.status == CandidateStatus.LOCAL and child.path:
-                        if child.path.resolve() == root_path:
-                            continue
-                        resolved_objects[child_name] = (child.path, child.object_type)
-
-                # Overlay groups accumulate across the root solve and any
-                # secondary engine closure solve below; selection happens
-                # once after all solves.
-                overlay_groups = {
-                    base: list(entries) for base, entries in solve_result.overlays.items()
-                }
-
-                # A secondary engine that the root's solve did NOT pull in
-                # (gem/template roots have no engine dependency) needs its
-                # OWN dependency closure — an engine without its
-                # default-enabled gems cannot configure.  Solve it as an
-                # additional root and merge.
-                extra_engines = [
-                    (n, p)
-                    for n, (p, t) in resolved_objects.items()
-                    if t == ObjectType.ENGINE
-                    and n not in solve_result.candidates
-                    and n not in solve_result.children
-                ]
-                for eng_name, _eng_path in extra_engines:
-                    if eng_name not in resolver.objects:
-                        continue
-                    progress.update(
-                        task,
-                        description=f"Solving engine {eng_name}...",
-                    )
-                    eng_solve = solve_for_workspace(
-                        root_name=eng_name,
-                        resolver=resolver,
-                        store=store,
-                        progress_callback=on_progress,
-                    )
-                    if not eng_solve.is_resolved:
-                        progress.stop()
-                        console.print(
-                            f"[red]Engine dependency resolution failed:[/red] "
-                            f"{eng_solve.conflict_message}"
-                        )
-                        raise SystemExit(1)
-                    for cmap in (eng_solve.candidates, eng_solve.children):
-                        for cand_name, cand in cmap.items():
-                            if (
-                                cand.status == CandidateStatus.LOCAL
-                                and cand.path
-                                and cand.path.resolve() != root_path
-                                and cand_name not in resolved_objects
-                            ):
-                                resolved_objects[cand_name] = (
-                                    cand.path,
-                                    cand.object_type,
-                                )
-                    # Merge the engine solve's overlay groups — overlays
-                    # extending closure-pulled objects must compose too
-                    for base, entries in eng_solve.overlays.items():
-                        group = overlay_groups.setdefault(base, [])
-                        existing = {e.name for e in group}
-                        group.extend(e for e in entries if e.name not in existing)
-                        group.sort(key=lambda e: e.precedence)
-
-                # Add solved overlays (unless --no-overlays), filtered by
-                # the workspace platform selection
-                if not no_overlays:
-                    selected_groups = _select_overlays_for_platforms(
-                        overlay_groups,
-                        selected_platforms,
-                        include=overlay_includes,
-                        exclude=overlay_excludes,
-                        selected_tags=selected_tags,
-                    )
-                    for _base, entries in selected_groups.items():
-                        for ov in entries:
-                            if ov.path and ov.status == CandidateStatus.LOCAL:
-                                # Avoid duplicating explicitly-provided overlays
-                                ov_resolved = ov.path.resolve()
-                                if not any(p.resolve() == ov_resolved for p, *_ in overlay_tuples):
-                                    overlay_tuples.append((ov_resolved, ov.precedence, ov.extends))
-
-                # Report remote/unknown candidates
-                remote_count = solve_result.remote_count
-                unknown_count = solve_result.unknown_count
-
-                # ----------------------------------------------------------
-                # J2: Auto-install missing remote dependencies
-                # ----------------------------------------------------------
-                if remote_count and auto_install and store:
-                    progress.update(task, description="Installing remote dependencies...")
-
-                    def on_install_progress(msg: str, current: int, total: int) -> None:
-                        progress.update(task, description=msg)
-
-                    installed = resolver.auto_install_missing(
-                        store=store,
-                        confirm=True,
-                        progress_callback=on_install_progress,
-                    )
-
-                    if installed:
-                        console.print(
-                            f"[green]Installed {len(installed)} remote dependencies[/green]"
-                        )
-                        # Re-resolve and re-solve to pick up newly-local objects
-                        progress.update(task, description="Re-resolving after install...")
-                        resolver.resolve()
-
-                        progress.update(task, description="Re-solving dependencies...")
-                        solve_result = solve_for_workspace(
-                            root_name=root_name,
-                            resolver=resolver,
-                            store=store,
-                            progress_callback=on_progress,
-                        )
-
-                        if not solve_result.is_resolved:
-                            progress.stop()
-                            console.print(
-                                f"[red]Re-solve after install failed:[/red] "
-                                f"{solve_result.conflict_message}"
-                            )
-                            raise SystemExit(1)
-
-                        # Rebuild resolved_objects from the fresh solve
-                        resolved_objects.clear()
-                        if engine_path and project_path:
-                            proj_path = Path(project_path).resolve()
-                            resolved_objects[proj_path.name] = (proj_path, ObjectType.PROJECT)
-
-                        for cand_name, cand in solve_result.candidates.items():
-                            if cand.status == CandidateStatus.LOCAL and cand.path:
-                                if cand.path.resolve() == root_path:
-                                    continue
-                                resolved_objects[cand_name] = (cand.path, cand.object_type)
-
-                        for child_name, child in solve_result.children.items():
-                            if child.status == CandidateStatus.LOCAL and child.path:
-                                if child.path.resolve() == root_path:
-                                    continue
-                                resolved_objects[child_name] = (child.path, child.object_type)
-
-                        # Re-process overlays (same platform selection)
-                        if not no_overlays:
-                            overlay_tuples = [
-                                (Path(o).resolve(), i, None) for i, o in enumerate(overlay)
-                            ]
-                            selected_groups = _select_overlays_for_platforms(
-                                solve_result.overlays,
-                                selected_platforms,
-                                include=overlay_includes,
-                                exclude=overlay_excludes,
-                                selected_tags=selected_tags,
-                            )
-                            for _base, entries in selected_groups.items():
-                                for ov in entries:
-                                    if ov.path and ov.status == CandidateStatus.LOCAL:
-                                        ov_resolved = ov.path.resolve()
-                                        if not any(
-                                            p.resolve() == ov_resolved for p, *_ in overlay_tuples
-                                        ):
-                                            overlay_tuples.append(
-                                                (ov_resolved, ov.precedence, ov.extends)
-                                            )
-
-                        # Update counts after re-solve
-                        remote_count = solve_result.remote_count
-                        unknown_count = solve_result.unknown_count
-
-                elif remote_count and auto_install and not store:
-                    progress.stop()
-                    console.print("[yellow]⚠ --auto-install requires --include-store[/yellow]")
-                    progress.start()
-
-                if remote_count or unknown_count:
-                    progress.stop()
-                    if remote_count:
-                        console.print(
-                            f"[yellow]⚠ {remote_count} remote dependencies not yet "
-                            f"installed — run 'workspace solve {root_name} "
-                            f"--include-store' for details[/yellow]"
-                        )
-                    if unknown_count:
-                        console.print(
-                            f"[red]⚠ {unknown_count} dependencies could not be found anywhere[/red]"
-                        )
-                    progress.start()
-            else:
-                console.print(
-                    "[dim]Root object not registered in manifest — "
-                    "skipping dependency resolution[/dim]"
-                )
-                progress.start()
-
-            progress.update(task, description="Dependencies resolved")
-
-        # ------------------------------------------------------------------
-        # Phase 2: Assemble the workspace
-        # ------------------------------------------------------------------
-        task2 = progress.add_task("Creating workspace...", total=None)
-
-        # Apply explicit per-base overlay ordering (overrides authored
-        # precedence): named overlays first in the given order, the rest
-        # keep their precedence order.  Applied as sequential precedences
-        # so the composer's precedence sort realizes the final order.
-        overlay_order_map: dict[str, list[str]] = {}
-        if overlay_order_opt and overlay_tuples:
-            from o3de_cli.core.workspace import _object_name_from_path
-
-            name_by_path = {
-                p.resolve(): _object_name_from_path(p.resolve(), p.name) for p, *_ in overlay_tuples
-            }
-            for value in overlay_order_opt:
-                names = [t.strip() for t in value.split(",") if t.strip()]
-                if len(names) < 2:
-                    console.print(
-                        "[red]--overlay-order needs at least two "
-                        "comma-separated overlay names[/red]"
-                    )
-                    raise SystemExit(1)
-                bases: set[str] = set()
-                for n in names:
-                    match = next((p for p, nm in name_by_path.items() if nm == n), None)
-                    if match is None:
-                        console.print(
-                            f"[red]--overlay-order: overlay not selected "
-                            f"for this workspace: {n}[/red]"
-                        )
-                        raise SystemExit(1)
-                    info = _read_overlay_info(match)
-                    bases.add(info["extends"] or "")
-                if len(bases) != 1:
-                    console.print(
-                        "[red]--overlay-order: overlays must all extend the same object[/red]"
-                    )
-                    raise SystemExit(1)
-                overlay_order_map[bases.pop()] = names
-
-            if overlay_order_map:
-                explicit_pos: dict[Path, int] = {}
-                for names in overlay_order_map.values():
-                    for i, n in enumerate(names):
-                        for p, nm in name_by_path.items():
-                            if nm == n:
-                                explicit_pos[p] = i
-                ordered = sorted(
-                    overlay_tuples,
-                    key=lambda t: (explicit_pos.get(t[0].resolve(), 10_000 + t[1]),),
-                )
-                overlay_tuples = [(p, i, ext) for i, (p, _prec, ext) in enumerate(ordered)]
-
-        workspace_obj = create_workspace(
-            target_path=output_path,
-            root_object_path=root_path,
-            resolved_objects=resolved_objects,
-            overlays=overlay_tuples,
-            attributions=attributions,
-        )
-
-        # Save workspace metadata via Pydantic model
-        meta = _build_workspace_meta(
-            name=name,
-            root_path=root_path,
-            root_type=root_type_str,
-            sources=workspace_obj.get_sources_dict(),
-            file_links=workspace_obj.get_file_links(),
-            platforms=selected_platforms,
-            attributions=attributions,
-        )
-        if overlay_order_map:
-            meta.overlay_order = overlay_order_map
-        _write_workspace_meta(output_path, meta)
-
-        # Write the workspace-scoped CMake resolved manifest — the
-        # compose-time solve realized on disk; CMake consumes this
-        # instead of re-resolving against the user manifest.
-        progress.update(task2, description="Writing CMake manifest...")
-        from o3de_cli.core.cmake_manifest import generate_cmake_manifest
-
-        tp = _find_third_party_path(meta=meta)
-        generate_cmake_manifest(
+            _create_solve_phase(progress, request, assembly)
+        _create_assemble_phase(
+            progress,
+            name,
             output_path,
-            third_party_path=str(tp) if tp else "",
+            root_type,
+            request,
+            assembly,
+            overlay_order_opt,
+            attributions,
         )
 
-        progress.update(task2, description="Done")
+    _render_created(as_json, output_path, root_path, assembly, selection.platforms)
 
+
+class _ConsoleCreateReporter(CreateReporter):
+    """Drives the create spinner and prints solve warnings to the console."""
+
+    def __init__(self, progress: Progress, task: Any) -> None:
+        self._progress = progress
+        self._task = task
+
+    def _print_paused(self, *lines: str) -> None:
+        # Stop the spinner so warnings aren't interleaved with it
+        self._progress.stop()
+        for line in lines:
+            console.print(line)
+        self._progress.start()
+
+    def progress(self, message: str) -> None:
+        self._progress.update(self._task, description=message)
+
+    def overlay_unavailable(self, name: str) -> None:
+        self._print_paused(
+            f"[yellow]⚠ Overlay {name} not installed and "
+            f"not found in remote repos — skipping[/yellow]"
+        )
+
+    def remote_installed(self, count: int) -> None:
+        console.print(f"[green]Installed {count} remote dependencies[/green]")
+
+    def auto_install_needs_store(self) -> None:
+        self._print_paused("[yellow]⚠ --auto-install requires --include-store[/yellow]")
+
+    def root_not_registered(self) -> None:
+        console.print(
+            "[dim]Root object not registered in manifest — skipping dependency resolution[/dim]"
+        )
+        self._progress.start()
+
+    def unresolved(self, root_name: str, remote_count: int, unknown_count: int) -> None:
+        lines: list[str] = []
+        if remote_count:
+            lines.append(
+                f"[yellow]⚠ {remote_count} remote dependencies not yet "
+                f"installed — run 'workspace solve {root_name} "
+                f"--include-store' for details[/yellow]"
+            )
+        if unknown_count:
+            lines.append(f"[red]⚠ {unknown_count} dependencies could not be found anywhere[/red]")
+        self._print_paused(*lines)
+
+
+def _create_solve_phase(
+    progress: Progress, request: CreateRequest, assembly: WorkspaceAssembly
+) -> None:
+    """Phase 1 of create: dependency resolution, reported on the spinner."""
+    task = progress.add_task("Resolving manifest...", total=None)
+    deps = SolveDeps(
+        resolver_cls=Resolver,
+        solve=solve_for_workspace,
+        install_overlay=_install_remote_overlay,
+    )
+    try:
+        solve_create_dependencies(request, assembly, deps, _ConsoleCreateReporter(progress, task))
+    except SolveFailedError as e:
+        progress.stop()
+        console.print(f"[red]{e.label}:[/red] {e.detail}")
+        raise SystemExit(1) from None
+    progress.update(task, description="Dependencies resolved")
+
+
+def _create_assemble_phase(
+    progress: Progress,
+    name: str,
+    output_path: Path,
+    root_type: ObjectType,
+    request: CreateRequest,
+    assembly: WorkspaceAssembly,
+    overlay_order_opt: tuple[str, ...],
+    attributions: str,
+) -> None:
+    """Phase 2 of create: order overlays, compose, write metadata and CMake manifest."""
+    task = progress.add_task("Creating workspace...", total=None)
+    try:
+        assembly.overlay_tuples, order_map = apply_overlay_order(
+            assembly.overlay_tuples, overlay_order_opt
+        )
+    except WorkspaceOpError as e:
+        console.print(f"[red]{e.message}[/red]")
+        raise SystemExit(1) from None
+
+    meta = assemble_workspace(
+        output_path,
+        name,
+        request.root_path,
+        root_type,
+        assembly,
+        attributions,
+        request.selection.platforms,
+        order_map,
+    )
+    progress.update(task, description="Writing CMake manifest...")
+    _write_cmake_manifest(output_path, meta)
+    progress.update(task, description="Done")
+
+
+def _render_created(
+    as_json: bool,
+    output_path: Path,
+    root_path: Path,
+    assembly: WorkspaceAssembly,
+    platforms: list[str] | None,
+) -> None:
+    solve_result = assembly.solve_result
+    objects = len(assembly.resolved_objects) + 1
     if as_json:
         from o3de_cli.core.json_output import emit_response
 
-        data = {
+        data: dict[str, Any] = {
             "action": "created",
             "workspace": str(output_path),
             "root": str(root_path),
-            "objects": len(resolved_objects) + 1,
-            "overlays": len(overlay_tuples),
+            "objects": objects,
+            "overlays": len(assembly.overlay_tuples),
         }
         if solve_result:
             data["resolved_local"] = solve_result.local_count
             data["resolved_remote"] = solve_result.remote_count
-        if selected_platforms:
-            data["platforms"] = selected_platforms
+        if platforms:
+            data["platforms"] = platforms
         emit_response(data=data)
-    else:
-        console.print(f"[green]Created workspace:[/green] {output_path}")
-        console.print(f"  Root: {root_path}")
-        console.print(f"  Objects: {len(resolved_objects) + 1}")
-        if solve_result:
-            console.print(f"  Resolved: {solve_result.local_count} local")
-            if solve_result.remote_count:
-                console.print(f"  Remote (not installed): {solve_result.remote_count}")
-        console.print(f"  Overlays: {len(overlay_tuples)}")
-        if selected_platforms:
-            console.print(f"  Platforms: {', '.join(selected_platforms)}")
+        return
 
-
-def _workspace_root_name(meta: WorkspaceMeta, resolver: Resolver) -> str | None:
-    """Map the workspace's root_object path back to a manifest object name."""
-    if not meta.root_object:
-        return None
-    root_path = Path(meta.root_object).resolve()
-    for obj_name, obj in resolver.objects.items():
-        if obj.path and obj.path.resolve() == root_path:
-            return obj_name
-    return root_path.name
-
-
-def _relink_object(
-    ws_path: Path,
-    meta: WorkspaceMeta,
-    name: str,
-    new_path: Path,
-    obj_type: ObjectType,
-    all_objects: dict[str, tuple[Path, ObjectType]],
-    overlays: list[tuple[Path, int]] | None = None,
-) -> None:
-    """Replace one object's linked tree in the workspace with *new_path*.
-
-    Removes the old destination directory, relinks from the new source,
-    re-applies *overlays* (``(path, precedence)`` tuples, applied in
-    precedence order INTO the object's tree), and updates meta.sources +
-    meta.file_links in place.
-    """
-    import shutil
-
-    from o3de_cli.core.workspace import (
-        _ENGINE_SKIP_TOPDIRS,
-        _TYPE_FOLDERS,
-        _short_name,
-    )
-
-    folder = _TYPE_FOLDERS.get(obj_type, "Gems")
-    short = _short_name(name)
-    dest_root = ws_path / folder / short
-    dest_prefix = f"{folder}/{short}/"
-
-    # Remove the old linked tree (hard links — sources unaffected)
-    if dest_root.exists():
-        rmtree_force(dest_root)
-
-    # Drop stale file_links for this object
-    meta.file_links = {
-        src: rel for src, rel in meta.file_links.items() if not rel.startswith(dest_prefix)
-    }
-
-    # Relink from the new source using the standard composer (nested-object
-    # boundary detection needs the full resolved object map)
-    ws = Workspace(
-        root_path=ws_path,
-        root_object_path=Path(meta.root_object) if meta.root_object else new_path,
-        root_object_type=obj_type,
-    )
-    ws.resolved_objects = dict(all_objects)
-    ws.resolved_objects[name] = (new_path, obj_type)
-    ws._link_object_files(
-        source_root=new_path,
-        dest_root=dest_root,
-        owner_name=name,
-        skip_topdirs=_ENGINE_SKIP_TOPDIRS if obj_type == ObjectType.ENGINE else None,
-    )
-
-    # Re-apply overlays into the freshly relinked tree, precedence order
-    if overlays:
-        from o3de_cli.core.workspace import _object_name_from_path
-
-        attributions = meta.attributions or "workspace"
-        for ov_path, _prec in sorted(overlays, key=lambda t: t[1]):
-            ov_name = _object_name_from_path(ov_path, ov_path.name)
-            ws._apply_overlay(
-                ov_path,
-                owner_name=ov_name,
-                base_dest_root=dest_root,
-                attributions=attributions,
-            )
-
-    meta.file_links.update(ws.get_file_links())
-
-    # Update the sources bucket
-    bucket_key = {
-        ObjectType.ENGINE: "engines",
-        ObjectType.PROJECT: "projects",
-        ObjectType.GEM: "gems",
-        ObjectType.TEMPLATE: "templates",
-    }.get(obj_type, "gems")
-    getattr(meta.sources, bucket_key)[name] = str(new_path)
+    console.print(f"[green]Created workspace:[/green] {output_path}")
+    console.print(f"  Root: {root_path}")
+    console.print(f"  Objects: {objects}")
+    if solve_result:
+        console.print(f"  Resolved: {solve_result.local_count} local")
+        if solve_result.remote_count:
+            console.print(f"  Remote (not installed): {solve_result.remote_count}")
+    console.print(f"  Overlays: {len(assembly.overlay_tuples)}")
+    if platforms:
+        console.print(f"  Platforms: {', '.join(platforms)}")
 
 
 @workspace.command("candidates")
@@ -1153,206 +712,80 @@ def override_command(
         o3de workspace override my-ws org.o3de.gem.physx --version 4.0.0
         o3de workspace override my-ws org.o3de.gem.physx --clear
     """
-    from o3de_cli.core.json_output import emit_error, emit_response
-    from o3de_cli.core.models import ObjectOverride
-    from o3de_cli.core.solver import find_local_binary_install
-
-    def _fail(msg: str, code: str) -> NoReturn:
-        if as_json:
-            emit_error(msg, code=code)
-        else:
-            console.print(f"[red]{msg}[/red]")
-        raise SystemExit(1)
-
     if not clear and not pin_version:
-        _fail("--version is required (or use --clear)", "E_INVALID_ARGS")
+        _exit_with_error(as_json, "--version is required (or use --clear)", "E_INVALID_ARGS")
 
     ws_path = _resolve_workspace_path(name_or_path)
     if ws_path is None:
-        _fail(f"Workspace not found: {name_or_path}", "E_WS_NOT_FOUND")
+        _exit_with_error(as_json, f"Workspace not found: {name_or_path}", "E_WS_NOT_FOUND")
     meta = _read_workspace_meta(ws_path)
     if meta is None:
-        _fail(f"Not a valid workspace: {ws_path}", "E_WS_INVALID")
+        _exit_with_error(as_json, f"Not a valid workspace: {ws_path}", "E_WS_INVALID")
 
-    # Resolve local objects up front (needed for remote-binary release
-    # metadata and for the validation re-solve below)
-    resolver = Resolver()
-    resolver.resolve()
+    def _download_progress(msg: str) -> None:
+        if not as_json:
+            console.print(f"[dim]{msg}[/dim]")
 
-    # Compute the new override set
-    new_overrides = dict(meta.overrides)
-    if clear:
-        if object_name not in new_overrides:
-            _fail(f"No override present for {object_name}", "E_NO_OVERRIDE")
-        del new_overrides[object_name]
-    else:
-        # --version is required unless --clear (checked above)
-        assert pin_version is not None
-        override = ObjectOverride(version=pin_version, artifact=artifact)
-        if artifact == "local-binary":
-            binary = find_local_binary_install(object_name, pin_version)
-            if binary is None:
-                _fail(
-                    f"No local binary install found for "
-                    f"{object_name}@{pin_version} (expected an install layout "
-                    f"with *Config.cmake under ~/.o3de/BuiltPackages)",
-                    "E_NO_LOCAL_BINARY",
-                )
-            override.path = str(binary)
-        elif artifact == "remote-binary":
-            from o3de_cli.core.gem_package import download_remote_binary
-
-            versions = getattr(resolver, "objects_all", {}).get(object_name, {})
-            resolved = versions.get(pin_version) or resolver.objects.get(object_name)
-            data = resolved.data if resolved is not None else {}
-
-            def _dl_progress(msg: str) -> None:
-                if not as_json:
-                    console.print(f"[dim]{msg}[/dim]")
-
-            try:
-                pkg = download_remote_binary(
-                    object_name,
-                    pin_version,
-                    data,
-                    on_progress=_dl_progress,
-                )
-            except Exception as e:
-                _fail(f"Remote binary unavailable: {e}", "E_NO_REMOTE_BINARY")
-            override.path = str(pkg)
-        elif artifact == "remote-source":
-            from o3de_cli.core.gem_package import download_remote_source
-            from o3de_cli.core.models import ObjectType
-
-            versions = getattr(resolver, "objects_all", {}).get(object_name, {})
-            resolved = versions.get(pin_version) or resolver.objects.get(object_name)
-            data = resolved.data if resolved is not None else {}
-
-            def _src_progress(msg: str) -> None:
-                if not as_json:
-                    console.print(f"[dim]{msg}[/dim]")
-
-            try:
-                src = download_remote_source(
-                    object_name,
-                    pin_version,
-                    data,
-                    on_progress=_src_progress,
-                )
-            except Exception as e:
-                _fail(f"Remote source unavailable: {e}", "E_NO_REMOTE_SOURCE")
-            # Register the extracted source and re-resolve so the pinned
-            # version becomes a LOCAL source candidate; once materialized
-            # it is a plain source override.
-            resolver._add_to_manifest(src, ObjectType.GEM)
-            resolver = Resolver()
-            resolver.resolve()
-            override = ObjectOverride(version=pin_version, artifact="source")
-            override.path = str(src)
-        new_overrides[object_name] = override
-
-    # Re-solve with the new pins — validate before persisting anything
-    root_name = _workspace_root_name(meta, resolver)
-    if not root_name or root_name not in resolver.objects:
-        _fail("Workspace root object is not registered in the manifest", "E_NO_ROOT")
-
-    pins = {n: o.version for n, o in new_overrides.items()}
-    solve_result = solve_for_workspace(
-        root_name=root_name,
-        resolver=resolver,
-        overrides=pins,
+    request = OverrideRequest(
+        object_name=object_name,
+        version=pin_version,
+        artifact=artifact,
+        clear=clear,
+        apply=not no_apply,
     )
-    if not solve_result.is_resolved:
-        _fail(
-            f"Override rejected — resolution failed: {solve_result.conflict_message}",
-            "E_SOLVE_CONFLICT",
-        )
-
-    # Persist the override set
-    meta.overrides = new_overrides
-
-    # Determine which linked objects changed and relink them
-    new_map: dict[str, tuple[Path, ObjectType]] = {}
-    for cand_map in (solve_result.candidates, solve_result.children):
-        for cname, cand in cand_map.items():
-            if cand.status == CandidateStatus.LOCAL and cand.path:
-                new_map[cname] = (cand.path, cand.object_type)
-
-    changed: list[str] = []
-    if not no_apply:
-        current: dict[str, str] = {}
-        for bucket in (
-            meta.sources.engines,
-            meta.sources.projects,
-            meta.sources.gems,
-            meta.sources.templates,
-        ):
-            current.update(bucket)
-
-        root_resolved = Path(meta.root_object).resolve() if meta.root_object else None
-        for cname, (cpath, ctype) in new_map.items():
-            if root_resolved and cpath.resolve() == root_resolved:
-                continue  # the root object itself is never relinked here
-            old_path = current.get(cname)
-            if old_path and Path(old_path).resolve() == cpath.resolve():
-                continue
-            # Re-apply any overlays composed onto this object — relinking
-            # without them would silently strip the composition
-            _relink_object(
-                ws_path,
-                meta,
-                cname,
-                cpath,
-                ctype,
-                new_map,
-                overlays=_overlays_for_base(meta, cname),
-            )
-            changed.append(cname)
-
-        _write_workspace_meta(ws_path, meta)
-
-        # Regenerate the workspace-scoped CMake manifest
-        from o3de_cli.core.cmake_manifest import generate_cmake_manifest
-
-        tp = _find_third_party_path(meta=meta)
-        generate_cmake_manifest(
+    try:
+        changed = apply_override(
             ws_path,
-            third_party_path=str(tp) if tp else "",
-            overrides=meta.overrides,
+            meta,
+            request,
+            resolver_cls=Resolver,
+            solve=solve_for_workspace,
+            on_progress=_download_progress,
         )
-    else:
-        _write_workspace_meta(ws_path, meta)
+    except WorkspaceOpError as e:
+        _exit_with_error(as_json, e.message, e.code)
+    if request.apply:
+        _write_cmake_manifest(ws_path, meta, overrides=meta.overrides)
 
+    _render_override(as_json, request, changed)
+
+
+def _render_override(as_json: bool, request: OverrideRequest, changed: list[str]) -> None:
     if as_json:
+        from o3de_cli.core.json_output import emit_response
+
         emit_response(
             data={
-                "action": "cleared" if clear else "overridden",
-                "object": object_name,
-                "version": pin_version,
-                "artifact": artifact,
+                "action": "cleared" if request.clear else "overridden",
+                "object": request.object_name,
+                "version": request.version,
+                "artifact": request.artifact,
                 "relinked": changed,
-                "applied": not no_apply,
+                "applied": request.apply,
             }
         )
+        return
+
+    if request.clear:
+        console.print(f"[green]Cleared override for[/green] {request.object_name}")
     else:
-        if clear:
-            console.print(f"[green]Cleared override for[/green] {object_name}")
-        else:
-            console.print(f"[green]Pinned[/green] {object_name}=={pin_version} [{artifact}]")
-        if changed:
-            console.print(f"  Relinked: {', '.join(changed)}")
-        elif not no_apply:
-            console.print("  No linked objects changed")
-        if artifact in ("local-binary", "remote-binary") and not clear:
-            console.print(
-                "[dim]Prebuilt package will be imported on the next "
-                "(re)configure instead of building the gem from source[/dim]"
-            )
-        elif artifact == "remote-source" and not clear:
-            console.print(
-                "[dim]Source release downloaded and registered — builds "
-                "from source like any local gem[/dim]"
-            )
+        console.print(
+            f"[green]Pinned[/green] {request.object_name}=={request.version} [{request.artifact}]"
+        )
+    if changed:
+        console.print(f"  Relinked: {', '.join(changed)}")
+    elif request.apply:
+        console.print("  No linked objects changed")
+    if request.artifact in ("local-binary", "remote-binary") and not request.clear:
+        console.print(
+            "[dim]Prebuilt package will be imported on the next "
+            "(re)configure instead of building the gem from source[/dim]"
+        )
+    elif request.artifact == "remote-source" and not request.clear:
+        console.print(
+            "[dim]Source release downloaded and registered — builds "
+            "from source like any local gem[/dim]"
+        )
 
 
 def _install_remote_overlay(name: str) -> Path | None:
@@ -1384,62 +817,6 @@ def _install_remote_overlay(name: str) -> Path | None:
     ctx = click.Context(add_command)
     ctx.invoke(add_command, path=str(installed))
     return installed
-
-
-def _read_overlay_info(path: Path) -> dict:
-    """Read overlay metadata needed for composition from an overlay dir.
-
-    Returns ``{name, extends, precedence, deps}`` where ``extends`` is the
-    base object's bare name and ``deps`` are overlay names from
-    ``dependent.overlays``.
-    """
-    import json as json_mod
-
-    from o3de_cli.core.resolver import ObjectNameVersion
-
-    info: dict[str, Any] = {"name": path.name, "extends": None, "precedence": 0, "deps": []}
-    for fname in ("overlay.2-0-0.json", "overlay.json"):
-        candidate = path / fname
-        if not candidate.exists():
-            continue
-        try:
-            with open(candidate, encoding="utf-8-sig") as f:
-                data = json_mod.load(f)
-        except (OSError, json_mod.JSONDecodeError):
-            continue
-        header = data.get("overlay", {}) if isinstance(data.get("overlay"), dict) else {}
-        info["name"] = header.get("name") or info["name"]
-        extends = data.get("extends", "")
-        if extends:
-            info["extends"] = ObjectNameVersion(extends).name
-        info["precedence"] = data.get("precedence", 0)
-        info["deps"] = [
-            ObjectNameVersion(d).name
-            for d in (data.get("dependent", {}) or {}).get("overlays", []) or []
-            if isinstance(d, str)
-        ]
-        break
-    return info
-
-
-def _overlays_for_base(meta: WorkspaceMeta, base_name: str) -> list[tuple[Path, int]]:
-    """Return the workspace's composed overlays extending *base_name* in
-    final apply order (authored precedence, then meta.overlay_order),
-    as ``(path, sequence)`` tuples for :func:`_relink_object`."""
-    entries: list[tuple[str, Path, int]] = []
-    for ov_name, ov_path in meta.sources.overlays.items():
-        if not ov_path:
-            continue
-        info = _read_overlay_info(Path(ov_path))
-        if info["extends"] == base_name:
-            entries.append((ov_name, Path(ov_path), info["precedence"]))
-    entries.sort(key=lambda t: (t[2], t[0]))
-    explicit = (meta.overlay_order or {}).get(base_name) or []
-    if explicit:
-        named = [e for n in explicit for e in entries if e[0] == n]
-        rest = [e for e in entries if e[0] not in set(explicit)]
-        entries = named + rest
-    return [(p, i) for i, (_n, p, _prec) in enumerate(entries)]
 
 
 @workspace.command("update")
@@ -1496,344 +873,103 @@ def update_command(
     affected extended objects are recomposed and attribution records
     migrated.
     """
-    from o3de_cli.core.json_output import emit_error, emit_response
+    workspace_path, meta = _load_workspace(
+        name_or_path, as_json, "Missing workspace.json metadata file."
+    )
 
-    # Find workspace
-    workspace_path = Path(name_or_path)
-    if not workspace_path.exists():
-        workspace_path = get_default_workspaces_path() / name_or_path
-
-    if not workspace_path.exists():
-        if as_json:
-            emit_error(f"Workspace not found: {name_or_path}", code="E_WS_NOT_FOUND")
-        else:
-            console.print(f"[red]Workspace not found:[/red] {name_or_path}")
-        raise SystemExit(1)
-
-    # Load workspace metadata
-    meta = _read_workspace_meta(workspace_path)
-    if meta is None:
-        if as_json:
-            emit_error(f"Not a valid workspace: {workspace_path}", code="E_WS_INVALID")
-        else:
-            console.print(f"[red]Not a valid workspace:[/red] {workspace_path}")
-            console.print("Missing workspace.json metadata file.")
-        raise SystemExit(1)
-
-    # ------------------------------------------------------------------
-    # Overlay set / order / attribution change
-    # ------------------------------------------------------------------
-    attr_change = attributions is not None and attributions != (meta.attributions or "workspace")
-    if add_overlay or remove_overlay or overlay_order or attr_change:
-
-        def _fail(msg: str, code: str) -> NoReturn:
-            if as_json:
-                emit_error(msg, code=code)
-            else:
-                console.print(f"[red]{msg}[/red]")
-            raise SystemExit(1)
-
-        current: dict[str, str] = dict(meta.sources.overlays)
-
-        # Resolve additions against installed overlays
-        resolver = Resolver()
-        resolver.resolve()
-
-        adds: dict[str, str] = {}
-        pending = list(add_overlay)
-        while pending:
-            ov_name = pending.pop(0)
-            if ov_name in current or ov_name in adds:
-                continue
-            ov = resolver.overlays.get(ov_name)
-            if ov is None or not ov.path:
-                # Not installed locally — try acquiring from registered
-                # remote repos before failing
-                if not as_json:
-                    console.print(f"[dim]Downloading remote overlay: {ov_name}[/dim]")
-                installed = _install_remote_overlay(ov_name)
-                if installed is None:
-                    _fail(
-                        f"Overlay not installed locally and not found in remote repos: {ov_name}",
-                        "E_OVERLAY_NOT_FOUND",
-                    )
-                resolver = Resolver()
-                resolver.resolve()
-                ov = resolver.overlays.get(ov_name)
-                if ov is None or not ov.path:
-                    _fail(f"Overlay install failed: {ov_name}", "E_OVERLAY_NOT_FOUND")
-            adds[ov_name] = str(ov.path)
-            # Pull overlay dependencies along
-            info = _read_overlay_info(ov.path)
-            for dep in info["deps"]:
-                if dep not in current and dep not in adds:
-                    pending.append(dep)
-
-        removes = set(remove_overlay)
-        for ov_name in removes:
-            if ov_name not in current:
-                _fail(f"Overlay not in workspace: {ov_name}", "E_OVERLAY_NOT_IN_WS")
-
-        # New frozen set
-        new_set: dict[str, str] = {n: p for n, p in current.items() if n not in removes}
-        new_set.update(adds)
-
-        # Dependency guard: a remaining overlay must not depend on a removed one
-        for ov_name, ov_path in new_set.items():
-            info = _read_overlay_info(Path(ov_path))
-            broken = [d for d in info["deps"] if d in removes]
-            if broken:
-                _fail(
-                    f"Cannot remove {', '.join(broken)}: still required by "
-                    f"{ov_name} (remove it too or keep the dependency)",
-                    "E_OVERLAY_DEP",
-                )
-
-        # Group the NEW overlay set by extended base object
-        # (name, path, authored precedence)
-        overlays_by_base: dict[str, list[tuple[str, Path, int]]] = {}
-        for ov_name, ov_path in new_set.items():
-            info = _read_overlay_info(Path(ov_path))
-            if info["extends"]:
-                overlays_by_base.setdefault(info["extends"], []).append(
-                    (ov_name, Path(ov_path), info["precedence"])
-                )
-
-        # Parse explicit ordering requests; validate and map to bases
-        order_map: dict[str, list[str]] = dict(meta.overlay_order or {})
-        # Drop removed overlays from any persisted order
-        for base in list(order_map):
-            order_map[base] = [n for n in order_map[base] if n not in removes]
-            if not order_map[base]:
-                del order_map[base]
-
-        ordered_bases: set[str] = set()
-        for value in overlay_order:
-            names = [t.strip() for t in value.split(",") if t.strip()]
-            if len(names) < 2:
-                _fail(
-                    "--overlay-order needs at least two comma-separated overlay names",
-                    "E_OVERLAY_ORDER",
-                )
-            bases: set[str] = set()
-            for n in names:
-                if n not in new_set:
-                    _fail(f"--overlay-order: overlay not in workspace: {n}", "E_OVERLAY_ORDER")
-                info = _read_overlay_info(Path(new_set[n]))
-                bases.add(info["extends"] or "")
-            if len(bases) != 1:
-                _fail(
-                    "--overlay-order: overlays must all extend the same object",
-                    "E_OVERLAY_ORDER",
-                )
-            base = bases.pop()
-            order_map[base] = names
-            ordered_bases.add(base)
-
-        def _ordered_for_base(base: str) -> list[tuple[Path, int]]:
-            """Final apply order: authored precedence, then explicit
-            workspace order stable-reordering the named ones first."""
-            entries = sorted(overlays_by_base.get(base, []), key=lambda t: (t[2], t[0]))
-            explicit = order_map.get(base) or []
-            if explicit:
-                named = [e for n in explicit for e in entries if e[0] == n]
-                rest = [e for e in entries if e[0] not in set(explicit)]
-                entries = named + rest
-            return [(path, i) for i, (_n, path, _p) in enumerate(entries)]
-
-        # Bases affected by the change
-        affected_bases: set[str] = set(ordered_bases)
-        for ov_name in set(adds) | removes:
-            src = adds.get(ov_name) or current.get(ov_name)
-            if src:
-                info = _read_overlay_info(Path(src))
-                if info["extends"]:
-                    affected_bases.add(info["extends"])
-
-        # Attribution mode change: migrate records.  Recomposing every
-        # base with overlays re-places attribution at the new location
-        # (and wipes object-mode records); the workspace ledger must be
-        # cleared explicitly when leaving workspace mode.
-        old_attr_mode = meta.attributions or "workspace"
-        if attr_change:
-            affected_bases |= set(overlays_by_base)
-            meta.attributions = None if attributions == "workspace" else attributions
-            if old_attr_mode == "workspace":
-                import shutil as _shutil
-
-                for ov_name in new_set:
-                    attr_dir = workspace_path / "Overlays" / ov_name
-                    if attr_dir.exists():
-                        rmtree_force(attr_dir)
-                    attr_prefix = f"Overlays/{ov_name}/"
-                    meta.file_links = {
-                        src: rel
-                        for src, rel in meta.file_links.items()
-                        if not rel.startswith(attr_prefix)
-                    }
-
-        # Build the full object map from meta.sources
-        all_objects: dict[str, tuple[Path, ObjectType]] = {}
-        bucket_types = [
-            ("engines", ObjectType.ENGINE),
-            ("projects", ObjectType.PROJECT),
-            ("gems", ObjectType.GEM),
-            ("templates", ObjectType.TEMPLATE),
-        ]
-        for bucket, btype in bucket_types:
-            for obj_name, obj_path in getattr(meta.sources, bucket).items():
-                if obj_path:
-                    all_objects[obj_name] = (Path(obj_path), btype)
-
-        recomposed: list[str] = []
-        skipped: list[str] = []
-        for base_name in sorted(affected_bases):
-            entry = all_objects.get(base_name)
-            if entry is None:
-                skipped.append(base_name)
-                continue
-            base_path, base_type = entry
-            _relink_object(
-                workspace_path,
-                meta,
-                base_name,
-                base_path,
-                base_type,
-                all_objects,
-                overlays=_ordered_for_base(base_name),
-            )
-            recomposed.append(base_name)
-
-        # Remove the workspace attribution ledger entries for removed
-        # overlays (object-mode attribution is wiped by the recompose)
-        import shutil
-
-        for ov_name in removes:
-            attr_dir = workspace_path / "Overlays" / ov_name
-            if attr_dir.exists():
-                rmtree_force(attr_dir)
-            attr_prefix = f"Overlays/{ov_name}/"
-            meta.file_links = {
-                src: rel for src, rel in meta.file_links.items() if not rel.startswith(attr_prefix)
-            }
-
-        # Persist the new frozen overlay set and apply order
-        meta.sources.overlays = new_set
-        meta.overlay_order = order_map or None
-        _write_workspace_meta(workspace_path, meta)
-
-        # Regenerate the workspace-scoped CMake manifest
-        from o3de_cli.core.cmake_manifest import generate_cmake_manifest
-
-        tp = _find_third_party_path(meta=meta)
-        generate_cmake_manifest(
-            workspace_path,
-            third_party_path=str(tp) if tp else "",
+    if add_overlay or remove_overlay or overlay_order or attributions_change(meta, attributions):
+        change = OverlayChange(
+            add=add_overlay,
+            remove=remove_overlay,
+            order=overlay_order,
+            attributions=attributions,
         )
-
-        if as_json:
-            emit_response(
-                data={
-                    "action": "overlays-updated",
-                    "workspace": str(workspace_path),
-                    "added": sorted(adds),
-                    "removed": sorted(removes),
-                    "reordered": sorted(ordered_bases),
-                    "attributions": attributions if attr_change else None,
-                    "recomposed": recomposed,
-                    "skipped": skipped,
-                    "overlays": sorted(new_set),
-                }
-            )
-        else:
-            console.print(f"[green]Updated overlays:[/green] {workspace_path}")
-            if adds:
-                console.print(f"  Added: {', '.join(sorted(adds))}")
-            if removes:
-                console.print(f"  Removed: {', '.join(sorted(removes))}")
-            if attr_change:
-                console.print(f"  Attributions: {old_attr_mode} → {attributions}")
-            if ordered_bases:
-                for base in sorted(ordered_bases):
-                    console.print(f"  Order for {base}: {' → '.join(order_map[base])}")
-            console.print(f"  Recomposed: {', '.join(recomposed) or '(none)'}")
-            if skipped:
-                console.print(
-                    f"[yellow]  Skipped (base not in workspace): {', '.join(skipped)}[/yellow]"
-                )
-            console.print(f"  Overlays now: {len(new_set)}")
+        _update_overlays(workspace_path, meta, change, as_json)
         return
 
-    # Reconstruct workspace from metadata
-    sources: list[Path] = []
-    for type_dict in [
-        meta.sources.engines,
-        meta.sources.projects,
-        meta.sources.gems,
-        meta.sources.templates,
-    ]:
-        for _name, path in type_dict.items():
-            if path:
-                sources.append(Path(path))
-    existing_overlays = [Path(p) for p in meta.sources.overlays.values()]
-    new_overlays = [Path(o).resolve() for o in overlay]
-    all_overlays = existing_overlays + new_overlays
-
-    # Root object: the one recorded at creation. Guessing from the sources
-    # would pick the engine (engines are listed first) and silently turn a
-    # project- or gem-rooted workspace into an engine-rooted one.
-    if meta.root_object:
-        root_source = Path(meta.root_object)
-    else:
-        root_source = sources[0] if sources else workspace_path
-    try:
-        root_type = ObjectType(meta.root_type) if meta.root_type else detect_root_type(root_source)
-    except (ValueError, WorkspaceError):
-        root_type = ObjectType.ENGINE  # fallback
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
+    plan = plan_resync(workspace_path, meta, overlay)
+    with _spinner() as progress:
         task = progress.add_task("Updating workspace...", total=None)
-
-        workspace_obj = Workspace(
-            root_path=workspace_path,
-            root_object_path=root_source,
-            root_object_type=root_type,
-        )
-
-        # Add resolved objects from sources with their types
-        for i, source in enumerate(sources):
-            if (source / "engine.json").exists():
-                stype = ObjectType.ENGINE
-            elif (source / "project.json").exists():
-                stype = ObjectType.PROJECT
-            elif (source / "gem.json").exists():
-                stype = ObjectType.GEM
-            else:
-                stype = ObjectType.GEM
-            workspace_obj.add_resolved_object(source.name, source, stype)
-
-        # Add overlays
-        for i, overlay_path in enumerate(all_overlays):
-            workspace_obj.add_overlay(overlay_path, precedence=i)
-
-        workspace_obj.update()
-
+        apply_resync(workspace_path, plan, workspace_cls=Workspace)
         progress.update(task, description="Done")
 
     if as_json:
+        from o3de_cli.core.json_output import emit_response
+
         emit_response(
             data={
                 "action": "updated",
                 "workspace": str(workspace_path),
-                "overlays": len(all_overlays),
+                "overlays": len(plan.overlays),
             }
         )
     else:
         console.print(f"[green]Updated workspace:[/green] {workspace_path}")
+
+
+def _update_overlays(
+    workspace_path: Path, meta: WorkspaceMeta, change: OverlayChange, as_json: bool
+) -> None:
+    """``workspace update`` with an overlay set / order / attribution change."""
+
+    def _on_download(ov_name: str) -> None:
+        if not as_json:
+            console.print(f"[dim]Downloading remote overlay: {ov_name}[/dim]")
+
+    try:
+        result = change_overlays(
+            workspace_path,
+            meta,
+            change,
+            resolver_cls=Resolver,
+            install_overlay=_install_remote_overlay,
+            on_download=_on_download,
+        )
+    except WorkspaceOpError as e:
+        _exit_with_error(as_json, e.message, e.code)
+    _write_cmake_manifest(workspace_path, meta)
+    _render_overlay_change(as_json, workspace_path, change.attributions, result)
+
+
+def _render_overlay_change(
+    as_json: bool,
+    workspace_path: Path,
+    attributions: str | None,
+    result: OverlayChangeResult,
+) -> None:
+    if as_json:
+        from o3de_cli.core.json_output import emit_response
+
+        emit_response(
+            data={
+                "action": "overlays-updated",
+                "workspace": str(workspace_path),
+                "added": sorted(result.added),
+                "removed": sorted(result.removed),
+                "reordered": sorted(result.ordered_bases),
+                "attributions": attributions if result.attributions_changed else None,
+                "recomposed": result.recomposed,
+                "skipped": result.skipped,
+                "overlays": sorted(result.overlays),
+            }
+        )
+        return
+
+    console.print(f"[green]Updated overlays:[/green] {workspace_path}")
+    if result.added:
+        console.print(f"  Added: {', '.join(sorted(result.added))}")
+    if result.removed:
+        console.print(f"  Removed: {', '.join(sorted(result.removed))}")
+    if result.attributions_changed:
+        console.print(f"  Attributions: {result.old_attributions} → {attributions}")
+    for base in sorted(result.ordered_bases):
+        console.print(f"  Order for {base}: {' → '.join(result.order_map[base])}")
+    console.print(f"  Recomposed: {', '.join(result.recomposed) or '(none)'}")
+    if result.skipped:
+        console.print(
+            f"[yellow]  Skipped (base not in workspace): {', '.join(result.skipped)}[/yellow]"
+        )
+    console.print(f"  Overlays now: {len(result.overlays)}")
 
 
 @workspace.command("list")
@@ -2265,48 +1401,6 @@ def _find_third_party_path(
     return None
 
 
-def _find_engine_path(meta: WorkspaceMeta) -> Path | None:
-    """Find the engine path from workspace metadata."""
-    for _name, path in meta.sources.engines.items():
-        if path:
-            return Path(path)
-    # Fallback: if root_type is engine, use root_object
-    if meta.root_type == "engine" and meta.root_object:
-        return Path(meta.root_object)
-    return None
-
-
-def _workspace_local_dir(
-    ws_path: Path,
-    folder: str,
-    names: "Iterable[str]",
-) -> Path | None:
-    """Return the composed workspace directory for the first matching object.
-
-    Workspaces link objects into ``<ws>/<folder>/<short_name>``.  Builds
-    must run against these composed trees — not the original sources —
-    so that overlays and workspace-level composition take effect.
-    """
-    from o3de_cli.core.workspace import _short_name
-
-    for name in names:
-        candidate = ws_path / folder / _short_name(name)
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
-def _find_project_path(meta: WorkspaceMeta) -> Path | None:
-    """Find the project path from workspace metadata."""
-    for _name, path in meta.sources.projects.items():
-        if path:
-            return Path(path)
-    # Fallback: if root_type is project, use root_object
-    if meta.root_type == "project" and meta.root_object:
-        return Path(meta.root_object)
-    return None
-
-
 def _run_pre_build_hooks(
     ws_path: Path,
     meta: WorkspaceMeta,
@@ -2625,50 +1719,16 @@ def build_command(
         o3de workspace build ./workspace --config debug --target Editor
         o3de workspace build my-workspace --engine-centric --preset windows-default
     """
-
-    from o3de_cli.core.json_output import emit_error, emit_response
-
-    # Find workspace
-    ws_path = Path(name_or_path)
-    if not ws_path.exists():
-        ws_path = get_default_workspaces_path() / name_or_path
-
-    if not ws_path.exists():
-        if as_json:
-            emit_error(f"Workspace not found: {name_or_path}", code="E_WS_NOT_FOUND")
-        else:
-            console.print(f"[red]Workspace not found:[/red] {name_or_path}")
-        raise SystemExit(1)
-
-    meta = _read_workspace_meta(ws_path)
-    if meta is None:
-        if as_json:
-            emit_error(f"Not a valid workspace: {ws_path}", code="E_WS_INVALID")
-        else:
-            console.print(f"[red]Not a valid workspace:[/red] {ws_path}")
-        raise SystemExit(1)
-
-    # Resolve paths — prefer the composed workspace trees over the
-    # original source paths, so builds use the workspace composition
-    # (engine without embedded gems, workspace-level Gems/, overlays).
-    engine_path = _workspace_local_dir(
-        ws_path,
-        "Engines",
-        meta.sources.engines.keys(),
-    ) or _find_engine_path(meta)
-    project_path = _workspace_local_dir(
-        ws_path,
-        "Projects",
-        meta.sources.projects.keys(),
-    ) or _find_project_path(meta)
-
+    ws_path, meta = _load_workspace(name_or_path, as_json)
+    engine_path, project_path = build_source_paths(ws_path, meta)
     if not engine_path:
-        if as_json:
-            emit_error("No engine found in workspace metadata.", code="E_NO_ENGINE")
-        else:
-            console.print("[red]No engine found in workspace metadata.[/red]")
-            console.print("[dim]Hint: Re-create the workspace with a registered engine.[/dim]")
-        raise SystemExit(1)
+        _exit_with_error(
+            as_json,
+            "No engine found in workspace metadata.",
+            "E_NO_ENGINE",
+            "[red]No engine found in workspace metadata.[/red]",
+            "[dim]Hint: Re-create the workspace with a registered engine.[/dim]",
+        )
 
     if not project_path and not engine_centric:
         engine_centric = True
@@ -2678,203 +1738,130 @@ def build_command(
                 "switching to engine-centric build.[/yellow]"
             )
 
-    # Gem-rooted workspace with no explicit target: build the gem.
-    # The engine-centric configure registers the composed gem via the
+    # Gem-rooted workspace with no explicit target: build the gem.  The
+    # engine-centric configure registers the composed gem via the
     # workspace-scoped manifest, so its module target exists.
-    if not target and meta.root_type == "gem" and meta.root_object:
-        root_resolved = Path(meta.root_object).resolve()
-        root_gem_name = None
-        # Legacy gem.json gem_name names the CMake targets when present
-        # (2.0.0-native gems target their canonical name instead)
-        for json_name in ("gem.json", "gem.2-0-0.json"):
-            gem_json = root_resolved / json_name
-            if gem_json.exists():
-                try:
-                    with open(gem_json, encoding="utf-8-sig") as f:
-                        legacy = json.load(f).get("gem_name")
-                    if legacy:
-                        root_gem_name = legacy
-                        break
-                except Exception:
-                    pass
-        if root_gem_name is None:
-            for gname, gpath in meta.sources.gems.items():
-                if gpath and Path(gpath).resolve() == root_resolved:
-                    root_gem_name = gname
-                    break
-        if root_gem_name is None:
-            from o3de_cli.core.workspace import _object_name_from_path
+    if not target:
+        gem_target = root_gem_target(meta)
+        if gem_target is not None:
+            target = (gem_target,)
+            if not as_json:
+                console.print(
+                    f"[dim]Gem-rooted workspace — defaulting build target to {gem_target}[/dim]"
+                )
 
-            root_gem_name = _object_name_from_path(
-                root_resolved,
-                root_resolved.name,
-            )
-        target = (root_gem_name,)
-        if not as_json:
-            console.print(
-                f"[dim]Gem-rooted workspace — defaulting build target to {root_gem_name}[/dim]"
-            )
-
-    # Resolve third-party path (K6 resolution chain)
-    tp_path: Path | None = None
+    # Third-party path via the K6 resolution chain, generator per K5
     if third_party_path:
-        tp_path = Path(third_party_path)
+        tp_path: Path | None = Path(third_party_path)
     else:
         tp_path = _find_third_party_path(meta=meta, engine_path=engine_path)
-
-    # K5: Resolve generator
-    cmake_generator = _select_generator(generator)
-
-    # Platform build subdirectory
+    opts = BuildOptions(
+        config=config,
+        targets=target,
+        configure_only=configure_only,
+        reconfigure=reconfigure,
+        preset=preset,
+        parallel=parallel,
+        generator=_select_generator(generator),
+        third_party=tp_path,
+    )
     platform_dir = _PLATFORM_BUILD_DIR.get(sys.platform, sys.platform)
-
-    # Determine source and build directories.
-    # The build dir lives at the workspace root (not inside the engine or
-    # project trees) to keep paths short — deep autogen/moc output paths
-    # can otherwise exceed Windows MAX_PATH (260 chars).
-    if engine_centric:
-        source_dir = engine_path
-    else:
-        assert project_path is not None
-        source_dir = project_path
-    build_dir = ws_path / "build" / platform_dir
-
-    mode = "engine-centric" if engine_centric else "project-centric"
+    layout = build_layout(ws_path, engine_path, project_path, engine_centric, platform_dir)
 
     if not as_json:
-        console.print(f"[bold]Building workspace:[/bold] {meta.workspace.name}")
-        console.print(f"  Mode: {mode}")
-        console.print(f"  Config: {config}")
-        console.print(f"  Source: {source_dir}")
-        console.print(f"  Build dir: {build_dir}")
-        if cmake_generator:
-            console.print(f"  Generator: {cmake_generator}")
-        if tp_path:
-            console.print(f"  3rd-party: {tp_path}")
+        _print_build_header(meta, layout, opts)
+    # Presets and pre_build hooks could change anything: not on --dry-run
+    if not dry_run:
+        _prepare_build(ws_path, meta, layout, no_hooks, yes_hooks, as_json)
 
-    # ------------------------------------------------------------------
-    # K2: Ensure project CMakePresets.json includes engine presets
-    # (skipped on --dry-run: must not mutate any files)
-    # ------------------------------------------------------------------
-    if not dry_run and not engine_centric and project_path:
-        if _ensure_project_cmake_presets(project_path, engine_path):
+    configure_cmd, build_cmd = plan_cmake_commands(ws_path, layout, opts)
+    if dry_run:
+        _render_build_dry_run(as_json, meta, layout, opts, configure_cmd, build_cmd)
+        return
+    _run_build_steps(as_json, meta, layout, opts, configure_cmd, build_cmd)
+
+
+def _print_build_header(meta: WorkspaceMeta, layout: BuildLayout, opts: BuildOptions) -> None:
+    console.print(f"[bold]Building workspace:[/bold] {meta.workspace.name}")
+    console.print(f"  Mode: {layout.mode}")
+    console.print(f"  Config: {opts.config}")
+    console.print(f"  Source: {layout.source_dir}")
+    console.print(f"  Build dir: {layout.build_dir}")
+    if opts.generator:
+        console.print(f"  Generator: {opts.generator}")
+    if opts.third_party:
+        console.print(f"  3rd-party: {opts.third_party}")
+
+
+def _prepare_build(
+    ws_path: Path,
+    meta: WorkspaceMeta,
+    layout: BuildLayout,
+    no_hooks: bool,
+    yes_hooks: bool,
+    as_json: bool,
+) -> None:
+    """K2: point the project's CMakePresets.json at the engine; run pre_build hooks."""
+    if not layout.engine_centric and layout.project_path:
+        if _ensure_project_cmake_presets(layout.project_path, layout.engine_path):
             if not as_json:
                 console.print("[dim]Updated project CMakePresets.json with engine include[/dim]")
+    _run_pre_build_hooks(ws_path, meta, no_hooks, yes_hooks, as_json)
 
-    # ------------------------------------------------------------------
-    # pre_build hooks (skipped on --dry-run: they could change anything)
-    # ------------------------------------------------------------------
-    if not dry_run:
-        _run_pre_build_hooks(ws_path, meta, no_hooks, yes_hooks, as_json)
 
-    # ------------------------------------------------------------------
-    # Build configure + build commands
-    # ------------------------------------------------------------------
-    needs_configure = reconfigure or not (build_dir / "CMakeCache.txt").exists()
-    configure_cmd: list[str] | None = None
-    build_cmd_list: list[str] | None = None
+def _render_build_dry_run(
+    as_json: bool,
+    meta: WorkspaceMeta,
+    layout: BuildLayout,
+    opts: BuildOptions,
+    configure_cmd: list[str] | None,
+    build_cmd: list[str] | None,
+) -> None:
+    commands = [c for c in (configure_cmd, build_cmd) if c]
+    if as_json:
+        from o3de_cli.core.json_output import emit_response
 
-    if needs_configure:
-        if preset:
-            configure_cmd = [
-                "cmake",
-                "--preset",
-                preset,
-                "-S",
-                str(source_dir),
-            ]
-        else:
-            configure_cmd = [
-                "cmake",
-                "-B",
-                str(build_dir),
-                "-S",
-                str(source_dir),
-            ]
-            if cmake_generator:
-                configure_cmd.append(f"-G{cmake_generator}")
+        emit_response(
+            data={
+                "workspace": meta.workspace.name,
+                "mode": layout.mode,
+                "config": opts.config,
+                "source_dir": str(layout.source_dir),
+                "build_dir": str(layout.build_dir),
+                "generator": opts.generator,
+                "third_party_path": str(opts.third_party) if opts.third_party else None,
+                "commands": [" ".join(c) for c in commands],
+                "dry_run": True,
+            }
+        )
+    else:
+        console.print("\n[bold yellow]Dry run — commands that would be executed:[/bold yellow]")
+        for cmd in commands:
+            console.print(f"  [dim]$ {' '.join(cmd)}[/dim]")
 
-        if tp_path:
-            configure_cmd.append(f"-DLY_3RDPARTY_PATH={tp_path}")
-        if engine_centric and project_path:
-            configure_cmd.append(f"-DLY_PROJECTS={project_path}")
 
-        # Workspace-scoped resolved manifest: point CMake at the
-        # compose-time solution instead of ~/.o3de's user manifest.
-        ws_cmake_manifest = ws_path / "resolved_o3de_manifest.json"
-        if ws_cmake_manifest.exists():
-            configure_cmd.append(f"-DO3DE_RESOLVED_MANIFEST={ws_cmake_manifest.as_posix()}")
-        # Tell the project bootstrap where the composed engine lives
-        if engine_path and not engine_centric:
-            configure_cmd.append(f"-DO3DE_ENGINE_PATH={Path(engine_path).as_posix()}")
+def _run_build_steps(
+    as_json: bool,
+    meta: WorkspaceMeta,
+    layout: BuildLayout,
+    opts: BuildOptions,
+    configure_cmd: list[str] | None,
+    build_cmd: list[str] | None,
+) -> None:
+    """Run CMake configure (if planned) and build; exit with CMake's code on failure."""
+    from o3de_cli.core.json_output import emit_response
 
-    if not configure_only:
-        cmake_config = {"debug": "Debug", "profile": "Profile", "release": "Release"}[config]
-        build_cmd_list = [
-            "cmake",
-            "--build",
-            str(build_dir),
-            "--config",
-            cmake_config,
-        ]
-        if target:
-            build_cmd_list.append("--target")
-            build_cmd_list.extend(target)
-        if parallel:
-            build_cmd_list.extend(["--parallel", str(parallel)])
-        else:
-            build_cmd_list.append("--parallel")
-
-    # ------------------------------------------------------------------
-    # Dry-run: show commands and exit
-    # ------------------------------------------------------------------
-    if dry_run:
-        commands = []
-        if configure_cmd:
-            commands.append(configure_cmd)
-        if build_cmd_list:
-            commands.append(build_cmd_list)
-
-        if as_json:
-            emit_response(
-                data={
-                    "workspace": meta.workspace.name,
-                    "mode": mode,
-                    "config": config,
-                    "source_dir": str(source_dir),
-                    "build_dir": str(build_dir),
-                    "generator": cmake_generator,
-                    "third_party_path": str(tp_path) if tp_path else None,
-                    "commands": [" ".join(c) for c in commands],
-                    "dry_run": True,
-                }
-            )
-        else:
-            console.print("\n[bold yellow]Dry run — commands that would be executed:[/bold yellow]")
-            for cmd in commands:
-                console.print(f"  [dim]$ {' '.join(cmd)}[/dim]")
-        return
-
-    # ------------------------------------------------------------------
-    # Execute: CMake configure
-    # ------------------------------------------------------------------
     if configure_cmd:
         if not as_json:
             console.print("\n[bold]Configuring...[/bold]")
             console.print(f"[dim]$ {' '.join(configure_cmd)}[/dim]")
-
-        rc = _run_cmake(configure_cmd, cwd=source_dir)
+        rc = _run_cmake(configure_cmd, cwd=layout.source_dir)
         if rc != 0:
-            if as_json:
-                emit_error("CMake configure failed.", code="E_CONFIGURE_FAILED")
-            else:
-                console.print("[red]CMake configure failed.[/red]")
-            raise SystemExit(rc)
-
+            _exit_with_error(as_json, "CMake configure failed.", "E_CONFIGURE_FAILED", exit_code=rc)
         if not as_json:
             console.print("[green]Configure complete.[/green]")
 
-    if configure_only:
+    if opts.configure_only:
         if as_json:
             emit_response(
                 data={
@@ -2885,31 +1872,23 @@ def build_command(
             )
         return
 
-    # ------------------------------------------------------------------
-    # Execute: CMake build
-    # ------------------------------------------------------------------
-    assert build_cmd_list is not None
+    assert build_cmd is not None
     if not as_json:
         console.print("\n[bold]Building...[/bold]")
-        console.print(f"[dim]$ {' '.join(build_cmd_list)}[/dim]")
-
-    rc = _run_cmake(build_cmd_list, cwd=source_dir)
+        console.print(f"[dim]$ {' '.join(build_cmd)}[/dim]")
+    rc = _run_cmake(build_cmd, cwd=layout.source_dir)
     if rc != 0:
-        if as_json:
-            emit_error("Build failed.", code="E_BUILD_FAILED")
-        else:
-            console.print("[red]Build failed.[/red]")
-        raise SystemExit(rc)
+        _exit_with_error(as_json, "Build failed.", "E_BUILD_FAILED", exit_code=rc)
 
-    cmake_config = {"debug": "Debug", "profile": "Profile", "release": "Release"}[config]
+    cmake_config = CMAKE_CONFIGS[opts.config]
     if as_json:
         emit_response(
             data={
                 "workspace": meta.workspace.name,
-                "mode": mode,
+                "mode": layout.mode,
                 "config": cmake_config,
-                "source_dir": str(source_dir),
-                "build_dir": str(build_dir),
+                "source_dir": str(layout.source_dir),
+                "build_dir": str(layout.build_dir),
             }
         )
     else:
