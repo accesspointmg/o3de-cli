@@ -197,7 +197,7 @@ def unregister_overlay(name: str, remote: bool) -> None:
 
     if len(overlays_list) == original_len:
         console.print(f"[yellow]Overlay '{name}' not found in {section_key} manifest.[/yellow]")
-        return
+        raise SystemExit(1)
 
     section["overlays"] = overlays_list
     manifest[section_key] = section

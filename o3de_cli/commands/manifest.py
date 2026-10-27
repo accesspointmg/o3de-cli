@@ -496,6 +496,7 @@ def remove_command(path: str, as_json: bool) -> None:
             emit_error(f"Not found in manifest: {path}", code="E_NOT_FOUND")
             raise SystemExit(1)
         console.print(f"[yellow]Not found in manifest:[/yellow] {path}")
+        raise SystemExit(1)
 
 
 @manifest.command("set")

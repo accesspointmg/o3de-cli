@@ -162,9 +162,19 @@ class TestToolToCliArgs:
         assert "list" in args
 
     def test_audit(self):
-        args = _tool_to_cli_args("audit", {"path": "/my/project"})
-        assert "audit" in args
-        assert "/my/project" in args
+        # `audit` checks the registered dependency tree and takes no path; the
+        # old tool passed one, which was a usage error on every call.
+        args = _tool_to_cli_args("audit", {})
+        assert args[-2:] == ["audit", "--json"]
+
+    def test_audit_command_line_is_accepted(self):
+        from click.testing import CliRunner
+
+        from o3de_cli.__main__ import cli
+
+        args = _tool_to_cli_args("audit", {})
+        result = CliRunner().invoke(cli, args[args.index("audit"):])
+        assert result.exit_code != 2, result.output  # 2 = click usage error
 
     def test_config_get_all(self):
         args = _tool_to_cli_args("config_get", {})

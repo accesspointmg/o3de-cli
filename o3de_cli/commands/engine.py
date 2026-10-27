@@ -251,7 +251,7 @@ def unregister(name: str, remote: bool, as_json: bool) -> None:
             emit_error(f"Engine '{name}' not found in {section_key} manifest", code="E_NOT_FOUND")
             raise SystemExit(1)
         console.print(f"[yellow]Engine '{name}' not found in {section_key} manifest.[/yellow]")
-        return
+        raise SystemExit(1)
 
     section["engines"] = engines_list
     manifest[section_key] = section
