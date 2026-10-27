@@ -19,6 +19,7 @@ from o3de_cli.core import (
     resolve_manifest,
 )
 from o3de_cli.core.json_output import emit_error, emit_response
+from o3de_cli.core.paths import new_manifest_data
 from o3de_cli.core.upgrade import (
     get_schema_version,
     needs_upgrade,
@@ -380,13 +381,7 @@ def register_in_manifest(target: Path, obj_type: str | None = None) -> tuple[str
         with open(manifest_path) as f:
             manifest_data = json.load(f)
     else:
-        manifest_data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
-            "$schemaVersion": "2.0.0",
-            "local": {},
-            "remotes": [],
-            "default": {},
-        }
+        manifest_data = new_manifest_data()
 
     local = manifest_data.setdefault("local", {})
     type_list = local.setdefault(f"{obj_type}s", [])

@@ -48,6 +48,7 @@ from o3de_cli.core.split_platforms import (
     ObjectOpError,
     SplitPlan,
     create_overlays,
+    ensure_manifest,
     find_platform_dirs,
     load_object_json,
     plan_split,
@@ -637,6 +638,20 @@ def _load_object_or_fail(obj_root: Path, as_json: bool) -> tuple[dict, str]:
         return load_object_json(obj_root)
     except FileNotFoundError as e:
         _fail(str(e), "E_NOT_AN_OBJECT", as_json)
+    except ObjectOpError as e:  # E_INVALID_OBJECT: unparsable object JSON
+        _fail(str(e), e.code, as_json)
+
+
+def _ensure_manifest_for_register(as_json: bool) -> None:
+    """Create the user manifest for ``--register`` when there is none yet."""
+    created = ensure_manifest()
+    if created and not as_json:
+        console.print(f"[dim]Created manifest: {created}[/dim]")
+
+
+def _print_warnings(warnings: list[str]) -> None:
+    for warning in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
 
 
 @object_group.command("split-platforms")
@@ -726,25 +741,31 @@ def split_platforms_command(
     with _op_errors(as_json):
         created = create_overlays(plan)
     removed = remove_split_dirs(plan) if do_remove else []
-    registered = register_overlays(created) if do_register else []
-    _render_split_result(plan, created, removed, registered, as_json)
+    kept = plan.kept_common_dirs() if do_remove else []
+    registered: list[str] = []
+    if do_register:
+        _ensure_manifest_for_register(as_json)
+        registered = register_overlays(created)
+    _render_split_result(plan, created, removed, kept, registered, as_json)
 
 
 def _render_split_plan(plan: SplitPlan, as_json: bool) -> None:
     from o3de_cli.core.json_output import emit_response
 
     if as_json:
-        emit_response(data=plan.dry_run_payload())
+        emit_response(data=plan.dry_run_payload(), warnings=plan.warnings)
         return
     console.print(f"[bold]Would split {plan.base_name}:[/bold]")
     for ov in plan.overlays:
         console.print(f"  {ov.platform:<12} → {ov.name} ({ov.files} files)")
+    _print_warnings(plan.warnings)
 
 
 def _render_split_result(
     plan: SplitPlan,
     created: list[dict],
     removed: list[str],
+    kept: list[str],
     registered: list[str],
     as_json: bool,
 ) -> None:
@@ -757,8 +778,10 @@ def _render_split_result(
                 "version": plan.base_version,
                 "overlays": created,
                 "removed": removed,
+                "kept": kept,
                 "registered": registered,
-            }
+            },
+            warnings=plan.warnings,
         )
         return
     console.print(f"[green]Split {plan.base_name}:[/green]")
@@ -766,6 +789,12 @@ def _render_split_result(
         console.print(f"  {entry['platform']:<12} → {entry['path']}")
     if removed:
         console.print(f"[yellow]Removed from source:[/yellow] {', '.join(removed)}")
+    if kept:
+        console.print(
+            f"[yellow]Kept in source:[/yellow] {', '.join(kept)} "
+            f"(still used by {', '.join(plan.remaining_platforms)})"
+        )
+    _print_warnings(plan.warnings)
     if registered:
         console.print(f"[dim]Registered: {', '.join(registered)}[/dim]")
 
@@ -854,16 +883,16 @@ def hoist_command(
     with _op_errors(as_json):
         source = locate_source(obj_root, branch)
         require_filter_repo()
-    plan = plan_hoist(
-        source,
-        obj_data,
-        type_token,
-        output=output,
-        repo_name=repo_name,
-        overlay_version=overlay_version,
-        tags=tags_opt,
-        precedence=precedence,
-    )
+        plan = plan_hoist(
+            source,
+            obj_data,
+            type_token,
+            output=output,
+            repo_name=repo_name,
+            overlay_version=overlay_version,
+            tags=tags_opt,
+            precedence=precedence,
+        )
     if dry_run:
         _render_hoist_plan(plan, as_json)
         return
@@ -873,7 +902,10 @@ def hoist_command(
 
     with _op_errors(as_json):
         result = execute_hoist(plan, on_progress=None if as_json else on_progress)
-    registered = register_family_repo(plan.out_dir) if do_register else False
+    registered = False
+    if do_register:
+        _ensure_manifest_for_register(as_json)
+        registered = register_family_repo(plan.out_dir)
     _render_hoist_result(plan, result, registered, as_json)
 
 
@@ -889,6 +921,10 @@ def _render_hoist_plan(plan: HoistPlan, as_json: bool) -> None:
     console.print(f"  Gem: {plan.source.gem_rel} → {plan.gem_target}")
     for src, dst in plan.renames:
         console.print(f"  {src} → {dst}")
+    for ov in plan.skipped:
+        console.print(
+            f"  [yellow]Skipped:[/yellow] Overlays/{ov.dir_name} ({ov.platform}): {ov.skip_reason}"
+        )
 
 
 def _render_hoist_result(
@@ -905,7 +941,8 @@ def _render_hoist_result(
                 "branch": plan.source.branch,
                 "overlays": result.overlays,
                 "registered": registered,
-            }
+            },
+            warnings=result.warnings,
         )
         return
     console.print(f"[green]Hoisted {plan.base_name}:[/green] {plan.out_dir}")
@@ -913,6 +950,9 @@ def _render_hoist_result(
     console.print(f"  Gem: {plan.gem_target}")
     for ov in result.overlays:
         console.print(f"  Overlay: {ov}")
+    for skipped in plan.skipped:
+        console.print(f"  [yellow]Skipped:[/yellow] {skipped.name}: {skipped.skip_reason}")
+    _print_warnings(result.warnings)
     if registered:
         console.print("[dim]Registered family repo in manifest[/dim]")
     console.print(

@@ -130,6 +130,21 @@ def get_manifest_path() -> Path:
     return dot_o3de / "o3de_manifest.json"
 
 
+def new_manifest_data() -> dict:
+    """The skeleton written when registering an object creates the manifest.
+
+    Used by ``o3de manifest add`` and the ``--register`` flags of
+    ``object split-platforms`` / ``object hoist``.
+    """
+    return {
+        "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-manifest-2.0.0.json",
+        "$schemaVersion": "2.0.0",
+        "local": {},
+        "remotes": [],
+        "default": {},
+    }
+
+
 def get_resolved_manifest_path() -> Path:
     """Get path to resolved_o3de_manifest.json."""
     return get_dot_o3de_path() / "resolved_o3de_manifest.json"

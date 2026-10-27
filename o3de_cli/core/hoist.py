@@ -43,10 +43,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from o3de_cli.core.models import get_object_name, get_object_version
+from o3de_cli.core.paths import rmtree_force
 from o3de_cli.core.split_platforms import (
     COMMON_PLATFORM,
     ObjectOpError,
     build_overlay_meta,
+    check_overlay_name_clash,
     copy_licenses,
     family_repo_name,
     find_platform_dirs,
@@ -142,6 +144,18 @@ class HoistOverlay:
     dir_name: str  # e.g. ``widget.windows``, under ``Overlays/``
     platform: str
     name: str  # overlay object name
+    skip_reason: str | None = None  # why no overlay will be created, if skipped
+
+    def plan_entry(self) -> dict:
+        """The ``--dry-run --json`` entry for this overlay."""
+        entry = {
+            "dir": f"Overlays/{self.dir_name}",
+            "platform": self.platform,
+            "overlay": self.name,
+        }
+        if self.skip_reason is not None:
+            entry["reason"] = self.skip_reason
+        return entry
 
 
 @dataclass
@@ -162,22 +176,24 @@ class HoistPlan:
     user_tags: list[str]
     common_name: str | None
     overlays: list[HoistOverlay] = field(default_factory=list)  # sorted by dir_name
+    #: Platforms whose overlay will not be created (no files on the branch)
+    skipped: list[HoistOverlay] = field(default_factory=list)
     renames: list[tuple[str, str]] = field(default_factory=list)  # platform dir renames
     filter_args: list[str] = field(default_factory=list)
 
     def dry_run_payload(self) -> dict:
-        """The ``--dry-run --json`` payload."""
-        return {
+        """The ``--dry-run --json`` payload (``skipped`` only when non-empty)."""
+        payload = {
             "object": self.base_name,
             "repo": self.repo_name,
             "path": str(self.out_dir),
             "branch": self.source.branch,
             "gem_dir": self.gem_target,
-            "overlays": [
-                {"dir": f"Overlays/{ov.dir_name}", "platform": ov.platform, "overlay": ov.name}
-                for ov in self.overlays
-            ],
+            "overlays": [ov.plan_entry() for ov in self.overlays],
         }
+        if self.skipped:
+            payload["skipped"] = [ov.plan_entry() for ov in self.skipped]
+        return payload
 
 
 def platform_renames(
@@ -218,6 +234,32 @@ def build_filter_args(gem_rel: str, gem_target: str, renames: list[tuple[str, st
     return args
 
 
+def platforms_without_history(source: HoistSource, detected: dict[str, list[Path]]) -> set[str]:
+    """Platforms with no tracked files at the tip of ``source.branch``.
+
+    filter-repo only produces an overlay directory for a platform whose
+    dirs hold tracked files on the hoisted branch; a dir that exists in
+    the working tree only (untracked, or tracked on another branch)
+    yields nothing.  Returns an empty set when the branch tree cannot be
+    listed, leaving those overlays planned (execution still skips any
+    directory filter-repo did not produce).
+    """
+    rel_dirs = {
+        plat: [d.relative_to(source.git_root).as_posix() for d in dirs]
+        for plat, dirs in detected.items()
+    }
+    all_dirs = [d for dirs in rel_dirs.values() for d in dirs]
+    if not all_dirs:
+        return set()
+    rc, out = run_git(
+        ["ls-tree", "-z", "--name-only", source.branch, "--", *all_dirs], cwd=source.git_root
+    )
+    if rc != 0:
+        return set()
+    present = set(out.split("\0"))
+    return {plat for plat, dirs in rel_dirs.items() if not present.intersection(dirs)}
+
+
 def plan_hoist(
     source: HoistSource,
     obj_data: dict,
@@ -231,7 +273,10 @@ def plan_hoist(
 ) -> HoistPlan:
     """Plan hoisting the object at ``source.obj_root`` into a family repo.
 
-    Reads the working tree (to find platform dirs) but writes nothing.
+    Reads the working tree (to find platform dirs) and the branch tree
+    (to find which of them have history) but writes nothing.  Raises
+    :class:`ObjectOpError` (``E_OVERLAY_NAME_CLASH``) when two platform
+    dirs differ only in case.
     """
     obj_root = source.obj_root
     base_name = get_object_name(obj_data) or obj_root.name
@@ -239,8 +284,20 @@ def plan_hoist(
     family = base_name.split(".")[-1]
 
     detected = find_platform_dirs(obj_root)
+    check_overlay_name_clash(detected, obj_root)
     gem_target = f"{TYPE_SUBDIRS.get(type_token, 'Gems')}/{obj_root.name}"
     overlay_dirs, renames = platform_renames(detected, source, family)
+    no_history = platforms_without_history(source, detected)
+
+    overlays: list[HoistOverlay] = []
+    skipped: list[HoistOverlay] = []
+    for d, p in sorted(overlay_dirs.items()):
+        ov = HoistOverlay(dir_name=d, platform=p, name=split_overlay_name(base_name, p))
+        if p in no_history:
+            ov.skip_reason = f"no tracked files on branch '{source.branch}'"
+            skipped.append(ov)
+        else:
+            overlays.append(ov)
 
     return HoistPlan(
         source=source,
@@ -255,13 +312,14 @@ def plan_hoist(
         gem_target=gem_target,
         precedence=precedence,
         user_tags=parse_user_tags(tags),
+        # Platform overlays depend on the common overlay only if it will exist
         common_name=(
-            split_overlay_name(base_name, "common") if COMMON_PLATFORM in detected else None
+            split_overlay_name(base_name, "common")
+            if COMMON_PLATFORM in detected and COMMON_PLATFORM not in no_history
+            else None
         ),
-        overlays=[
-            HoistOverlay(dir_name=d, platform=p, name=split_overlay_name(base_name, p))
-            for d, p in sorted(overlay_dirs.items())
-        ],
+        overlays=overlays,
+        skipped=skipped,
         renames=renames,
         filter_args=build_filter_args(source.gem_rel, gem_target, renames),
     )
@@ -276,6 +334,7 @@ class HoistResult:
 
     overlays: list[str]  # overlay object names actually created
     lfs_objects: int = 0  # LFS objects copied from the source store
+    warnings: list[str] = field(default_factory=list)  # e.g. skipped licenses
 
 
 def clone_source(plan: HoistPlan) -> None:
@@ -302,7 +361,7 @@ def clone_source(plan: HoistPlan) -> None:
 
 
 def run_filter_repo(plan: HoistPlan) -> None:
-    """Run ``git filter-repo`` in the clone; removes the clone on failure."""
+    """Run ``git filter-repo`` in the clone (:func:`execute_hoist` removes it on failure)."""
     result = subprocess.run(
         [sys.executable, "-m", "git_filter_repo", *plan.filter_args],
         cwd=plan.out_dir,
@@ -310,7 +369,6 @@ def run_filter_repo(plan: HoistPlan) -> None:
         text=True,
     )
     if result.returncode != 0:
-        shutil.rmtree(plan.out_dir, ignore_errors=True)
         raise ObjectOpError(
             f"filter-repo failed: {result.stdout}{result.stderr}", "E_FILTER_FAILED"
         )
@@ -370,11 +428,15 @@ def carry_over_lfs(git_root: Path, out_dir: Path) -> int:
     return copied
 
 
-def write_overlay_objects(plan: HoistPlan, licenses: list[dict]) -> list[str]:
+def write_overlay_objects(
+    plan: HoistPlan, licenses: list[dict], warnings: list[str] | None = None
+) -> list[str]:
     """Write ``overlay.json`` (and license copies) into each overlay dir with history.
 
-    A planned overlay whose platform had no history (so filter-repo
-    produced no directory) is skipped.  Returns the overlay names written.
+    :func:`plan_hoist` already leaves out platforms without history; a
+    planned overlay whose directory filter-repo still did not produce is
+    skipped.  License copies skipped as unsafe are noted in *warnings*.
+    Returns the overlay names written.
     """
     gem_dir = plan.out_dir / plan.gem_target
     created: list[str] = []
@@ -397,9 +459,18 @@ def write_overlay_objects(plan: HoistPlan, licenses: list[dict]) -> list[str]:
             common_name=plan.common_name,
         )
         write_json_file(ov_root / "overlay.json", meta)
-        copy_licenses(licenses, gem_dir, ov_root)
+        _note(warnings, copy_licenses(licenses, gem_dir, ov_root))
         created.append(ov.name)
     return created
+
+
+def _note(warnings: list[str] | None, new: list[str]) -> None:
+    """Append the messages in *new* to *warnings* (if given), without duplicates."""
+    if warnings is None:
+        return
+    for message in new:
+        if message not in warnings:
+            warnings.append(message)
 
 
 def build_repo_meta(
@@ -441,18 +512,20 @@ def build_repo_meta(
     return repo_meta
 
 
-def write_repo_metadata(plan: HoistPlan) -> list[str]:
+def write_repo_metadata(plan: HoistPlan, warnings: list[str] | None = None) -> list[str]:
     """Write overlay objects, root licenses and ``repo.json`` into the split repo.
 
-    Returns the names of the overlays created.
+    Licenses whose path resolves outside the gem (or outside the copy's
+    destination) are skipped and noted in *warnings*.  Returns the names
+    of the overlays created.
     """
     out_dir = plan.out_dir
     gem_dir = out_dir / plan.gem_target
 
     # Licenses travel from the gem to each overlay and to the repo root
-    licenses = object_licenses(plan.obj_data, gem_dir)
-    created = write_overlay_objects(plan, licenses)
-    copy_licenses(licenses, gem_dir, out_dir)
+    licenses = object_licenses(plan.obj_data, gem_dir, warnings=warnings)
+    created = write_overlay_objects(plan, licenses, warnings)
+    _note(warnings, copy_licenses(licenses, gem_dir, out_dir))
 
     # Point children at the 2.0.0 sidecar when the gem ships one — the
     # remote crawler fetches the literal child path, and the legacy
@@ -492,24 +565,56 @@ def execute_hoist(plan: HoistPlan, on_progress: Callable[[str], None] | None = N
 
     *on_progress* receives plain-text progress messages.  Raises
     :class:`ObjectOpError` (``E_OUTPUT_EXISTS``, ``E_CLONE_FAILED``,
-    ``E_FILTER_FAILED``, ``E_COMMIT_FAILED``).
+    ``E_FILTER_FAILED``, ``E_COMMIT_FAILED``).  If any step after the
+    existence check fails, everything this run created is removed: the
+    output directory and any parent directories the clone made for it.
     """
     progress = on_progress or (lambda _msg: None)
     if plan.out_dir.exists():
         raise ObjectOpError(f"Output path already exists: {plan.out_dir}", "E_OUTPUT_EXISTS")
 
-    progress(f"Cloning {plan.source.git_root} (branch {plan.source.branch})...")
-    clone_source(plan)
-    progress("Filtering history (git filter-repo)...")
-    run_filter_repo(plan)
+    created_root = _first_missing_ancestor(plan.out_dir)
+    warnings: list[str] = []
+    try:
+        progress(f"Cloning {plan.source.git_root} (branch {plan.source.branch})...")
+        clone_source(plan)
+        progress("Filtering history (git filter-repo)...")
+        run_filter_repo(plan)
 
-    copied = carry_over_lfs(plan.source.git_root, plan.out_dir)
-    if copied:
-        progress(f"LFS: carried {copied} objects")
+        copied = carry_over_lfs(plan.source.git_root, plan.out_dir)
+        if copied:
+            progress(f"LFS: carried {copied} objects")
 
-    created = write_repo_metadata(plan)
-    commit_metadata(plan)
-    return HoistResult(overlays=created, lfs_objects=copied)
+        created = write_repo_metadata(plan, warnings)
+        commit_metadata(plan)
+    except ObjectOpError as e:
+        problem = _remove_created(created_root)
+        if problem:
+            raise ObjectOpError(f"{e} ({problem})", e.code) from e
+        raise
+    except BaseException:
+        _remove_created(created_root)
+        raise
+    return HoistResult(overlays=created, lfs_objects=copied, warnings=warnings)
+
+
+def _first_missing_ancestor(path: Path) -> Path:
+    """The topmost of *path* and its ancestors that does not exist yet."""
+    root = path
+    while not root.parent.exists() and root.parent != root:
+        root = root.parent
+    return root
+
+
+def _remove_created(root: Path) -> str | None:
+    """Remove *root* (made by this run) if present; a message if that failed."""
+    if not root.exists():
+        return None
+    try:
+        rmtree_force(root)
+    except OSError as e:
+        return f"could not remove partial output {root}: {e}"
+    return None
 
 
 def register_family_repo(out_dir: Path) -> bool:

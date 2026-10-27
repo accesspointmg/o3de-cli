@@ -153,3 +153,114 @@ class TestHoist:
         out = tmp_path / "family"
         result = self._run(gdir, out)
         assert result.exit_code == 1
+
+
+def _commit_gem_json(engine_repo, **changes):
+    """Rewrite the fixture gem's JSON with *changes* and commit it."""
+    gem_json = engine_repo / "Gems" / "Widget" / "gem.2-0-0.json"
+    meta = json.loads(gem_json.read_text(encoding="utf-8"))
+    meta.update(changes)
+    _write_json(gem_json, meta)
+    _git(["add", "-A"], engine_repo)
+    _git(["commit", "-m", "Change gem json"], engine_repo)
+
+
+class TestHoistRegressions:
+    def _run(self, gem_dir, out, extra=()):
+        from o3de_cli.commands.object import object_group
+
+        return CliRunner().invoke(object_group, ["hoist", str(gem_dir), "-o", str(out), *extra])
+
+    def test_malformed_json_reports_error_code(self, engine_repo, tmp_path):
+        """Regression: a malformed object JSON produced a traceback, even with --json."""
+        gem = engine_repo / "Gems" / "Widget"
+        (gem / "gem.2-0-0.json").write_text("{oops", encoding="utf-8")
+        result = self._run(gem, tmp_path / "family", ["--json"])
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        payload = json.loads(result.output)
+        assert payload["code"] == "E_INVALID_OBJECT"
+        assert "gem.2-0-0.json" in payload["error"]
+
+    def test_dry_run_matches_execution(self, engine_repo, tmp_path):
+        """Regression: dry-run listed overlays for platforms without git history."""
+        gem = engine_repo / "Gems" / "Widget"
+        linux = gem / "Code" / "Source" / "Platform" / "Linux"
+        linux.mkdir()
+        (linux / "untracked.cmake").write_text("# not committed\n")
+        out = tmp_path / "family"
+
+        dry = self._run(gem, out, ["--dry-run", "--json"])
+        assert dry.exit_code == 0, dry.output
+        plan = json.loads(dry.output)["data"]
+        assert [o["platform"] for o in plan["overlays"]] == ["Common", "Windows"]
+        assert [s["platform"] for s in plan["skipped"]] == ["Linux"]
+        assert "2.0.0" in plan["skipped"][0]["reason"]  # the fixture's branch
+
+        console_dry = self._run(gem, out, ["--dry-run"])
+        assert "Skipped" in console_dry.output and "widget.linux" in console_dry.output
+
+        result = self._run(gem, out, ["--json"])
+        assert result.exit_code == 0, result.output
+        done = json.loads(result.output)["data"]
+        assert done["overlays"] == [o["overlay"] for o in plan["overlays"]]
+
+    def test_case_clash_refused_before_writing(self, engine_repo, tmp_path):
+        """Regression: platform dirs differing only in case shared an overlay dir."""
+        gem = engine_repo / "Gems" / "Widget"
+        clash = gem / "Code" / "Tests" / "Platform" / "windows"
+        clash.mkdir(parents=True)
+        (clash / "t.cmake").write_text("t")
+        out = tmp_path / "family"
+        result = self._run(gem, out, ["--json"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.output)
+        assert payload["code"] == "E_OVERLAY_NAME_CLASH"
+        assert not out.exists()
+
+    def test_commit_failure_removes_real_clone(self, engine_repo, tmp_path):
+        """Regression: only a filter-repo failure removed the half-made family repo."""
+        from unittest.mock import patch
+
+        from o3de_cli.core.split_platforms import ObjectOpError
+
+        out = tmp_path / "family"
+        with patch(
+            "o3de_cli.core.hoist.commit_metadata",
+            side_effect=ObjectOpError("Metadata commit failed: x", "E_COMMIT_FAILED"),
+        ):
+            result = self._run(engine_repo / "Gems" / "Widget", out, ["--json"])
+        assert result.exit_code == 1, result.output
+        assert json.loads(result.output)["code"] == "E_COMMIT_FAILED"
+        assert not out.exists()
+
+    def test_escaping_license_skipped_with_warning(self, engine_repo, tmp_path):
+        """Regression: a ``..`` license path copied files from outside the object."""
+        (tmp_path / "secret.txt").write_text("secret")
+        _commit_gem_json(
+            engine_repo,
+            licenses=[
+                {"license_identifier": "MIT", "relative_path": "LICENSE_MIT.TXT"},
+                {"license_identifier": "X", "relative_path": "../../../secret.txt"},
+            ],
+        )
+        out = tmp_path / "family"
+        result = self._run(engine_repo / "Gems" / "Widget", out, ["--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert any("../../../secret.txt" in w for w in payload["warnings"])
+        assert not [p for p in out.rglob("secret.txt")]
+        assert (out / "Overlays" / "widget.windows" / "LICENSE_MIT.TXT").is_file()
+        assert (out / "LICENSE_MIT.TXT").is_file()
+
+    def test_register_creates_missing_manifest(self, engine_repo, tmp_path):
+        """Regression: ``--register`` silently did nothing without a manifest."""
+        from unittest.mock import patch
+
+        mp = tmp_path / "home" / ".o3de" / "o3de_manifest.json"
+        out = tmp_path / "family"
+        with patch("o3de_cli.core.paths.get_manifest_path", return_value=mp):
+            result = self._run(engine_repo / "Gems" / "Widget", out, ["--register", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["data"]["registered"] is True
+        assert json.loads(mp.read_text())["local"]["repos"] == [out.as_posix()]

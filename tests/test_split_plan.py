@@ -216,8 +216,10 @@ class TestExecuteSplit:
         gdir = _make_gem(tmp_path / "widget")
         plan = plan_split(gdir, GEM_DATA, "gem", platforms=["Windows"])
         remove_split_dirs(plan)
+        # Common stays too: Linux remains in the source and may depend on it
         assert sorted(p.name for p in (gdir / "Code" / "Source" / "Platform").iterdir()) == [
-            "Linux"
+            "Common",
+            "Linux",
         ]
 
 
@@ -253,3 +255,181 @@ class TestSplitCommandRegression:
         result = CliRunner().invoke(object_group, ["split-platforms", str(gdir), "-o", str(out)])
         assert result.exit_code == 0, result.output
         assert (out / "org.test.overlay.widget.linux" / "Licenses" / "MIT.txt").is_file()
+
+
+# ── Regression tests for the hoist/split bug fixes ──────────────────
+
+
+class TestInvalidObjectJson:
+    def test_malformed_json_is_an_object_error(self, tmp_path):
+        """Regression: a malformed object JSON escaped as a JSONDecodeError."""
+        from o3de_cli.core.split_platforms import load_object_json
+
+        (tmp_path / "gem.2-0-0.json").write_text('{"gem": {"name": ', encoding="utf-8")
+        with pytest.raises(ObjectOpError) as exc:
+            load_object_json(tmp_path)
+        assert exc.value.code == "E_INVALID_OBJECT"
+        assert "gem.2-0-0.json" in str(exc.value)
+
+    def test_non_object_json_is_an_object_error(self, tmp_path):
+        from o3de_cli.core.split_platforms import load_object_json
+
+        (tmp_path / "gem.json").write_text("[1, 2]", encoding="utf-8")
+        with pytest.raises(ObjectOpError) as exc:
+            load_object_json(tmp_path)
+        assert exc.value.code == "E_INVALID_OBJECT"
+        assert "gem.json" in str(exc.value)
+
+    def test_missing_json_still_file_not_found(self, tmp_path):
+        from o3de_cli.core.split_platforms import load_object_json
+
+        with pytest.raises(FileNotFoundError):
+            load_object_json(tmp_path)
+
+
+class TestLicenseContainment:
+    def test_object_licenses_drops_escaping_paths_with_warning(self, tmp_path):
+        """Regression: ``..`` license paths were accepted when the file existed."""
+        root = tmp_path / "obj"
+        root.mkdir()
+        (root / "LICENSE_MIT.TXT").write_text("MIT")
+        (tmp_path / "secret.txt").write_text("secret")
+        data = {
+            "licenses": [
+                {"license_identifier": "MIT", "relative_path": "LICENSE_MIT.TXT"},
+                {"license_identifier": "X", "relative_path": "../secret.txt"},
+                {"license_identifier": "Y", "relative_path": str(tmp_path / "secret.txt")},
+            ]
+        }
+        warnings: list[str] = []
+        kept = object_licenses(data, root, warnings=warnings)
+        assert [lic["license_identifier"] for lic in kept] == ["MIT"]
+        assert len(warnings) == 2
+        assert all("outside" in w for w in warnings)
+        assert "../secret.txt" in warnings[0]
+
+    def test_copy_licenses_never_writes_outside_destination(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "LICENSE").write_text("MIT")
+        dst = tmp_path / "out" / "dst"
+        dst.mkdir(parents=True)
+        warnings = copy_licenses(
+            [{"relative_path": "LICENSE"}, {"relative_path": "../../src/LICENSE"}], src, dst
+        )
+        assert (dst / "LICENSE").read_text() == "MIT"
+        assert sorted(p.name for p in dst.iterdir()) == ["LICENSE"]
+        assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["dst"]
+        assert len(warnings) == 1 and "../../src/LICENSE" in warnings[0]
+
+    def test_copy_licenses_rejects_destination_escape(self, tmp_path):
+        """The source resolving inside its root is not enough: so must the destination."""
+        src = tmp_path / "a" / "b"
+        (src / "x").mkdir(parents=True)
+        (tmp_path / "a" / "b" / "L").write_text("L")
+        # ``x/../L`` resolves inside src, and under dst it stays inside too;
+        # ``../b/L`` resolves inside src (a/b/L) but escapes dst.
+        dst = tmp_path / "d" / "b2"
+        dst.mkdir(parents=True)
+        warnings = copy_licenses(
+            [{"relative_path": "x/../L"}, {"relative_path": "../b/L"}], src, dst
+        )
+        assert (dst / "L").read_text() == "L"
+        assert not (tmp_path / "d" / "b").exists()
+        assert len(warnings) == 1 and "../b/L" in warnings[0]
+
+    def test_plan_split_reports_escaping_license(self, tmp_path):
+        gdir = _make_gem(tmp_path / "widget")
+        (tmp_path / "secret.txt").write_text("secret")
+        data = dict(
+            GEM_DATA,
+            licenses=GEM_DATA["licenses"]
+            + [{"license_identifier": "X", "relative_path": "../secret.txt"}],
+        )
+        plan = plan_split(gdir, data, "gem", output=str(tmp_path / "out"))
+        assert [lic["license_identifier"] for lic in plan.licenses] == ["MIT"]
+        assert len(plan.warnings) == 1 and "../secret.txt" in plan.warnings[0]
+        create_overlays(plan)
+        assert not (tmp_path / "out" / "secret.txt").exists()
+
+
+class TestRemoveKeepsCommon:
+    def test_partial_split_keeps_common_in_source(self, tmp_path):
+        """Regression: ``-P Windows --remove`` deleted Platform/Common too."""
+        gdir = _make_gem(tmp_path / "widget")
+        plan = plan_split(gdir, GEM_DATA, "gem", platforms=["Windows"])
+        assert plan.remaining_platforms == ["Linux"]
+        assert plan.removes_common_source is False
+        removed = remove_split_dirs(plan)
+        plat = gdir / "Code" / "Source" / "Platform"
+        assert removed == [str(Path("Code/Source/Platform/Windows"))]
+        assert sorted(p.name for p in plat.iterdir()) == ["Common", "Linux"]
+        assert plan.kept_common_dirs() == [str(Path("Code/Source/Platform/Common"))]
+
+    def test_full_split_removes_common(self, tmp_path):
+        gdir = _make_gem(tmp_path / "widget")
+        plan = plan_split(gdir, GEM_DATA, "gem", platforms=["Windows,Linux"])
+        assert plan.remaining_platforms == []
+        assert plan.removes_common_source is True
+        assert plan.kept_common_dirs() == []
+        assert len(remove_split_dirs(plan)) == 3
+        assert not (gdir / "Code" / "Source" / "Platform").exists()
+
+    def test_common_overlay_still_planned_for_partial_split(self, tmp_path):
+        gdir = _make_gem(tmp_path / "widget")
+        plan = plan_split(gdir, GEM_DATA, "gem", platforms=["Linux"])
+        assert [ov.platform for ov in plan.overlays] == ["Common", "Linux"]
+
+
+class TestOverlayNameClash:
+    def test_case_only_platform_names_refused(self, tmp_path):
+        """Regression: ``Windows`` and ``windows`` silently shared one overlay."""
+        gdir = _make_gem(tmp_path / "widget")
+        (gdir / "Code" / "Tests" / "Platform" / "windows").mkdir(parents=True)
+        (gdir / "Code" / "Tests" / "Platform" / "windows" / "t.cmake").write_text("t")
+        out = tmp_path / "out"
+        with pytest.raises(ObjectOpError) as exc:
+            plan_split(gdir, GEM_DATA, "gem", output=str(out))
+        assert exc.value.code == "E_OVERLAY_NAME_CLASH"
+        msg = str(exc.value)
+        assert str(Path("Code/Source/Platform/Windows")) in msg
+        assert str(Path("Code/Tests/Platform/windows")) in msg
+        assert not out.exists()
+
+    def test_clash_outside_selection_is_ignored(self, tmp_path):
+        gdir = _make_gem(tmp_path / "widget")
+        (gdir / "Code" / "Tests" / "Platform" / "windows").mkdir(parents=True)
+        plan = plan_split(gdir, GEM_DATA, "gem", platforms=["Linux"])
+        assert [ov.platform for ov in plan.overlays] == ["Common", "Linux"]
+
+
+class TestEnsureManifest:
+    def test_creates_manifest_like_manifest_add(self, tmp_path):
+        """Regression: ``--register`` did nothing when there was no manifest."""
+        from o3de_cli.core.split_platforms import ensure_manifest
+
+        mp = tmp_path / ".o3de" / "o3de_manifest.json"
+        with patch("o3de_cli.core.paths.get_manifest_path", return_value=mp):
+            assert ensure_manifest() == mp
+            assert ensure_manifest() is None  # already there
+            assert register_overlays(
+                [{"platform": "Linux", "overlay": "o.linux", "path": str(tmp_path / "o")}]
+            ) == ["o.linux"]
+        data = json.loads(mp.read_text())
+        assert data["$schemaVersion"] == "2.0.0"
+        assert data["local"]["overlays"] == [(tmp_path / "o").as_posix()]
+
+    def test_matches_register_in_manifest_skeleton(self, tmp_path):
+        from o3de_cli.commands.manifest import register_in_manifest
+        from o3de_cli.core.split_platforms import ensure_manifest
+
+        a, b = tmp_path / "a.json", tmp_path / "b.json"
+        with patch("o3de_cli.core.paths.get_manifest_path", return_value=a):
+            ensure_manifest()
+        gem = tmp_path / "g"
+        _write_json(gem / "gem.json", {"gem_name": "g"})
+        with patch("o3de_cli.commands.manifest.get_manifest_path", return_value=b):
+            register_in_manifest(gem, "gem")
+        skeleton_b = json.loads(b.read_text())
+        skeleton_b["local"] = {}
+        assert json.loads(a.read_text()) == skeleton_b

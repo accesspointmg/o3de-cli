@@ -157,3 +157,118 @@ class TestSplitPlatformsCommand:
         result = self._run(gdir, out)
         assert result.exit_code == 1
         assert "already exists" in result.output
+
+
+class TestSplitPlatformsRegressions:
+    def _run(self, gdir, out, extra=()):
+        from o3de_cli.commands.object import object_group
+
+        return CliRunner().invoke(
+            object_group, ["split-platforms", str(gdir), "-o", str(out), *extra]
+        )
+
+    def test_malformed_json_reports_error_code(self, tmp_path):
+        """Regression: a malformed object JSON produced a traceback, even with --json."""
+        gdir = _make_gem(tmp_path)
+        (gdir / "gem.2-0-0.json").write_text('{"gem": ', encoding="utf-8")
+        result = self._run(gdir, tmp_path / "out", ["--json"])
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit)
+        payload = json.loads(result.output)
+        assert payload["status"] == "error"
+        assert payload["code"] == "E_INVALID_OBJECT"
+        assert "gem.2-0-0.json" in payload["error"]
+
+    def test_malformed_json_console(self, tmp_path):
+        gdir = _make_gem(tmp_path)
+        (gdir / "gem.2-0-0.json").write_text("not json", encoding="utf-8")
+        result = self._run(gdir, tmp_path / "out")
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "gem.2-0-0.json" in result.output.replace("\n", "")  # console wraps
+
+    def test_escaping_license_skipped_with_warning(self, tmp_path):
+        """Regression: a ``..`` license path copied files from outside the object."""
+        gdir = _make_gem(tmp_path)
+        (tmp_path / "SECRET.txt").write_text("secret")
+        meta = json.loads((gdir / "gem.2-0-0.json").read_text(encoding="utf-8"))
+        meta["licenses"].append({"license_identifier": "X", "relative_path": "../SECRET.txt"})
+        _write_json(gdir / "gem.2-0-0.json", meta)
+        out = tmp_path / "out"
+        result = self._run(gdir, out, ["--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert any("../SECRET.txt" in w for w in payload["warnings"])
+        assert not (out / "SECRET.txt").exists()
+        win = out / "org.test.overlay.widget.windows"
+        lic_ids = [
+            lic["license_identifier"]
+            for lic in json.loads((win / "overlay.json").read_text(encoding="utf-8"))["licenses"]
+        ]
+        assert lic_ids == ["MIT"]
+
+    def test_escaping_license_warning_console(self, tmp_path):
+        gdir = _make_gem(tmp_path)
+        (tmp_path / "SECRET.txt").write_text("secret")
+        meta = json.loads((gdir / "gem.2-0-0.json").read_text(encoding="utf-8"))
+        meta["licenses"].append({"license_identifier": "X", "relative_path": "../SECRET.txt"})
+        _write_json(gdir / "gem.2-0-0.json", meta)
+        out = tmp_path / "out"
+        result = self._run(gdir, out)
+        assert result.exit_code == 0, result.output
+        assert "../SECRET.txt" in result.output
+        assert not (out / "SECRET.txt").exists()
+
+    def test_partial_remove_keeps_common(self, tmp_path):
+        """Regression: ``-P Windows --remove`` removed Platform/Common from the source."""
+        gdir = _make_gem(tmp_path)
+        out = tmp_path / "out"
+        result = self._run(gdir, out, ["-P", "Windows", "--remove", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)["data"]
+        plat = gdir / "Code" / "Source" / "Platform"
+        assert sorted(p.name for p in plat.iterdir()) == ["Common", "Linux"]
+        assert payload["removed"] == [str(Path("Code/Source/Platform/Windows"))]
+        assert payload["kept"] == [str(Path("Code/Source/Platform/Common"))]
+        # The common overlay is still created
+        assert (out / "org.test.overlay.widget.common" / "overlay.json").is_file()
+
+    def test_partial_remove_says_common_kept(self, tmp_path):
+        gdir = _make_gem(tmp_path)
+        result = self._run(gdir, tmp_path / "out", ["-P", "Windows", "--remove"])
+        assert result.exit_code == 0, result.output
+        assert "Kept in source" in result.output
+        assert "Linux" in result.output
+
+    def test_case_clash_refused_before_writing(self, tmp_path):
+        """Regression: platform dirs differing only in case shared an overlay dir."""
+        gdir = _make_gem(tmp_path)
+        (gdir / "Code" / "Tests" / "Platform" / "windows").mkdir(parents=True)
+        (gdir / "Code" / "Tests" / "Platform" / "windows" / "t.cmake").write_text("t")
+        out = tmp_path / "out"
+        result = self._run(gdir, out, ["--json"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.output)
+        assert payload["code"] == "E_OVERLAY_NAME_CLASH"
+        assert str(Path("Code/Tests/Platform/windows")) in payload["error"]
+        assert str(Path("Code/Source/Platform/Windows")) in payload["error"]
+        assert not out.exists()
+
+    def test_register_creates_missing_manifest(self, tmp_path):
+        """Regression: ``--register`` silently did nothing without a manifest."""
+        from unittest.mock import patch
+
+        mp = tmp_path / "home" / ".o3de" / "o3de_manifest.json"
+        gdir = _make_gem(tmp_path)
+        out = tmp_path / "out"
+        with patch("o3de_cli.core.paths.get_manifest_path", return_value=mp):
+            result = self._run(gdir, out, ["--register", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)["data"]
+        assert sorted(payload["registered"]) == [
+            "org.test.overlay.widget.common",
+            "org.test.overlay.widget.linux",
+            "org.test.overlay.widget.windows",
+        ]
+        manifest = json.loads(mp.read_text())
+        assert len(manifest["local"]["overlays"]) == 3

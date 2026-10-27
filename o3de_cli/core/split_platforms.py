@@ -65,14 +65,28 @@ def load_object_json(object_path: Path) -> tuple[dict, str]:
     """Load the object JSON at *object_path*.
 
     Returns (data, type_token).  Prefers 2.0.0 sidecars.  Raises
-    ``FileNotFoundError`` when no object JSON exists.
+    ``FileNotFoundError`` when no object JSON exists, and
+    :class:`ObjectOpError` (``E_INVALID_OBJECT``) when the file found is
+    not valid JSON or not a JSON object.
     """
     for suffix in ("2-0-0.json", "json"):
         for type_token in ("engine", "project", "gem", "template"):
             candidate = object_path / f"{type_token}.{suffix}"
             if candidate.exists():
-                with open(candidate, encoding="utf-8-sig") as f:
-                    return json.load(f), type_token
+                try:
+                    with open(candidate, encoding="utf-8-sig") as f:
+                        data = json.load(f)
+                except (ValueError, OSError) as e:  # JSONDecodeError, UnicodeDecodeError
+                    raise ObjectOpError(
+                        f"Invalid object JSON {candidate}: {e}", "E_INVALID_OBJECT"
+                    ) from None
+                if not isinstance(data, dict):
+                    raise ObjectOpError(
+                        f"Invalid object JSON {candidate}: expected a JSON object, "
+                        f"got {type(data).__name__}",
+                        "E_INVALID_OBJECT",
+                    )
+                return data, type_token
     raise FileNotFoundError(f"No engine/project/gem/template JSON at: {object_path}")
 
 
@@ -100,27 +114,83 @@ def find_platform_dirs(object_root: Path) -> dict[str, list[Path]]:
     return found
 
 
-def object_licenses(obj_data: dict, root: Path) -> list[dict]:
+def check_overlay_name_clash(detected: dict[str, list[Path]], obj_root: Path) -> None:
+    """Refuse platform names that differ only in case.
+
+    Overlay names and directories use the lower-cased platform name, so
+    ``Platform/Windows`` and ``Platform/windows`` would land in the same
+    overlay.  Raises :class:`ObjectOpError` (``E_OVERLAY_NAME_CLASH``)
+    naming the clashing directories, relative to *obj_root*.
+    """
+    by_key: dict[str, list[str]] = {}
+    for name in sorted(detected):
+        by_key.setdefault(name.lower(), []).append(name)
+    clashes = [names for names in by_key.values() if len(names) > 1]
+    if not clashes:
+        return
+    groups = [
+        ", ".join(str(d.relative_to(obj_root)) for name in names for d in detected[name])
+        for names in clashes
+    ]
+    raise ObjectOpError(
+        "Platform directories differ only in case and would share an overlay: " + "; ".join(groups),
+        "E_OVERLAY_NAME_CLASH",
+    )
+
+
+def _resolves_inside(path: Path, root: Path) -> bool:
+    """True when *path* resolves (following symlinks) to *root* or below it."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def object_licenses(obj_data: dict, root: Path, *, warnings: list[str] | None = None) -> list[dict]:
     """The object's ``licenses`` entries whose ``relative_path`` file exists under *root*.
 
     ``relative_path`` licenses are object-root metadata, so only entries
-    whose file is actually present travel with a split-out payload.
+    whose file is actually present travel with a split-out payload.  An
+    entry whose path resolves outside *root* (``..``, an absolute path,
+    a symlink out) is dropped, and a message appended to *warnings*.
     """
     licenses = []
     for lic in obj_data.get("licenses", []):
         rel = lic.get("relative_path")
-        if rel and (root / rel).is_file():
+        if not rel:
+            continue
+        if not _resolves_inside(root / rel, root):
+            if warnings is not None:
+                warnings.append(
+                    f"Skipped license {rel!r}: its path resolves outside the object ({root})"
+                )
+            continue
+        if (root / rel).is_file():
             licenses.append(lic)
     return licenses
 
 
-def copy_licenses(licenses: list[dict], src_root: Path, dst_root: Path) -> None:
-    """Copy each license file from *src_root* to the same relative path under *dst_root*."""
+def copy_licenses(licenses: list[dict], src_root: Path, dst_root: Path) -> list[str]:
+    """Copy each license file from *src_root* to the same relative path under *dst_root*.
+
+    A license whose source or destination resolves outside its root is
+    skipped; returns a warning message for each one skipped.
+    """
+    warnings: list[str] = []
     for lic in licenses:
-        dst = dst_root / lic["relative_path"]
+        rel = lic["relative_path"]
+        src, dst = src_root / rel, dst_root / rel
+        if not (_resolves_inside(src, src_root) and _resolves_inside(dst, dst_root)):
+            warnings.append(
+                f"Skipped license {rel!r}: its path resolves outside {src_root} or {dst_root}"
+            )
+            continue
+        dst = dst.resolve()
         # A license may live in a subdirectory (e.g. ``Licenses/MIT.txt``)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_root / lic["relative_path"], dst)
+        shutil.copy2(src, dst)
+    return warnings
 
 
 # ── Naming and option parsing ───────────────────────────────────────
@@ -265,12 +335,32 @@ def write_json_file(path: Path, data: Any) -> None:
         f.write("\n")
 
 
+def ensure_manifest() -> Path | None:
+    """Create the user manifest if it does not exist yet.
+
+    Writes the same skeleton ``o3de manifest add`` starts from
+    (:func:`o3de_cli.core.paths.new_manifest_data`).  Returns the path
+    when it was created, ``None`` when a manifest already existed.
+    """
+    # Imported here so tests can patch ``o3de_cli.core.paths.get_manifest_path``
+    from o3de_cli.core.paths import get_manifest_path, new_manifest_data
+
+    manifest_path = get_manifest_path()
+    if manifest_path.exists():
+        return None
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(new_manifest_data(), f, indent=2)
+    return manifest_path
+
+
 def register_local_paths(kind: str, paths: list[str]) -> list[str] | None:
     """Append *paths* to ``local.<kind>`` in the user manifest.
 
     Returns the paths that were newly added, or ``None`` when there is
-    no manifest to register into.  The manifest is rewritten whenever it
-    exists, even if nothing was added.
+    no manifest to register into (call :func:`ensure_manifest` first to
+    create one).  The manifest is rewritten whenever it exists, even if
+    nothing was added.
     """
     # Imported here so tests can patch ``o3de_cli.core.paths.get_manifest_path``
     from o3de_cli.core.paths import get_manifest_path
@@ -333,6 +423,30 @@ class SplitPlan:
     user_tags: list[str]
     common_name: str | None
     overlays: list[SplitOverlay] = field(default_factory=list)
+    #: Platform-specific platforms detected but not selected for this split
+    remaining_platforms: list[str] = field(default_factory=list)
+    #: Problems that do not stop the split (e.g. skipped licenses)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def removes_common_source(self) -> bool:
+        """Whether ``--remove`` may delete the source's ``Platform/Common`` dirs.
+
+        Only when no platform-specific directory stays behind: the
+        platforms left in the tree may still depend on the common code.
+        """
+        return not self.remaining_platforms
+
+    def kept_common_dirs(self) -> list[str]:
+        """Common dirs ``--remove`` leaves in the source, relative to the object root."""
+        if self.removes_common_source:
+            return []
+        return [
+            str(d.relative_to(self.obj_root))
+            for ov in self.overlays
+            if ov.is_common
+            for d in ov.sources
+        ]
 
     def dry_run_payload(self) -> dict:
         """The ``--dry-run --json`` payload."""
@@ -353,21 +467,25 @@ def plan_split(
     """Plan a split of *obj_root*'s ``Platform/<Name>`` dirs into overlays.
 
     Reads the tree but writes nothing.  Raises :class:`ObjectOpError`
-    with ``E_NO_PLATFORM_DIRS`` or ``E_PLATFORM_NOT_FOUND``.
+    with ``E_NO_PLATFORM_DIRS``, ``E_PLATFORM_NOT_FOUND`` or
+    ``E_OVERLAY_NAME_CLASH``.
     """
     base_name = get_object_name(obj_data) or obj_root.name
     base_version = get_object_version(obj_data)
 
-    detected = find_platform_dirs(obj_root)
-    if not detected:
+    all_detected = find_platform_dirs(obj_root)
+    if not all_detected:
         raise ObjectOpError(
             f"No Platform/<Name> directories found in {obj_root}", "E_NO_PLATFORM_DIRS"
         )
+    detected = all_detected
     if platforms:
-        detected = select_platforms(detected, parse_platform_selection(platforms))
+        detected = select_platforms(all_detected, parse_platform_selection(platforms))
+    check_overlay_name_clash(detected, obj_root)
 
     out_dir = Path(output).resolve() if output else obj_root.parent
     common_name = split_overlay_name(base_name, "common") if COMMON_PLATFORM in detected else None
+    warnings: list[str] = []
 
     plan = SplitPlan(
         obj_root=obj_root,
@@ -378,9 +496,13 @@ def plan_split(
         out_dir=out_dir,
         precedence=precedence,
         origin=obj_data.get("origin"),
-        licenses=object_licenses(obj_data, obj_root),
+        licenses=object_licenses(obj_data, obj_root, warnings=warnings),
         user_tags=parse_user_tags(tags),
         common_name=common_name,
+        remaining_platforms=sorted(
+            p for p in all_detected if p not in detected and p != COMMON_PLATFORM
+        ),
+        warnings=warnings,
     )
     for plat in platform_order(detected):
         ov_name = split_overlay_name(base_name, plat)
@@ -406,7 +528,8 @@ def create_overlays(plan: SplitPlan) -> list[dict]:
     """Create every planned overlay object; returns ``{platform, overlay, path}`` entries.
 
     Refuses (``E_OVERLAY_EXISTS``) before writing anything when any
-    overlay path already exists.
+    overlay path already exists.  A license that cannot be copied safely
+    is skipped and noted in ``plan.warnings``.
     """
     for ov in plan.overlays:
         if ov.path.exists():
@@ -418,7 +541,9 @@ def create_overlays(plan: SplitPlan) -> list[dict]:
         # Copy platform payload preserving the object-relative layout
         for plat_dir in ov.sources:
             shutil.copytree(plat_dir, payload_root / plat_dir.relative_to(plan.obj_root))
-        copy_licenses(plan.licenses, plan.obj_root, ov.path)
+        for warning in copy_licenses(plan.licenses, plan.obj_root, ov.path):
+            if warning not in plan.warnings:
+                plan.warnings.append(warning)
 
         meta = build_overlay_meta(
             ov_name=ov.name,
@@ -442,11 +567,16 @@ def create_overlays(plan: SplitPlan) -> list[dict]:
 def remove_split_dirs(plan: SplitPlan) -> list[str]:
     """Delete the split platform dirs from the source object.
 
-    Prunes a ``Platform`` parent left empty.  Returns the removed dirs,
-    relative to the object root.
+    The common dirs are deleted only when every platform-specific dir is
+    split out too (:attr:`SplitPlan.removes_common_source`); otherwise
+    they stay for the platforms left behind (see
+    :meth:`SplitPlan.kept_common_dirs`).  Prunes a ``Platform`` parent
+    left empty.  Returns the removed dirs, relative to the object root.
     """
     removed: list[str] = []
     for ov in plan.overlays:
+        if ov.is_common and not plan.removes_common_source:
+            continue
         for plat_dir in ov.sources:
             shutil.rmtree(plat_dir)
             removed.append(str(plat_dir.relative_to(plan.obj_root)))
