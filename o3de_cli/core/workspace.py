@@ -60,13 +60,63 @@ _TYPE_FOLDERS: dict[ObjectType, str] = {
     ObjectType.TEMPLATE: "Templates",
 }
 
-# TEMPORARY (hard-coded cheat): when linking an ENGINE into a workspace,
-# skip these top-level subtrees.  They are engine-internal copies of
-# objects that the solver composes into the workspace separately
-# (Gems/ → workspace Gems/, Templates/ → workspace Templates/,
-# AutomatedTesting/ → workspace Projects/).  Remove once the engine
-# repo is reworked into a proper hierarchy without embedded objects.
+# Where a stock engine keeps the objects embedded in its tree, used only when
+# its JSON declares no children to derive them from (see
+# engine_embedded_topdirs). Those objects are composed into the workspace
+# separately (Gems/ -> workspace Gems/, Templates/ -> workspace Templates/,
+# AutomatedTesting/ -> workspace Projects/), so the engine's copies are skipped.
 _ENGINE_SKIP_TOPDIRS: set[str] = {"Gems", "Templates", "AutomatedTesting"}
+
+# Child lists in an engine JSON: 2.0.0 `children.*`, then the legacy keys.
+_ENGINE_CHILD_KEYS_LEGACY = ("external_subdirectories", "gems", "templates", "projects")
+
+
+def engine_embedded_topdirs(engine_root: Path) -> set[str]:
+    """Top-level directories of *engine_root* that hold embedded objects.
+
+    Derived from the child paths the engine's own JSON declares: a stock
+    engine lists ``Gems/Atom/gem.json`` and the like, so ``Gems`` is skipped
+    when linking the engine; a restructured engine keeps its children
+    outside its tree (``../../Gems/...``), so nothing is. Falls back to the
+    stock layout only when the engine declares no children at all.
+    """
+    data: dict | None = None
+    for name in ("engine.2-0-0.json", "engine.json"):
+        path = engine_root / name
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                data = None
+            if data is not None:
+                break
+    if not isinstance(data, dict):
+        return set(_ENGINE_SKIP_TOPDIRS)
+
+    child_paths: list[str] = []
+    children = data.get("children")
+    if isinstance(children, dict):
+        for value in children.values():
+            if isinstance(value, list):
+                child_paths += [v for v in value if isinstance(v, str)]
+    for key in _ENGINE_CHILD_KEYS_LEGACY:
+        value = data.get(key)
+        if isinstance(value, list):
+            child_paths += [v for v in value if isinstance(v, str)]
+    if not child_paths:
+        return set(_ENGINE_SKIP_TOPDIRS)
+
+    root = engine_root.resolve()
+    topdirs: set[str] = set()
+    for child in child_paths:
+        target = (root / child).resolve()
+        # 2.0.0 lists the child's JSON file, legacy lists its directory
+        if target.suffix.lower() == ".json":
+            target = target.parent
+        if target == root or root not in target.parents:
+            continue  # the engine itself, or outside its tree: nothing to skip
+        topdirs.add(target.relative_to(root).parts[0])
+    return topdirs
 
 
 class WorkspaceError(Exception):
@@ -207,7 +257,9 @@ class Workspace:
                 current=current,
                 total=total_files,
                 progress_callback=progress_callback,
-                skip_topdirs=(_ENGINE_SKIP_TOPDIRS if obj_type == ObjectType.ENGINE else None),
+                skip_topdirs=(
+                    engine_embedded_topdirs(obj_path) if obj_type == ObjectType.ENGINE else None
+                ),
             )
 
         # Apply overlays in precedence order
