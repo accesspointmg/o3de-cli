@@ -247,7 +247,7 @@ class TestRegistryCommands:
         mock_manifest.write_text(_json.dumps(manifest_data))
         result = runner.invoke(cli, ["registry", "list-remotes"])
         assert result.exit_code == 0
-        assert "example.com" in result.output
+        assert "https://example.com/repo.json" in result.output.split()
 
 
 # ---- Publish Commands ----

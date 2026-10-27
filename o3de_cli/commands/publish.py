@@ -21,14 +21,18 @@ from o3de_cli.core import (
     get_resolved_manifest_path,
 )
 from o3de_cli.core.json_output import emit_error, emit_response
-from o3de_cli.core.models import get_object_name, get_object_type, get_object_version
+from o3de_cli.core.models import (
+    SCHEMA_BASE_URL,
+    get_object_name,
+    get_object_type,
+    get_object_version,
+)
 from o3de_cli.core.schema import validate_against_schema
 from o3de_cli.core.store import compute_sha256
 
 console = Console()
 
-# Schema files bundled or referenced by URL
-SCHEMA_BASE_URL = "https://canonical.o3de.org"
+# Schema files bundled or referenced by URL (SCHEMA_BASE_URL)
 SCHEMA_TYPE_MAP = {
     ObjectType.ENGINE: "o3de-engine-2.0.0.json",
     ObjectType.PROJECT: "o3de-project-2.0.0.json",
@@ -536,7 +540,11 @@ def _is_valid_name(name: str) -> bool:
     """Check if name follows canonical naming convention."""
     import re
 
-    return bool(re.match(r"^[a-z][a-z0-9_.]*(\.[a-z0-9_.]+)+$", name))
+    # Reverse-domain name: dot-separated segments, the first starting with a
+    # letter, at least two segments, none empty. Segments cannot contain dots,
+    # so there is one way to match any input (the previous pattern let both
+    # quantifiers consume dots, which is exponential on near-misses).
+    return bool(re.fullmatch(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+", name))
 
 
 def _is_valid_version(version: str) -> bool:

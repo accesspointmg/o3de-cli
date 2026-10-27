@@ -49,7 +49,7 @@ class Config:
             "ai.model": "",
             "ai.api_key": "",
             "ai.ollama_url": "http://localhost:11434",
-            "registry.url": "https://canonical.o3de.org",
+            "registry.url": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/repo.json",
             "manifest.path": str(Path.home() / ".o3de" / "o3de_manifest.json"),
         }
 

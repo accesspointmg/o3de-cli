@@ -271,7 +271,7 @@ class TestUpgrade1To2:
         """Should add $schema URL for canonical.o3de.org."""
         data = {"$schemaVersion": "1.0.0", "gem_name": "MyGem"}
         result = upgrade_1_to_2(data, "gem")
-        assert "canonical.o3de.org" in result["$schema"]
+        assert result["$schema"].startswith("https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/")
         assert "o3de-gem-2.0.0.json" in result["$schema"]
     
     def test_nests_gem_properties(self):
@@ -619,7 +619,7 @@ class TestRealisticEngineUpgrade:
         
         # Check schema
         assert result["$schemaVersion"] == "2.0.0"
-        assert "canonical.o3de.org" in result["$schema"]
+        assert result["$schema"].startswith("https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/")
         assert "o3de-engine-2.0.0.json" in result["$schema"]
         
         # Check engine object for identity (not origin - that's for author)
@@ -963,3 +963,57 @@ class TestRealisticRepoUpgrade:
         assert "remote" in result
         assert "https://other.repo.org/repo.json" in result["remote"]["repos"]
 
+
+
+class TestOfficialOrigin:
+    """Only o3de.org itself marks an object as official, not look-alikes."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "https://o3de.org",
+            "https://www.o3de.org/docs",
+            "o3de.org",
+            "Open 3D Engine (o3de.org)",
+            "O3DE.ORG",
+        ],
+    )
+    def test_official(self, value):
+        from o3de_cli.core.upgrade import _names_o3de_org
+
+        assert _names_o3de_org(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "https://o3de.org.evil.com",
+            "https://evil.com/o3de.org",
+            "https://not-o3de.org",
+            "o3de.org.evil.com",
+            "evil-o3de.org",
+            "",
+        ],
+    )
+    def test_not_official(self, value):
+        from o3de_cli.core.upgrade import _names_o3de_org
+
+        assert not _names_o3de_org(value)
+
+
+class TestValidNameIsLinear:
+    def test_examples(self):
+        from o3de_cli.commands.publish import _is_valid_name
+
+        assert _is_valid_name("org.o3de.gem.atom")
+        assert _is_valid_name("com.example.my_gem2")
+        for bad in ("Org.o3de", "atom", "org..o3de", "org.o3de.", ".org.o3de", "1org.o3de"):
+            assert not _is_valid_name(bad), bad
+
+    def test_no_catastrophic_backtracking(self):
+        import time
+
+        from o3de_cli.commands.publish import _is_valid_name
+
+        start = time.perf_counter()
+        assert not _is_valid_name("a" + ".a" * 40 + "!")
+        assert time.perf_counter() - start < 0.5

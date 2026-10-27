@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from o3de_cli.core.models import SCHEMA_BASE_URL
+
 logger = logging.getLogger("o3de_cli.upgrade")
 
 
@@ -47,6 +49,29 @@ def is_reverse_domain_format(name: str) -> bool:
     tlds = {"org", "com", "net", "edu", "gov", "io", "me"}
     first_segment = name.split(".")[0]
     return first_segment in tlds and name.islower()
+
+
+_O3DE_ORG_HOST = re.compile(r"(?:^|\.)o3de\.org$")
+# "o3de.org" as a whole token in free text, not part of a longer host name
+_O3DE_ORG_TOKEN = re.compile(r"(?<![\w.-])o3de\.org(?![\w-]|\.[\w-])", re.IGNORECASE)
+
+
+def _names_o3de_org(value: str) -> bool:
+    """Whether an origin name or URI refers to o3de.org itself.
+
+    A URI counts only when its host is o3de.org or a subdomain of it, so
+    ``https://o3de.org.example.com`` and ``https://evil.com/o3de.org`` do not.
+    Free text (an origin *name*) counts when it contains ``o3de.org`` as a
+    standalone token.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    from urllib.parse import urlparse
+
+    host = urlparse(value.strip()).hostname
+    if host:
+        return bool(_O3DE_ORG_HOST.search(host.lower()))
+    return bool(_O3DE_ORG_TOKEN.search(value))
 
 
 def is_url(s: str) -> bool:
@@ -375,7 +400,7 @@ def upgrade_0_to_1(data: dict, object_type: str) -> dict:
 # ============================================================================
 
 SCHEMA_HOSTS = {
-    "2.0.0": "https://canonical.o3de.org",
+    "2.0.0": SCHEMA_BASE_URL,
 }
 
 
@@ -390,7 +415,7 @@ def upgrade_1_to_2(data: dict, object_type: str, *, file_path: Path | None = Non
     - Create structured sub-objects: origin, licenses, tags, icon, documentation
     - Restructure source_control and download fields
     """
-    host = SCHEMA_HOSTS.get("2.0.0", "https://canonical.o3de.org")
+    host = SCHEMA_HOSTS["2.0.0"]
     output = {"$schemaVersion": "2.0.0", "$schema": f"{host}/o3de-{object_type}-2.0.0.json"}
 
     # Determine default reversed domain
@@ -403,12 +428,11 @@ def upgrade_1_to_2(data: dict, object_type: str, *, file_path: Path | None = Non
         if "o3de" in data[name_field].lower():
             is_o3de = True
     if "origin" in data:
-        if isinstance(data["origin"], str) and "o3de.org" in data["origin"].lower():
+        origin = data["origin"]
+        if isinstance(origin, str) and _names_o3de_org(origin):
             is_o3de = True
-        elif isinstance(data["origin"], dict):
-            if "o3de.org" in data["origin"].get("name", "").lower():
-                is_o3de = True
-            if "o3de.org" in data["origin"].get("uri", "").lower():
+        elif isinstance(origin, dict):
+            if _names_o3de_org(origin.get("name", "")) or _names_o3de_org(origin.get("uri", "")):
                 is_o3de = True
 
     if object_type == "manifest":

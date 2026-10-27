@@ -33,7 +33,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 # Schema version pattern
 SCHEMA_VERSION = "2.0.0"
-SCHEMA_BASE_URL = "https://canonical.o3de.org"
+# Where $schema URLs point. canonical.o3de.org does not serve the schemas
+# (it answers 403); the canonical repository does.
+SCHEMA_BASE_URL = "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src"
 
 
 class ObjectType(str, Enum):
