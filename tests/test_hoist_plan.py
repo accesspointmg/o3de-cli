@@ -252,3 +252,202 @@ class TestSteps:
             assert register_family_repo(tmp_path / "fam") is True
             assert register_family_repo(tmp_path / "fam") is False
         assert json.loads(mp.read_text())["local"]["repos"] == [(tmp_path / "fam").as_posix()]
+
+
+# ── Regression tests for the hoist bug fixes ────────────────────────
+
+
+def _git_repo_source(tmp_path: Path) -> HoistSource:
+    """A real git repo where Windows/Common are tracked but Linux is only untracked."""
+    source = _source(tmp_path)
+    plat = source.obj_root / "Code" / "Source" / "Platform"
+    (plat / "Windows" / "w.cmake").write_text("w")
+    (plat / "Common" / "c.cpp").write_text("c")
+    (source.obj_root / "Code" / "Tests" / "Platform" / "Windows" / "t.cmake").write_text("t")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q", "-b", "dev"], cwd=source.git_root, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=source.git_root, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "i"], cwd=source.git_root, check=True)
+    (plat / "Linux").mkdir()
+    (plat / "Linux" / "untracked.cmake").write_text("l")
+    return source
+
+
+class TestPlanSkipsPlatformsWithoutHistory:
+    def test_untracked_platform_is_skipped_in_plan(self, tmp_path):
+        """Regression: dry-run listed overlays that execution then skipped."""
+        source = _git_repo_source(tmp_path)
+        plan = plan_hoist(source, GEM_DATA, "gem")
+        assert [ov.dir_name for ov in plan.overlays] == ["widget.common", "widget.windows"]
+        assert [(ov.dir_name, ov.platform) for ov in plan.skipped] == [("widget.linux", "Linux")]
+        assert "dev" in plan.skipped[0].skip_reason
+        payload = plan.dry_run_payload()
+        assert [o["platform"] for o in payload["overlays"]] == ["Common", "Windows"]
+        assert payload["skipped"] == [
+            {
+                "dir": "Overlays/widget.linux",
+                "platform": "Linux",
+                "overlay": "org.test.overlay.widget.linux",
+                "reason": plan.skipped[0].skip_reason,
+            }
+        ]
+
+    def test_history_checked_on_the_hoisted_branch(self, tmp_path):
+        source = _git_repo_source(tmp_path)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "checkout", "-q", "-b", "other"], cwd=source.git_root, check=True)
+        subprocess.run([*git, "add", "-A"], cwd=source.git_root, check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "linux"], cwd=source.git_root, check=True)
+        source.branch = "other"
+        assert [ov.platform for ov in plan_hoist(source, GEM_DATA, "gem").overlays] == [
+            "Common",
+            "Linux",
+            "Windows",
+        ]
+        source.branch = "dev"
+        assert [ov.platform for ov in plan_hoist(source, GEM_DATA, "gem").skipped] == ["Linux"]
+
+    def test_skipped_common_is_not_a_dependency(self, tmp_path):
+        source = _git_repo_source(tmp_path)
+        common = source.obj_root / "Code" / "Source" / "Platform" / "Common"
+        subprocess.run(["git", "rm", "-q", "-r", "--cached", str(common)], cwd=source.git_root)
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "rm"],
+            cwd=source.git_root,
+            check=True,
+        )
+        plan = plan_hoist(source, GEM_DATA, "gem")
+        assert [ov.platform for ov in plan.skipped] == ["Common", "Linux"]
+        assert plan.common_name is None
+
+    def test_renames_still_cover_skipped_platforms(self, tmp_path):
+        """filter-repo arguments are unchanged, so re-hoists stay deterministic."""
+        source = _git_repo_source(tmp_path)
+        plan = plan_hoist(source, GEM_DATA, "gem")
+        assert any("Platform/Linux" in src for src, _dst in plan.renames)
+
+
+class TestPlanOverlayNameClash:
+    def test_case_only_platform_names_refused(self, tmp_path):
+        """Regression: ``Windows`` and ``windows`` mapped to one overlay dir."""
+        source = _source(tmp_path)
+        (source.obj_root / "Code" / "Editor" / "Platform" / "windows").mkdir(parents=True)
+        with pytest.raises(ObjectOpError) as exc:
+            plan_hoist(source, GEM_DATA, "gem", output=str(tmp_path / "fam"))
+        assert exc.value.code == "E_OVERLAY_NAME_CLASH"
+        assert str(Path("Code/Source/Platform/Windows")) in str(exc.value)
+        assert str(Path("Code/Editor/Platform/windows")) in str(exc.value)
+        assert not (tmp_path / "fam").exists()
+
+
+class TestExecuteCleanup:
+    """Regression: a failed hoist left its half-made output behind."""
+
+    def _plan(self, tmp_path, out):
+        return plan_hoist(_source(tmp_path), GEM_DATA, "gem", output=str(out))
+
+    @staticmethod
+    def _fake_clone(out: Path) -> None:
+        (out / ".git" / "objects" / "pack").mkdir(parents=True)
+        pack = out / ".git" / "objects" / "pack" / "pack-1.pack"
+        pack.write_text("x")
+        pack.chmod(0o444)  # git marks packs read-only (blocks rmtree on Windows)
+
+    def test_clone_failure_removes_partial_clone(self, tmp_path):
+        out = tmp_path / "fam"
+        plan = self._plan(tmp_path, out)
+
+        def git(args, cwd=None, env=None):
+            self._fake_clone(out)
+            return 128, "fatal: boom"
+
+        with patch("o3de_cli.core.hoist.run_git", side_effect=git):
+            with pytest.raises(ObjectOpError) as exc:
+                execute_hoist(plan)
+        assert exc.value.code == "E_CLONE_FAILED"
+        assert not out.exists()
+
+    def test_filter_failure_removes_read_only_clone(self, tmp_path):
+        out = tmp_path / "fam"
+        plan = self._plan(tmp_path, out)
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="bad")
+        with (
+            patch("o3de_cli.core.hoist.clone_source", side_effect=lambda p: self._fake_clone(out)),
+            patch("o3de_cli.core.hoist.subprocess.run", return_value=failed),
+        ):
+            with pytest.raises(ObjectOpError) as exc:
+                execute_hoist(plan)
+        assert exc.value.code == "E_FILTER_FAILED"
+        assert not out.exists()
+
+    def test_commit_failure_removes_output(self, tmp_path):
+        out = tmp_path / "fam"
+        plan = self._plan(tmp_path, out)
+        with (
+            patch("o3de_cli.core.hoist.clone_source", side_effect=lambda p: self._fake_clone(out)),
+            patch("o3de_cli.core.hoist.run_filter_repo"),
+            patch("o3de_cli.core.hoist.carry_over_lfs", return_value=0),
+            patch("o3de_cli.core.hoist.write_repo_metadata", return_value=[]),
+            patch(
+                "o3de_cli.core.hoist.commit_metadata",
+                side_effect=ObjectOpError("Metadata commit failed: x", "E_COMMIT_FAILED"),
+            ),
+        ):
+            with pytest.raises(ObjectOpError) as exc:
+                execute_hoist(plan)
+        assert exc.value.code == "E_COMMIT_FAILED"
+        assert not out.exists()
+
+    def test_unexpected_error_also_cleans_up(self, tmp_path):
+        out = tmp_path / "fam"
+        plan = self._plan(tmp_path, out)
+        with (
+            patch("o3de_cli.core.hoist.clone_source", side_effect=lambda p: self._fake_clone(out)),
+            patch("o3de_cli.core.hoist.run_filter_repo"),
+            patch("o3de_cli.core.hoist.carry_over_lfs", side_effect=OSError("disk full")),
+        ):
+            with pytest.raises(OSError):
+                execute_hoist(plan)
+        assert not out.exists()
+
+    def test_created_parents_removed_existing_parent_kept(self, tmp_path):
+        keep = tmp_path / "keep"
+        keep.mkdir()
+        (keep / "mine.txt").write_text("mine")
+        out = keep / "new" / "deeper" / "fam"
+        plan = self._plan(tmp_path, out)
+
+        def clone(p):
+            self._fake_clone(out)
+            raise ObjectOpError("Clone failed: x", "E_CLONE_FAILED")
+
+        with patch("o3de_cli.core.hoist.clone_source", side_effect=clone):
+            with pytest.raises(ObjectOpError):
+                execute_hoist(plan)
+        assert sorted(p.name for p in keep.iterdir()) == ["mine.txt"]
+
+    def test_success_keeps_output(self, tmp_path):
+        out = tmp_path / "fam"
+        plan = self._plan(tmp_path, out)
+        with (
+            patch("o3de_cli.core.hoist.clone_source", side_effect=lambda p: out.mkdir()),
+            patch("o3de_cli.core.hoist.run_filter_repo"),
+            patch("o3de_cli.core.hoist.carry_over_lfs", return_value=0),
+            patch("o3de_cli.core.hoist.write_repo_metadata", return_value=["ov"]),
+            patch("o3de_cli.core.hoist.commit_metadata"),
+        ):
+            result = execute_hoist(plan)
+        assert result.overlays == ["ov"]
+        assert out.is_dir()
+
+
+class TestRegisterCreatesManifest:
+    def test_register_family_repo_without_manifest(self, tmp_path):
+        """Regression: ``--register`` did nothing when there was no manifest."""
+        from o3de_cli.core.split_platforms import ensure_manifest
+
+        mp = tmp_path / ".o3de" / "o3de_manifest.json"
+        with patch("o3de_cli.core.paths.get_manifest_path", return_value=mp):
+            ensure_manifest()
+            assert register_family_repo(tmp_path / "fam") is True
+        assert json.loads(mp.read_text())["local"]["repos"] == [(tmp_path / "fam").as_posix()]
