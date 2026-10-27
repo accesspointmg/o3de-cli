@@ -1,0 +1,17 @@
+# Line endings: LF in the repository and in every checkout, whatever the
+# platform or the local core.autocrlf setting.
+* text=auto eol=lf
+
+# Windows scripts must keep CRLF to run correctly.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Byte-for-byte copies of canonical.o3de.org (see scripts/sync_schemas.py).
+o3de_cli/schemas/** -text
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.gz binary
