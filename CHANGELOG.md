@@ -33,3 +33,5 @@ Nothing has been published yet; the first release will be 0.1.0.
 ### Changed
 
 - AI assistance and voice moved out of the CLI into the [o3de-pilot](https://github.com/accesspointmg/o3de-pilot) GUI
+- **Commands**: all `--json` output now uses the status envelope (`{"status": "ok", "data", "warnings"}` / `{"status": "error", "error", "code"}`, exit 0 / 1). `audit`, `deps tree`, `manifest resolve`/`show`, `publish validate`/`pack`/`push`, `registry search`/`list-remotes`, `search`, the `engine`/`gem`/`project`/`template`/`overlay`/`repo` `list` commands, `gem search` and `workspace list`/`show`/`solve`/`verify-lock` used to print bare documents; error codes are all `E_*` now; unexpected exceptions under `--json` become `E_INTERNAL`
+- **MCP**: a tool call whose command answered `{"status": "error"}` sets `isError`

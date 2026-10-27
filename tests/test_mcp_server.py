@@ -286,6 +286,29 @@ class TestInvokeCli:
 
         assert result["status"] == "ok"
 
+    def test_error_envelope_is_returned_as_is(self):
+        envelope = {"status": "error", "error": "Workspace not found: x", "code": "E_WS_NOT_FOUND"}
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(envelope)
+        mock_result.returncode = 1
+
+        with patch("o3de_cli.mcp_server.subprocess.run", return_value=mock_result):
+            result = _invoke_cli(["test"])
+
+        assert result == envelope
+
+    def test_json_that_is_not_an_envelope_is_an_error(self):
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps([{"name": "ws"}])
+        mock_result.returncode = 0
+
+        with patch("o3de_cli.mcp_server.subprocess.run", return_value=mock_result):
+            result = _invoke_cli(["test"])
+
+        assert result["status"] == "error"
+        assert result["code"] == "E_INVALID_JSON"
+        assert result["data"] == [{"name": "ws"}]
+
 
 # ── MCP protocol handlers ────────────────────────────────────────────
 
@@ -317,6 +340,22 @@ class TestMCPHandlers:
         assert result["content"][0]["type"] == "text"
         parsed = json.loads(result["content"][0]["text"])
         assert parsed["status"] == "ok"
+        assert "isError" not in result
+
+    def test_tools_call_cli_error_sets_is_error(self):
+        """A command that answered {"status": "error"} is a tool error."""
+        envelope = {"status": "error", "error": "Workspace not found: x", "code": "E_WS_NOT_FOUND"}
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(envelope)
+        mock_result.returncode = 1
+
+        with patch("o3de_cli.mcp_server.subprocess.run", return_value=mock_result):
+            result = _handle_tools_call(
+                {"name": "workspace_show", "arguments": {"name_or_path": "x"}}
+            )
+
+        assert result.get("isError") is True
+        assert json.loads(result["content"][0]["text"]) == envelope
 
     def test_tools_call_error_returns_is_error(self):
         with patch("o3de_cli.mcp_server._tool_to_cli_args", side_effect=ValueError("bad")):

@@ -172,7 +172,9 @@ class TestAuditIntegrity:
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(audit, ["--json"])
         assert result.exit_code == 1
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert (doc["status"], doc["code"]) == ("error", "E_AUDIT_ISSUES")
+        data = doc["data"]
         assert data["total"] > 0
         fields = [i["field"] for i in data["issues"].get("missing_integrity", [])]
         assert "downloads[0].source_sha256" in fields
@@ -206,7 +208,9 @@ class TestAuditIntegrity:
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(audit, ["--json"])
         assert result.exit_code == 1
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert (doc["status"], doc["code"]) == ("error", "E_AUDIT_ISSUES")
+        data = doc["data"]
         fields = [i["field"] for i in data["issues"]["missing_integrity"]]
         assert "downloads[0].lfs_sha256" in fields
         assert "binaries[0].sha256" in fields
@@ -234,7 +238,9 @@ class TestAuditPeerAndOptionalDeps:
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(audit, ["--json"])
         assert result.exit_code == 1
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert (doc["status"], doc["code"]) == ("error", "E_AUDIT_ISSUES")
+        data = doc["data"]
         assert "missing_peer_dependencies" in data["issues"]
 
     def test_optional_dep_version_mismatch(self, tmp_path):
@@ -270,7 +276,9 @@ class TestAuditPeerAndOptionalDeps:
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(audit, ["--json"])
         assert result.exit_code == 1
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert (doc["status"], doc["code"]) == ("error", "E_AUDIT_ISSUES")
+        data = doc["data"]
         assert "unresolvable_optional" in data["issues"]
 
     def test_dep_version_mismatch(self, tmp_path):
@@ -306,7 +314,9 @@ class TestAuditPeerAndOptionalDeps:
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(audit, ["--json"])
         assert result.exit_code == 1
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert (doc["status"], doc["code"]) == ("error", "E_AUDIT_ISSUES")
+        data = doc["data"]
         assert "missing_dependencies" in data["issues"]
         reasons = [i["reason"] for i in data["issues"]["missing_dependencies"]]
         assert any("version mismatch" in r for r in reasons)
@@ -342,7 +352,9 @@ class TestAuditPeerAndOptionalDeps:
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(audit, ["--json"])
         assert result.exit_code == 1
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert (doc["status"], doc["code"]) == ("error", "E_AUDIT_ISSUES")
+        data = doc["data"]
         assert "missing_peer_dependencies" in data["issues"]
         reasons = [i["reason"] for i in data["issues"]["missing_peer_dependencies"]]
         assert any("version mismatch" in r for r in reasons)
@@ -561,8 +573,9 @@ class TestDepsJsonOutput:
         runner = CliRunner()
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(tree_command, ["--json", "org.test.nosuch"])
-        assert result.exit_code == 0
-        assert "error" in result.output.lower()
+        assert result.exit_code == 1
+        doc = json.loads(result.stdout)
+        assert (doc["status"], doc["code"]) == ("error", "E_NOT_FOUND")
 
     def test_json_all_roots(self, tmp_path):
         """--all flag triggers show_all roots path (line 316)."""
@@ -634,7 +647,9 @@ class TestDepsJsonOutput:
         with _patch_manifest(tmp_path, mp):
             result = runner.invoke(tree_command, ["--json", "org.test.depa"])
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        data = doc["data"]
         assert data["name"] == "org.test.depa"
 
 
@@ -828,11 +843,9 @@ class TestWorkspaceSolve:
             mock_res.return_value = MagicMock()
             result = runner.invoke(solve_command, ["org.test.engine", "--json"])
         assert result.exit_code == 0
-        # Output may contain spinner text before JSON; find the JSON portion
-        raw = result.output
-        json_start = raw.index("{")
-        data = json.loads(raw[json_start:])
-        assert data["root"] == "org.test.engine"
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        assert doc["data"]["root"] == "org.test.engine"
 
     def test_solve_unresolved(self, tmp_path):
         """Unresolved result exits 1 (line 463)."""
@@ -1154,7 +1167,9 @@ class TestGemSearch:
             mock_store.return_value.search.return_value = [fake_gem]
             result = runner.invoke(search, ["test", "--json"])
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        data = doc["data"]
         assert data[0]["name"] == "org.test.gem"
 
     def test_search_table_output(self):

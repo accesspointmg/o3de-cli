@@ -31,8 +31,6 @@ def list_projects(as_json: bool) -> None:
     projects = resolver.projects
 
     if as_json:
-        import json
-
         items = []
         for name, obj in projects.items():
             items.append(
@@ -43,7 +41,7 @@ def list_projects(as_json: bool) -> None:
                     "version": obj.version,
                 }
             )
-        click.echo(json.dumps(items, indent=2))
+        emit_response(data=items)
         return
 
     if not projects:
@@ -88,7 +86,7 @@ def init_project(
 
     if project_path.exists():
         if as_json:
-            emit_error(f"Path already exists: {project_path}", code="PATH_EXISTS")
+            emit_error(f"Path already exists: {project_path}", code="E_EXISTS")
             raise SystemExit(1)
         console.print(f"[red]Path already exists:[/red] {project_path}")
         raise SystemExit(1)
@@ -288,7 +286,7 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
     # Check for CMakeLists.txt
     if not (project_path / "CMakeLists.txt").exists():
         if as_json:
-            emit_error("No CMakeLists.txt found in project directory", code="NO_CMAKELISTS")
+            emit_error("No CMakeLists.txt found in project directory", code="E_NO_CMAKELISTS")
             raise SystemExit(1)
         console.print("[red]No CMakeLists.txt found in project directory.[/red]")
         raise SystemExit(1)
@@ -329,7 +327,7 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
         result = subprocess.run(configure_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             if as_json:
-                emit_error(result.stderr[:500], code="CMAKE_CONFIGURE_FAILED")
+                emit_error(result.stderr[:500], code="E_CONFIGURE_FAILED")
                 raise SystemExit(1)
             console.print(f"[red]CMake configure failed:[/red]\n{result.stderr}")
             raise SystemExit(1)
@@ -341,7 +339,7 @@ def build(path: str | None, config: str, as_json: bool, dry_run: bool) -> None:
 
     if result.returncode != 0:
         if as_json:
-            emit_error(result.stderr[-500:], code="BUILD_FAILED")
+            emit_error(result.stderr[-500:], code="E_BUILD_FAILED")
             raise SystemExit(1)
         console.print(f"[red]Build failed:[/red]\n{result.stderr[-500:]}")
         raise SystemExit(1)
@@ -416,7 +414,7 @@ def add(obj_type: str, name: str, path: str | None, as_json: bool) -> None:
 
     if not project_json_path:
         if as_json:
-            emit_error("No project JSON found in directory", code="NO_PROJECT_JSON")
+            emit_error("No project JSON found in directory", code="E_NO_PROJECT_JSON")
             raise SystemExit(1)
         console.print("[red]No project JSON found in directory.[/red]")
         raise SystemExit(1)

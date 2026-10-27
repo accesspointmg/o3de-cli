@@ -28,6 +28,8 @@ from o3de_cli.core.upgrade import (
 )
 
 console = Console()
+# Diagnostics under --json, where stdout carries only the JSON document.
+err_console = Console(stderr=True)
 
 
 @click.group()
@@ -57,8 +59,14 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
     Use --install --yes to skip confirmation.
     """
     manifest_path = get_manifest_path()
+    # Under --json, stdout carries only the JSON document: diagnostics go
+    # to stderr and the spinners are disabled.
+    ui = err_console if as_json else console
 
     if not manifest_path.exists():
+        if as_json:
+            emit_error(f"Manifest not found: {manifest_path}", code="E_NO_MANIFEST")
+            raise SystemExit(1)
         console.print(f"[red]Manifest not found:[/red] {manifest_path}")
         console.print("Run 'o3de init' to create a new manifest.")
         raise SystemExit(1)
@@ -66,7 +74,8 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
-        console=console,
+        console=ui,
+        disable=as_json,
     ) as progress:
         task = progress.add_task("Resolving manifest...", total=None)
 
@@ -86,9 +95,9 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
     # Report missing dependencies
     missing = resolver.get_missing_dependencies()
     if missing:
-        console.print(f"\n[yellow]Missing dependencies ({len(missing)}):[/yellow]")
+        ui.print(f"\n[yellow]Missing dependencies ({len(missing)}):[/yellow]")
         for requirer, dep_spec in missing:
-            console.print(f"  {requirer} → {dep_spec}")
+            ui.print(f"  {requirer} → {dep_spec}")
 
         # Auto-install flow
         if install or yes:
@@ -101,7 +110,8 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
                 with Progress(
                     SpinnerColumn(),
                     TextColumn("[progress.description]{task.description}"),
-                    console=console,
+                    console=ui,
+                    disable=as_json,
                     transient=True,
                 ) as progress:
                     task = progress.add_task("Refreshing remote catalog...", total=None)
@@ -111,23 +121,22 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
                 # Preview mode
                 plan = resolver.auto_install_missing(store, confirm=False, dry_run=True)
                 if plan:
-                    console.print(f"\n[bold]Would install {len(plan)} dependencies:[/bold]")
+                    ui.print(f"\n[bold]Would install {len(plan)} dependencies:[/bold]")
                     for item in plan:
-                        console.print(
+                        ui.print(
                             f"  [cyan]{item['name']}[/cyan]@{item['version']} ({item['type']}) from {item['source']}"
                         )
                     if not yes:
-                        console.print(
-                            "\n[dim]Run with --yes to install, or --dry-run to preview.[/dim]"
-                        )
+                        ui.print("\n[dim]Run with --yes to install, or --dry-run to preview.[/dim]")
                 else:
-                    console.print("[yellow]No remote objects found for missing deps.[/yellow]")
+                    ui.print("[yellow]No remote objects found for missing deps.[/yellow]")
             else:
                 # Actually install
                 with Progress(
                     SpinnerColumn(),
                     TextColumn("[progress.description]{task.description}"),
-                    console=console,
+                    console=ui,
+                    disable=as_json,
                 ) as progress:
                     task = progress.add_task("Installing dependencies...", total=None)
 
@@ -142,27 +151,27 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
                     )
 
                 if installed:
-                    console.print(f"\n[green]Installed {len(installed)} dependencies:[/green]")
+                    ui.print(f"\n[green]Installed {len(installed)} dependencies:[/green]")
                     for item in installed:
-                        console.print(
+                        ui.print(
                             f"  [cyan]{item['name']}[/cyan]@{item['version']} → {item['path']}"
                         )
 
                     # Re-resolve with newly installed deps
-                    console.print("\n[dim]Re-resolving with new dependencies...[/dim]")
+                    ui.print("\n[dim]Re-resolving with new dependencies...[/dim]")
                     resolver2 = Resolver(manifest_path, dry_run=dry_run)
                     resolver2.resolve()
                     if not no_save:
                         resolver2.save()
-                    console.print("[green]Resolution updated.[/green]")
+                    ui.print("[green]Resolution updated.[/green]")
                 else:
-                    console.print("[yellow]No dependencies could be installed.[/yellow]")
+                    ui.print("[yellow]No dependencies could be installed.[/yellow]")
 
     # Report conflicts
     if resolver.conflicts:
-        console.print(f"\n[red]Version conflicts ({len(resolver.conflicts)}):[/red]")
+        ui.print(f"\n[red]Version conflicts ({len(resolver.conflicts)}):[/red]")
         for c in resolver.conflicts:
-            console.print(f"  {c}")
+            ui.print(f"  {c}")
 
     # Report missing optional dependencies as suggestions
     missing_optional = resolver.get_missing_optional_dependencies()
@@ -174,9 +183,9 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
             if dep_spec.name not in seen:
                 seen.add(dep_spec.name)
                 unique.append((requirer, dep_spec))
-        console.print(f"\n[dim]Optional dependencies not installed ({len(unique)}):[/dim]")
+        ui.print(f"\n[dim]Optional dependencies not installed ({len(unique)}):[/dim]")
         for requirer, dep_spec in unique:
-            console.print(f"  [dim]{requirer} suggests {dep_spec}[/dim]")
+            ui.print(f"  [dim]{requirer} suggests {dep_spec}[/dim]")
 
     if as_json:
         output = {
@@ -188,7 +197,11 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
             "overlays": len(resolver.overlays),
             "total": len(resolver.objects),
         }
-        console.print_json(json.dumps(output))
+        warnings = [
+            f"Missing dependency: {requirer} → {dep_spec}" for requirer, dep_spec in missing
+        ]
+        warnings += [f"Version conflict: {c}" for c in resolver.conflicts]
+        emit_response(data=output, warnings=warnings)
     else:
         table = Table(title="Resolved Objects")
         table.add_column("Type", style="cyan")
@@ -219,6 +232,9 @@ def show_command(resolved: bool, as_json: bool) -> None:
         path = get_manifest_path()
 
     if not path.exists():
+        if as_json:
+            emit_error(f"Not found: {path}", code="E_NOT_FOUND")
+            raise SystemExit(1)
         console.print(f"[red]Not found:[/red] {path}")
         raise SystemExit(1)
 
@@ -226,7 +242,7 @@ def show_command(resolved: bool, as_json: bool) -> None:
         data = json.load(f)
 
     if as_json:
-        console.print_json(json.dumps(data, indent=2))
+        emit_response(data=data)
     else:
         # Pretty print summary
         console.print(f"[bold]Manifest:[/bold] {path}\n")
@@ -417,7 +433,7 @@ def add_command(path: str, obj_type: str | None, as_json: bool) -> None:
         path_str, obj_type, added = register_in_manifest(target, obj_type)
     except ValueError:
         if as_json:
-            emit_error("Could not detect object type", code="DETECT_FAILED")
+            emit_error("Could not detect object type", code="E_DETECT_FAILED")
             raise SystemExit(1)
         console.print("[red]Could not detect object type.[/red]")
         console.print("Use --type to specify explicitly.")
@@ -448,7 +464,7 @@ def remove_command(path: str, as_json: bool) -> None:
 
     if not manifest_path.exists():
         if as_json:
-            emit_error("No manifest found", code="NO_MANIFEST")
+            emit_error("No manifest found", code="E_NO_MANIFEST")
             raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
@@ -477,9 +493,9 @@ def remove_command(path: str, as_json: bool) -> None:
             console.print(f"[green]Removed:[/green] {target.name}")
     else:
         if as_json:
-            emit_error(f"Not found in manifest: {path}", code="NOT_FOUND")
-        else:
-            console.print(f"[yellow]Not found in manifest:[/yellow] {path}")
+            emit_error(f"Not found in manifest: {path}", code="E_NOT_FOUND")
+            raise SystemExit(1)
+        console.print(f"[yellow]Not found in manifest:[/yellow] {path}")
 
 
 @manifest.command("set")
@@ -507,7 +523,7 @@ def set_command(key: str, value: str, as_json: bool) -> None:
 
     if not manifest_path.exists():
         if as_json:
-            emit_error("No manifest found", code="NO_MANIFEST")
+            emit_error("No manifest found", code="E_NO_MANIFEST")
             raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
@@ -519,7 +535,7 @@ def set_command(key: str, value: str, as_json: bool) -> None:
     parts = key.split(".")
     if len(parts) != 2:
         if as_json:
-            emit_error(f"Invalid key: {key}", code="INVALID_KEY")
+            emit_error(f"Invalid key: {key}", code="E_INVALID_KEY")
             raise SystemExit(1)
         console.print(f"[red]Invalid key:[/red] {key}")
         console.print("Keys should be in format: section.field (e.g., country.code)")
@@ -530,7 +546,7 @@ def set_command(key: str, value: str, as_json: bool) -> None:
     # Validate section exists
     if section not in ["country", "default"]:
         if as_json:
-            emit_error(f"Unknown section: {section}", code="UNKNOWN_SECTION")
+            emit_error(f"Unknown section: {section}", code="E_UNKNOWN_SECTION")
             raise SystemExit(1)
         console.print(f"[red]Unknown section:[/red] {section}")
         console.print("Valid sections: country, default")
@@ -578,7 +594,7 @@ def get_command(key: str | None, as_json: bool) -> None:
 
     if not manifest_path.exists():
         if as_json:
-            emit_error("No manifest found", code="NO_MANIFEST")
+            emit_error("No manifest found", code="E_NO_MANIFEST")
             raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
@@ -609,7 +625,7 @@ def get_command(key: str | None, as_json: bool) -> None:
         parts = key.split(".")
         if len(parts) != 2:
             if as_json:
-                emit_error(f"Invalid key: {key}", code="INVALID_KEY")
+                emit_error(f"Invalid key: {key}", code="E_INVALID_KEY")
                 raise SystemExit(1)
             console.print(f"[red]Invalid key:[/red] {key}")
             raise SystemExit(1)

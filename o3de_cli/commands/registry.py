@@ -18,6 +18,7 @@ from o3de_cli.core import (
     get_manifest_path,
     get_resolved_manifest_path,
 )
+from o3de_cli.core.json_output import emit_response
 from o3de_cli.core.models import get_object_name, get_object_version
 
 console = Console()
@@ -87,11 +88,13 @@ def search_registry(
 
         store = Store()
 
+        # Under --json stdout carries only the JSON document: no spinner.
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=console,
             transient=True,
+            disable=as_json,
         ) as progress:
             progress.add_task("Searching remotes...", total=None)
 
@@ -115,7 +118,7 @@ def search_registry(
                 )
 
     if as_json:
-        console.print_json(json.dumps(results))
+        emit_response(data=results)
     else:
         if not results:
             console.print(f"[yellow]No results for:[/yellow] {query}")
@@ -600,7 +603,7 @@ def list_remotes_command(as_json: bool) -> None:
 
     if not manifest_path.exists():
         if as_json:
-            console.print_json("[]")
+            emit_response(data=[])
         else:
             console.print("[dim]No manifest found.[/dim]")
         return
@@ -610,7 +613,7 @@ def list_remotes_command(as_json: bool) -> None:
     remotes = get_manifest_remote_urls(manifest_path)
 
     if as_json:
-        console.print_json(json.dumps(remotes))
+        emit_response(data=remotes)
     else:
         if not remotes:
             console.print("[dim]No remotes configured.[/dim]")

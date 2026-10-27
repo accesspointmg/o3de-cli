@@ -8,6 +8,7 @@ import io
 import json
 import tarfile
 from pathlib import Path
+from typing import NoReturn
 
 import click
 from rich.console import Console
@@ -19,6 +20,7 @@ from o3de_cli.core import (
     get_manifest_path,
     get_resolved_manifest_path,
 )
+from o3de_cli.core.json_output import emit_error, emit_response
 from o3de_cli.core.models import get_object_name, get_object_type, get_object_version
 from o3de_cli.core.schema import validate_against_schema
 from o3de_cli.core.store import compute_sha256
@@ -55,6 +57,19 @@ REQUIRED_HEADER_FIELDS_BY_TYPE = {
 }
 
 
+def _validation_summary(errors: list[str]) -> str:
+    """The ``error`` message for a JSON response reporting *errors*."""
+    if len(errors) == 1:
+        return errors[0]
+    return f"{len(errors)} validation errors; first: {errors[0]}"
+
+
+def _fail_validation_json(errors: list[str]) -> NoReturn:
+    """Emit the ``E_VALIDATION`` JSON error listing every message in *errors*, then exit 1."""
+    emit_error(_validation_summary(errors), code="E_VALIDATION", errors=errors)
+    raise SystemExit(1)
+
+
 @click.group()
 def publish() -> None:
     """Publish and validate O3DE objects."""
@@ -74,15 +89,18 @@ def validate_command(path: str, strict: bool, as_json: bool) -> None:
     errors, warnings = validate_object(target)
 
     if as_json:
-        console.print_json(
-            json.dumps(
-                {
-                    "valid": len(errors) == 0 and (not strict or len(warnings) == 0),
-                    "errors": errors,
-                    "warnings": warnings,
-                }
-            )
-        )
+        valid = len(errors) == 0 and (not strict or len(warnings) == 0)
+        report = {"valid": valid, "errors": errors, "warnings": warnings}
+        if valid:
+            emit_response(data=report, warnings=warnings)
+            return
+        if errors:
+            message = _validation_summary(errors)
+        else:
+            noun = "warning" if len(warnings) == 1 else "warnings"
+            message = f"Strict validation failed: {len(warnings)} {noun}"
+        emit_error(message, code="E_VALIDATION", errors=errors, data=report)
+        raise SystemExit(1)
     else:
         if errors:
             console.print(
@@ -132,7 +150,7 @@ def pack_command(path: str, output: str | None, as_json: bool) -> None:
     errors, warnings = validate_object(target)
     if errors:
         if as_json:
-            console.print_json(json.dumps({"status": "error", "errors": errors}))
+            _fail_validation_json(errors)
         else:
             console.print(
                 Panel(
@@ -147,6 +165,9 @@ def pack_command(path: str, output: str | None, as_json: bool) -> None:
     obj_dir = target if target.is_dir() else target.parent
     json_path, data = _find_object_json(obj_dir)
     if json_path is None or data is None:
+        if as_json:
+            emit_error("No O3DE object JSON found", code="E_NOT_AN_OBJECT")
+            raise SystemExit(1)
         console.print("[red]No O3DE object JSON found.[/red]")
         raise SystemExit(1)
 
@@ -155,6 +176,9 @@ def pack_command(path: str, output: str | None, as_json: bool) -> None:
     version = get_object_version(data)
 
     if not name or not version:
+        if as_json:
+            emit_error("Object must have name and version for packaging", code="E_INVALID_OBJECT")
+            raise SystemExit(1)
         console.print("[red]Object must have name and version for packaging.[/red]")
         raise SystemExit(1)
 
@@ -175,20 +199,16 @@ def pack_command(path: str, output: str | None, as_json: bool) -> None:
     sha256 = compute_sha256(archive_path)
 
     if as_json:
-        console.print_json(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "data": {
-                        "archive": str(archive_path),
-                        "name": name,
-                        "version": version,
-                        "type": obj_type.value,
-                        "sha256": sha256,
-                        "size_bytes": archive_path.stat().st_size,
-                    },
-                }
-            )
+        emit_response(
+            data={
+                "archive": str(archive_path),
+                "name": name,
+                "version": version,
+                "type": obj_type.value,
+                "sha256": sha256,
+                "size_bytes": archive_path.stat().st_size,
+            },
+            warnings=warnings,
         )
     else:
         console.print(f"[green]Packed:[/green] {archive_path}")
@@ -217,7 +237,7 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
 
     if errors:
         if as_json:
-            console.print_json(json.dumps({"status": "error", "errors": errors}))
+            _fail_validation_json(errors)
         else:
             console.print(
                 Panel(
@@ -237,6 +257,9 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
     obj_dir = target if target.is_dir() else target.parent
     json_path, data = _find_object_json(obj_dir)
     if json_path is None or data is None:
+        if as_json:
+            emit_error("No O3DE object JSON found", code="E_NOT_AN_OBJECT")
+            raise SystemExit(1)
         console.print("[red]No O3DE object JSON found.[/red]")
         raise SystemExit(1)
 
@@ -247,14 +270,14 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
     if dry_run:
         msg = f"Validation passed. Would publish {name}@{version} ({obj_type.value})"
         if as_json:
-            console.print_json(
-                json.dumps(
-                    {
-                        "status": "ok",
-                        "dry_run": True,
-                        "data": {"name": name, "version": version, "type": obj_type.value},
-                    }
-                )
+            emit_response(
+                data={
+                    "name": name,
+                    "version": version,
+                    "type": obj_type.value,
+                    "dry_run": True,
+                },
+                warnings=warnings,
             )
         else:
             console.print(f"[yellow]Dry-run:[/yellow] {msg}")
@@ -273,7 +296,7 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
     if not remote:
         msg = "No remote specified. Use --remote or configure a remote."
         if as_json:
-            console.print_json(json.dumps({"status": "error", "errors": [msg]}))
+            emit_error(msg, code="E_NO_REMOTE")
         else:
             console.print(f"[red]{msg}[/red]")
         raise SystemExit(1)
@@ -283,7 +306,7 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
     if immutability_error and not force:
         msg = f"Version {version} of {name} already exists at {remote}. Use --force to overwrite."
         if as_json:
-            console.print_json(json.dumps({"status": "error", "errors": [msg]}))
+            emit_error(msg, code="E_VERSION_EXISTS")
         else:
             console.print(f"[red]{msg}[/red]")
         raise SystemExit(1)
@@ -293,24 +316,20 @@ def push_command(path: str, remote: str | None, dry_run: bool, force: bool, as_j
 
     if upload_result.get("error"):
         if as_json:
-            console.print_json(json.dumps({"status": "error", "errors": [upload_result["error"]]}))
+            emit_error(f"Upload failed: {upload_result['error']}", code="E_UPLOAD_FAILED")
         else:
             console.print(f"[red]Upload failed: {upload_result['error']}[/red]")
         raise SystemExit(1)
 
     if as_json:
-        console.print_json(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "data": {
-                        "name": name,
-                        "version": version,
-                        "type": obj_type.value,
-                        "remote": remote,
-                    },
-                }
-            )
+        emit_response(
+            data={
+                "name": name,
+                "version": version,
+                "type": obj_type.value,
+                "remote": remote,
+            },
+            warnings=warnings,
         )
     else:
         console.print(f"[bold]Published to:[/bold] {remote}")

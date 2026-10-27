@@ -135,7 +135,9 @@ class TestProjectCommands:
         mock_manifest.write_text(_json.dumps(manifest_data))
         result = runner.invoke(cli, ["project", "list", "--json"])
         assert result.exit_code == 0
-        data = _json.loads(result.output)
+        doc = _json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        data = doc["data"]
         assert isinstance(data, list)
         assert len(data) == 1
         assert data[0]["name"] == "org.test.project.proj1"
@@ -164,7 +166,9 @@ class TestGemCommands:
         mock_manifest.write_text(_json.dumps(manifest_data))
         result = runner.invoke(cli, ["gem", "list", "--json"])
         assert result.exit_code == 0
-        data = _json.loads(result.output)
+        doc = _json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        data = doc["data"]
         assert isinstance(data, list)
         assert len(data) == 1
         assert data[0]["name"] == "org.test.gem.alpha"
@@ -266,7 +270,9 @@ class TestPublishCommands:
     def test_publish_validate_json_output(self, runner, temp_gem):
         result = runner.invoke(cli, ["publish", "validate", str(temp_gem), "--json"])
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        data = doc["data"]
         assert "valid" in data
         assert data["valid"] is True
 
@@ -303,8 +309,9 @@ class TestAuditCommand:
         result = runner.invoke(cli, ["audit", "--json"])
         assert result.exit_code in (0, 1)
         import json as _json
-        data = _json.loads(result.output)
-        assert isinstance(data, (list, dict))
+        doc = _json.loads(result.stdout)
+        assert doc["status"] == ("ok" if result.exit_code == 0 else "error")
+        assert isinstance(doc["data"]["issues"], dict)
 
 
 # ---- Workspace Commands (symlinked build directories) ----
@@ -352,8 +359,9 @@ class TestDepsCommands:
         mock_manifest.write_text(_json.dumps(manifest_data))
         result = runner.invoke(cli, ["deps", "tree", "--json"])
         assert result.exit_code == 0
-        data = _json.loads(result.output)
-        assert isinstance(data, (list, dict))
+        doc = _json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        assert isinstance(doc["data"], list)
 
 
 # ---- AI Commands ----

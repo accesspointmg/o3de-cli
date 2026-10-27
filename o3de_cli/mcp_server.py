@@ -357,7 +357,13 @@ def _tool_to_cli_args(name: str, arguments: dict[str, Any]) -> list[str]:
 
 
 def _invoke_cli(args: list[str]) -> dict[str, Any]:
-    """Run CLI command and return parsed JSON result."""
+    """Run a CLI command and return its JSON response envelope.
+
+    Every ``--json`` command writes exactly one envelope to stdout
+    (see :mod:`o3de_cli.core.json_output`), which is returned as is.
+    The fallbacks cover a CLI that wrote nothing (e.g. a Click usage
+    error, exit 2) or something that is not an envelope.
+    """
     result = subprocess.run(
         args,
         capture_output=True,
@@ -365,18 +371,26 @@ def _invoke_cli(args: list[str]) -> dict[str, Any]:
         timeout=300,
     )
     stdout = result.stdout.strip()
-    if stdout:
-        try:
-            return json.loads(stdout)
-        except json.JSONDecodeError:
-            return {"status": "error", "error": stdout, "code": "E_INVALID_JSON"}
-    if result.returncode != 0:
+    if not stdout:
+        if result.returncode != 0:
+            return {
+                "status": "error",
+                "error": result.stderr.strip() or f"Exit code {result.returncode}",
+                "code": "E_CLI_FAILED",
+            }
+        return {"status": "ok", "data": None, "warnings": []}
+    try:
+        doc = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {"status": "error", "error": stdout, "code": "E_INVALID_JSON"}
+    if not isinstance(doc, dict) or doc.get("status") not in ("ok", "error"):
         return {
             "status": "error",
-            "error": result.stderr.strip() or f"Exit code {result.returncode}",
-            "code": "E_CLI_FAILED",
+            "error": "CLI output is not a JSON response envelope",
+            "code": "E_INVALID_JSON",
+            "data": doc,
         }
-    return {"status": "ok", "data": {}}
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -454,9 +468,13 @@ def _handle_tools_call(params: dict) -> dict:
     try:
         cli_args = _tool_to_cli_args(name, arguments)
         result = _invoke_cli(cli_args)
-        return {
+        response: dict[str, Any] = {
             "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
         }
+        # A tool whose CLI command failed is a tool error to the client.
+        if result.get("status") == "error":
+            response["isError"] = True
+        return response
     except Exception as exc:
         return {
             "content": [

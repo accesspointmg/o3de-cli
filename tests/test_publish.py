@@ -65,8 +65,9 @@ class TestPublishValidate:
         with patch("o3de_cli.commands.publish.validate_against_schema", return_value=[]):
             result = runner.invoke(publish, ["validate", str(gdir), "--json"])
         assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["valid"] is True
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        assert doc["data"]["valid"] is True
 
     def test_validate_strict_fails_on_warnings(self, tmp_path):
         from o3de_cli.commands.publish import publish
@@ -150,8 +151,9 @@ class TestPublishPush:
         with patch("o3de_cli.commands.publish.validate_against_schema", return_value=[]):
             result = runner.invoke(publish, ["push", str(gdir), "--dry-run", "--json"])
         assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["dry_run"] is True
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        assert doc["data"]["dry_run"] is True
 
     def test_push_to_local_repo(self, tmp_path):
         from o3de_cli.commands.publish import publish

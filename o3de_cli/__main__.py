@@ -3,6 +3,10 @@
 
 """Main entry point for the o3de CLI."""
 
+import os
+import sys
+import traceback
+
 import click
 from rich.console import Console
 
@@ -165,9 +169,37 @@ def list_objects(obj_type: str, as_json: bool) -> None:
     list_objects(obj_type, as_json)
 
 
-def main() -> None:
-    """Main entry point."""
-    cli()
+def main(argv: list[str] | None = None) -> None:
+    """Main entry point.
+
+    Under ``--json`` stdout must carry exactly one JSON document (see
+    :mod:`o3de_cli.core.json_output`), so an unexpected exception becomes
+    an ``E_INTERNAL`` error document and exit code 1 instead of a bare
+    traceback.  The traceback goes to stderr only when ``O3DE_DEBUG=1``.
+
+    ``SystemExit`` passes through untouched: it carries the exit code of
+    a command that already wrote its own document.  Click's own errors are
+    left to Click too: in standalone mode it reports usage errors (exit 2)
+    and aborts (exit 1) on stderr, leaving stdout empty, and they reach
+    this function only as ``SystemExit``.  Text mode is unchanged.
+
+    *argv* defaults to ``sys.argv[1:]`` (and is then left for Click to
+    read, so its Windows wildcard expansion still applies).
+    """
+    if "--json" not in (sys.argv[1:] if argv is None else argv):
+        cli(args=argv)
+        return
+    try:
+        cli(args=argv)
+    except (SystemExit, click.exceptions.ClickException, click.exceptions.Abort):
+        raise
+    except Exception as exc:
+        from o3de_cli.core.json_output import emit_error
+
+        if os.environ.get("O3DE_DEBUG") == "1":
+            traceback.print_exc(file=sys.stderr)
+        emit_error(str(exc) or type(exc).__name__, code="E_INTERNAL")
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

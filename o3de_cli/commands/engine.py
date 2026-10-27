@@ -29,12 +29,12 @@ def list_engines(as_json: bool) -> None:
     engines = resolver.engines
 
     if as_json:
-        import json
+        from o3de_cli.core.json_output import emit_response
 
         items = []
         for name, obj in engines.items():
             items.append({"name": obj.name, "version": obj.version, "path": str(obj.path)})
-        click.echo(json.dumps(items, indent=2))
+        emit_response(data=items)
         return
 
     if not engines:
@@ -108,7 +108,8 @@ def create_engine(name: str, path: str | None, template_name: str | None, as_jso
                 shutil.copytree(item, dest, dirs_exist_ok=True)
             else:
                 shutil.copy2(item, dest)
-        console.print(f"[dim]Applied template: {template_name}[/dim]")
+        if not as_json:
+            console.print(f"[dim]Applied template: {template_name}[/dim]")
     else:
         (engine_path / "Gems").mkdir()
         (engine_path / "Templates").mkdir()
