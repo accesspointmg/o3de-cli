@@ -236,12 +236,10 @@ def list_templates(as_json: bool) -> None:
     templates = resolver.templates
 
     if as_json:
-        import json
-
         items = []
         for name, obj in templates.items():
             items.append({"name": obj.name, "version": obj.version, "path": str(obj.path)})
-        click.echo(json.dumps(items, indent=2))
+        emit_response(data=items)
         return
 
     if not templates:
@@ -271,7 +269,7 @@ def info(name: str, as_json: bool) -> None:
         resolved = load_resolved_manifest()
     except Exception:
         if as_json:
-            emit_error("No resolved manifest. Run 'manifest resolve' first.", code="NO_MANIFEST")
+            emit_error("No resolved manifest. Run 'manifest resolve' first.", code="E_NO_MANIFEST")
             raise SystemExit(1)
         console.print("[yellow]No resolved manifest. Run 'manifest resolve' first.[/yellow]")
         raise SystemExit(1)
@@ -285,7 +283,7 @@ def info(name: str, as_json: bool) -> None:
 
     if not obj_data:
         if as_json:
-            emit_error(f"Template not found: {name}", code="NOT_FOUND")
+            emit_error(f"Template not found: {name}", code="E_NOT_FOUND")
             raise SystemExit(1)
         console.print(f"[red]Template not found:[/red] {name}")
         raise SystemExit(1)
@@ -338,7 +336,7 @@ def create_template(name: str, path: str | None, source: str | None, as_json: bo
 
     if tpl_path.exists():
         if as_json:
-            emit_error(f"Path already exists: {tpl_path}", code="PATH_EXISTS")
+            emit_error(f"Path already exists: {tpl_path}", code="E_EXISTS")
             raise SystemExit(1)
         console.print(f"[red]Path already exists:[/red] {tpl_path}")
         raise SystemExit(1)
@@ -402,7 +400,7 @@ def instance_template(
 
     if inst_path.exists():
         if as_json:
-            emit_error(f"Path already exists: {inst_path}", code="PATH_EXISTS")
+            emit_error(f"Path already exists: {inst_path}", code="E_EXISTS")
             raise SystemExit(1)
         console.print(f"[red]Path already exists:[/red] {inst_path}")
         raise SystemExit(1)
@@ -421,7 +419,7 @@ def instance_template(
 
     if not tpl_obj or not tpl_obj.path.exists():
         if as_json:
-            emit_error(f"Template not found: {template_name}", code="NOT_FOUND")
+            emit_error(f"Template not found: {template_name}", code="E_NOT_FOUND")
             raise SystemExit(1)
         console.print(f"[red]Template not found:[/red] {template_name}")
         raise SystemExit(1)
@@ -432,7 +430,7 @@ def instance_template(
         if manifest is None:
             msg = f"No template manifest found in {tpl_obj.path}"
             if as_json:
-                emit_error(msg, code="NO_MANIFEST")
+                emit_error(msg, code="E_NO_MANIFEST")
             else:
                 console.print(f"[red]{msg}[/red]")
             raise SystemExit(1)

@@ -159,19 +159,22 @@ def _exit_with_error(
     code: str,
     *console_lines: str,
     exit_code: int = 1,
+    data: Any = None,
 ) -> NoReturn:
     """Report an error as a JSON error response or console text, then exit.
 
     *console_lines* are printed in console mode; by default the message
-    is printed in red.
+    is printed in red.  Console mode exits with *exit_code*; ``--json``
+    always exits 1, as the JSON contract requires, and *data* (if given)
+    rides in the error document.
     """
     if as_json:
         from o3de_cli.core.json_output import emit_error
 
-        emit_error(message, code=code)
-    else:
-        for line in console_lines or (f"[red]{message}[/red]",):
-            console.print(line)
+        emit_error(message, code=code, data=data)
+        raise SystemExit(1)
+    for line in console_lines or (f"[red]{message}[/red]",):
+        console.print(line)
     raise SystemExit(exit_code)
 
 
@@ -188,19 +191,6 @@ def _spinner(disable: bool = False) -> Progress:
         console=console,
         disable=disable,
     )
-
-
-def _emit_json_document(data: Any) -> None:
-    """Write *data* to stdout as one plain JSON document.
-
-    For the commands whose ``--json`` output predates the response
-    envelope.  ``console.print_json`` is not used: Rich adds colour codes
-    when it thinks stdout is a terminal (e.g. ``FORCE_COLOR``), which
-    breaks parsers.
-    """
-    from o3de_cli.core.json_output import emit
-
-    emit(json.dumps(data, indent=2, default=str))
 
 
 def _load_workspace(
@@ -1062,7 +1052,9 @@ def list_command(as_json: bool) -> None:
             )
 
     if as_json:
-        _emit_json_document(workspaces)
+        from o3de_cli.core.json_output import emit_response
+
+        emit_response(data=workspaces)
     else:
         if not workspaces:
             console.print("[dim]No workspaces found.[/dim]")
@@ -1093,7 +1085,9 @@ def show_command(name_or_path: str, as_json: bool) -> None:
     ws_path, meta = _load_workspace(name_or_path, as_json)
 
     if as_json:
-        _emit_json_document(meta.model_dump(by_alias=True, exclude_none=True))
+        from o3de_cli.core.json_output import emit_response
+
+        emit_response(data=meta.model_dump(by_alias=True, exclude_none=True))
     else:
         console.print(f"[bold]Workspace:[/bold] {meta.workspace.name or ws_path.name}")
         console.print(f"[dim]Path:[/dim] {ws_path}")
@@ -1298,10 +1292,20 @@ def solve_command(
                 for base, entries in result.overlays.items()
             },
         }
-        _emit_json_document(data)
-        # A failed solve is an error in either mode
+        from o3de_cli.core.json_output import emit_error, emit_response
+
+        # A failed solve is an error in either mode; the solve report
+        # rides in the error document.
         if not result.is_resolved:
+            emit_error(
+                f"Resolution failed: {result.conflict_message}"
+                if result.conflict_message
+                else "Resolution failed",
+                code="E_SOLVE_CONFLICT",
+                data=data,
+            )
             raise SystemExit(1)
+        emit_response(data=data)
         return
 
     if not result.is_resolved:
@@ -1906,7 +1910,13 @@ def _run_build_steps(
             console.print(f"[dim]$ {' '.join(configure_cmd)}[/dim]")
         rc = _run_cmake(configure_cmd, cwd=layout.source_dir, on_line=on_line)
         if rc != 0:
-            _exit_with_error(as_json, "CMake configure failed.", "E_CONFIGURE_FAILED", exit_code=rc)
+            _exit_with_error(
+                as_json,
+                "CMake configure failed.",
+                "E_CONFIGURE_FAILED",
+                exit_code=rc,
+                data={"returncode": rc},
+            )
         if not as_json:
             console.print("[green]Configure complete.[/green]")
 
@@ -1927,7 +1937,9 @@ def _run_build_steps(
         console.print(f"[dim]$ {' '.join(build_cmd)}[/dim]")
     rc = _run_cmake(build_cmd, cwd=layout.source_dir, on_line=on_line)
     if rc != 0:
-        _exit_with_error(as_json, "Build failed.", "E_BUILD_FAILED", exit_code=rc)
+        _exit_with_error(
+            as_json, "Build failed.", "E_BUILD_FAILED", exit_code=rc, data={"returncode": rc}
+        )
 
     cmake_config = CMAKE_CONFIGS[opts.config]
     if as_json:
@@ -2022,7 +2034,7 @@ def verify_lock_command(name_or_path: str, as_json: bool) -> None:
     Checks that the resolved dependencies match what's recorded
     in workspace-lock.json.
     """
-    from o3de_cli.core.json_output import emit_error
+    from o3de_cli.core.json_output import emit_error, emit_response
     from o3de_cli.core.lockfile import verify_lockfile
 
     ws_path = _resolve_workspace_path(name_or_path)
@@ -2050,7 +2062,22 @@ def verify_lock_command(name_or_path: str, as_json: bool) -> None:
     matches, mismatches = verify_lockfile(ws_path, candidates)
 
     if as_json:
-        _emit_json_document({"verified": matches, "mismatches": mismatches})
+        report = {"verified": matches, "mismatches": mismatches}
+        if not matches:
+            # Same exit code as text mode; the contract makes that an error.
+            if len(mismatches) == 1:
+                message = f"Lockfile mismatch: {mismatches[0]}"
+            else:
+                message = f"Lockfile mismatch: {len(mismatches)} differences"
+            emit_error(
+                message,
+                code="E_LOCK_MISMATCH",
+                errors=mismatches,
+                data=report,
+            )
+            raise SystemExit(1)
+        emit_response(data=report)
+        return
     else:
         if matches:
             console.print("[green]Lockfile verified — all packages match.[/green]")

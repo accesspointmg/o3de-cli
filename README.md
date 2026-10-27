@@ -53,10 +53,24 @@ o3de workspace build mygame-ws
 | `mcp` | Start the MCP server on stdio |
 | `gui` | Launch the GUI (requires [o3de-pilot](https://github.com/accesspointmg/o3de-pilot)) |
 
-Most commands support `--json` for machine-readable output, and every command
-has `--help`. With `--json`, success prints
-`{"status": "ok", "data": ...}` and exits 0; failure prints
-`{"status": "error", "error": ..., "code": "E_..."}` and exits 1.
+Every command has `--help`, and most support `--json` for machine-readable
+output.
+
+### JSON output
+
+With `--json`, stdout carries exactly one JSON document and nothing else
+(progress, prompts and build logs go to stderr):
+
+- Success exits 0 with `{"status": "ok", "data": <payload>, "warnings": [...]}`.
+  `data` is the command's result (`null` if it has none) and `warnings` is
+  always a list.
+- Failure exits 1 with `{"status": "error", "error": "<message>", "code": "E_..."}`.
+  When there is more to report, `errors` lists every message (for example each
+  validation error) and `data` carries the report behind the failure (for
+  example the issues `audit` found).
+- An unexpected exception becomes `E_INTERNAL`; set `O3DE_DEBUG=1` to also get
+  the traceback on stderr. Usage errors (unknown option, missing argument) are
+  reported by Click on stderr with exit code 2 and no JSON.
 
 ## Installing from remote repos safely
 

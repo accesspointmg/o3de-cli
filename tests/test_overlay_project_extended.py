@@ -291,7 +291,7 @@ class TestProjectInitJson:
         assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
-        assert data["code"] == "PATH_EXISTS"
+        assert data["code"] == "E_EXISTS"
 
 
 class TestProjectBuildJson:
@@ -318,7 +318,7 @@ class TestProjectBuildJson:
         assert result.exit_code == 1  # --json errors exit non-zero
         data = json.loads(result.output)
         assert data["status"] == "error"
-        assert data["code"] == "NO_CMAKELISTS"
+        assert data["code"] == "E_NO_CMAKELISTS"
 
 
 class TestProjectAddJson:

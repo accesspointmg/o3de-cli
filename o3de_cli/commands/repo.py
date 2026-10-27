@@ -45,7 +45,7 @@ def list_repos(as_json: bool) -> None:
                 remote_repos.append(remote_obj)
 
     if as_json:
-        import json as json_mod
+        from o3de_cli.core.json_output import emit_response
 
         items = []
         for name, obj in repos.items():
@@ -61,7 +61,7 @@ def list_repos(as_json: bool) -> None:
                     "source": "remote",
                 }
             )
-        click.echo(json_mod.dumps(items, indent=2))
+        emit_response(data=items)
         return
 
     if not repos and not remote_repos:

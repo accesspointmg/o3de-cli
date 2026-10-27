@@ -354,9 +354,10 @@ class TestManifestRemoveJson:
         runner = CliRunner()
         with patch("o3de_cli.commands.manifest.get_manifest_path", return_value=mp):
             result = runner.invoke(manifest, ["remove", str(tmp_path / "nope"), "--json"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
+        assert result.exit_code == 1
+        data = json.loads(result.stdout)
         assert data["status"] == "error"
+        assert data["code"] == "E_NOT_FOUND"
 
 
 class TestManifestSetJson:

@@ -166,7 +166,7 @@ def _run_gem_build(
     config: str,
     as_json: bool,
 ) -> None:
-    from o3de_cli.commands.workspace import _run_cmake
+    from o3de_cli.commands.workspace import _print_to_stderr, _run_cmake
 
     names = [t.name for t in targets]
     cmd = [
@@ -181,7 +181,9 @@ def _run_gem_build(
     ]
     if not as_json:
         console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-    rc = _run_cmake(cmd, cwd=build_dir)
+    # Under --json CMake's output goes to stderr: stdout carries only the
+    # JSON document.
+    rc = _run_cmake(cmd, cwd=build_dir, on_line=_print_to_stderr if as_json else None)
     if rc != 0:
         _fail("Gem build failed.", "E_BUILD_FAILED", as_json)
 

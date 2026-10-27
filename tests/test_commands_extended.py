@@ -69,7 +69,9 @@ class TestEngineList:
             result = runner.invoke(engine, ["list", "--json"])
 
         assert result.exit_code == 0
-        items = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        items = doc["data"]
         assert any(e["name"] == "org.test.eng" for e in items)
 
     def test_list_table(self, tmp_path):
@@ -206,7 +208,9 @@ class TestProjectList:
                    return_value=tmp_path / "resolved.json"):
             result = runner.invoke(project, ["list", "--json"])
         assert result.exit_code == 0
-        items = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        items = doc["data"]
         assert any(p["name"] == "org.test.proj" for p in items)
 
     def test_list_empty(self, tmp_path):
@@ -293,7 +297,9 @@ class TestGemList:
                    return_value=tmp_path / "resolved.json"):
             result = runner.invoke(gem, ["list", "--json"])
         assert result.exit_code == 0
-        items = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        items = doc["data"]
         assert any(g["name"] == "org.test.gem.a" for g in items)
 
     def test_list_empty(self, tmp_path):
@@ -335,7 +341,9 @@ class TestTemplateList:
                    return_value=tmp_path / "resolved.json"):
             result = runner.invoke(template, ["list", "--json"])
         assert result.exit_code == 0
-        items = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        items = doc["data"]
         assert any(t["name"] == "org.test.tpl" for t in items)
 
     def test_list_empty(self, tmp_path):
@@ -379,7 +387,9 @@ class TestOverlayList:
                    return_value=tmp_path / "resolved.json"):
             result = runner.invoke(overlay, ["list", "--json"])
         assert result.exit_code == 0
-        items = json.loads(result.output)
+        doc = json.loads(result.stdout)
+        assert doc["status"] == "ok"
+        items = doc["data"]
         assert any(o["name"] == "org.test.ov" for o in items)
 
     def test_list_empty(self, tmp_path):

@@ -29,12 +29,12 @@ def list_gems(as_json: bool) -> None:
     gems = resolver.gems
 
     if as_json:
-        import json
+        from o3de_cli.core.json_output import emit_response
 
         items = []
         for name, obj in gems.items():
             items.append({"name": obj.name, "version": obj.version, "path": str(obj.path)})
-        click.echo(json.dumps(items, indent=2))
+        emit_response(data=items)
         return
 
     if not gems:
@@ -219,8 +219,6 @@ def info(name: str, as_json: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def search(query: str, as_json: bool) -> None:
     """Search for gems in local manifest and remote registries."""
-    import json as json_module
-
     from o3de_cli.core.store import Store
 
     store = Store()
@@ -229,13 +227,15 @@ def search(query: str, as_json: bool) -> None:
     # Filter to gems only
     gem_results = [r for r in results if r.object_type.value == "gem"]
 
-    if not gem_results:
-        console.print(f"[yellow]No gems found matching:[/yellow] {query}")
+    if as_json:
+        from o3de_cli.core.json_output import emit_response
+
+        output = [{"name": r.name, "version": r.version, "summary": r.summary} for r in gem_results]
+        emit_response(data=output)
         return
 
-    if as_json:
-        output = [{"name": r.name, "version": r.version, "summary": r.summary} for r in gem_results]
-        click.echo(json_module.dumps(output, indent=2))
+    if not gem_results:
+        console.print(f"[yellow]No gems found matching:[/yellow] {query}")
         return
 
     table = Table(title=f"Gems matching '{query}'")

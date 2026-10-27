@@ -3,7 +3,7 @@
 
 """Dependency tree audit command."""
 
-import json
+from contextlib import nullcontext
 from pathlib import Path
 
 import click
@@ -34,32 +34,39 @@ def audit(fix: bool, as_json: bool) -> None:
     - Missing peer dependencies
     - Unresolvable optional dependencies
     - Version conflicts between siblings
+
+    Exits 1 when any issue is found.  Under ``--json`` that is an
+    ``E_AUDIT_ISSUES`` error whose ``data`` carries the full report.
     """
+    from o3de_cli.core.json_output import emit_error, emit_response
+
     manifest_path = get_manifest_path()
     if not manifest_path.exists():
+        if as_json:
+            emit_error("No manifest found. Run 'o3de init' first.", code="E_NO_MANIFEST")
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red] Run 'o3de init' first.")
         raise SystemExit(1)
 
     resolver = Resolver(manifest_path)
 
-    with console.status("Resolving manifest..."):
+    with nullcontext() if as_json else console.status("Resolving manifest..."):
         resolver.resolve()
 
     issues = _collect_issues(resolver)
+    total = sum(len(v) for v in issues.values())
 
     if as_json:
-        console.print_json(
-            json.dumps(
-                {
-                    "total": sum(len(v) for v in issues.values()),
-                    "issues": issues,
-                }
-            )
-        )
-    else:
-        _display_issues(issues)
+        report = {"total": total, "issues": issues}
+        if total > 0:
+            noun = "issue" if total == 1 else "issues"
+            emit_error(f"Audit found {total} {noun}", code="E_AUDIT_ISSUES", data=report)
+            raise SystemExit(1)
+        emit_response(data=report)
+        return
 
-    total = sum(len(v) for v in issues.values())
+    _display_issues(issues)
+
     if total > 0:
         raise SystemExit(1)
 

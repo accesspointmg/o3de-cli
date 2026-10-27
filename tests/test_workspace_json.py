@@ -304,7 +304,8 @@ class TestListJson:
         result = _invoke("list", "--json")
         assert result.exit_code == 0, result.output
         data = _doc(result)
-        assert [w["name"] for w in data] == ["ws"]
+        assert data["status"] == "ok"
+        assert [w["name"] for w in data["data"]] == ["ws"]
 
 
 class TestShowJson:
@@ -313,7 +314,8 @@ class TestShowJson:
         result = _invoke("show", str(ws), "--json")
         assert result.exit_code == 0, result.output
         data = _doc(result)
-        assert data["workspace"]["name"] == "ws"
+        assert data["status"] == "ok"
+        assert data["data"]["workspace"]["name"] == "ws"
 
     def test_not_found_is_json_error(self, env):
         result = _invoke("show", "nope", "--json")
@@ -368,8 +370,9 @@ class TestSolveJson:
             result = _invoke("solve", "org.test.engine", "--json")
         assert result.exit_code == 0, result.output
         data = _doc(result)
-        assert data["resolved"] is True
-        assert "org.test.engine" in data["candidates"]
+        assert data["status"] == "ok"
+        assert data["data"]["resolved"] is True
+        assert "org.test.engine" in data["data"]["candidates"]
 
     def test_failure_is_json_and_exits_1(self, env):
         edir = _engine(env)
@@ -380,8 +383,10 @@ class TestSolveJson:
             result = _invoke("solve", "org.test.engine", "--json")
         assert result.exit_code == 1
         data = _doc(result)
-        assert data["resolved"] is False
-        assert data["conflict"] == "boom"
+        assert (data["status"], data["code"]) == ("error", "E_SOLVE_CONFLICT")
+        assert data["error"] == "Resolution failed: boom"
+        assert data["data"]["resolved"] is False
+        assert data["data"]["conflict"] == "boom"
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +487,9 @@ class TestVerifyLockJson:
         assert _invoke("lock", str(ws)).exit_code == 0
         result = _invoke("verify-lock", str(ws), "--json")
         assert result.exit_code == 0, result.output
-        assert _doc(result)["verified"] is True
+        data = _doc(result)
+        assert data["status"] == "ok"
+        assert data["data"]["verified"] is True
 
     def test_not_found_is_json_error(self, env):
         result = _invoke("verify-lock", "nope", "--json")

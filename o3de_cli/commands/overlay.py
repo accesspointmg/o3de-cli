@@ -29,12 +29,12 @@ def list_overlays(as_json: bool) -> None:
     overlays = resolver.overlays
 
     if as_json:
-        import json as json_mod
+        from o3de_cli.core.json_output import emit_response
 
         items = []
         for name, obj in overlays.items():
             items.append({"name": obj.name, "version": obj.version, "path": str(obj.path)})
-        click.echo(json_mod.dumps(items, indent=2))
+        emit_response(data=items)
         return
 
     if not overlays:

@@ -3,7 +3,7 @@
 
 """Dependency tree visualization and management commands."""
 
-import json
+from contextlib import nullcontext
 from typing import Any
 
 import click
@@ -39,11 +39,16 @@ def tree_command(name: str | None, depth: int, as_json: bool, show_all: bool) ->
     """
     manifest_path = get_manifest_path()
     if not manifest_path.exists():
+        if as_json:
+            from o3de_cli.core.json_output import emit_error
+
+            emit_error("No manifest found", code="E_NO_MANIFEST")
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
     resolver = Resolver(manifest_path)
-    with console.status("Resolving manifest..."):
+    with nullcontext() if as_json else console.status("Resolving manifest..."):
         resolver.resolve()
 
     if as_json:
@@ -97,11 +102,16 @@ def list_deps(name: str, transitive: bool, reverse: bool, as_json: bool) -> None
     """List dependencies for an object."""
     manifest_path = get_manifest_path()
     if not manifest_path.exists():
+        if as_json:
+            from o3de_cli.core.json_output import emit_error
+
+            emit_error("No manifest found", code="E_NO_MANIFEST")
+            raise SystemExit(1)
         console.print("[red]No manifest found.[/red]")
         raise SystemExit(1)
 
     resolver = Resolver(manifest_path)
-    with console.status("Resolving manifest..."):
+    with nullcontext() if as_json else console.status("Resolving manifest..."):
         resolver.resolve()
 
     obj = resolver.objects.get(name)
@@ -222,7 +232,7 @@ def why_command(name: str, dependency: str, as_json: bool) -> None:
         raise SystemExit(1)
 
     resolver = Resolver(manifest_path)
-    with console.status("Resolving manifest..."):
+    with nullcontext() if as_json else console.status("Resolving manifest..."):
         resolver.resolve()
 
     obj = resolver.objects.get(name)
@@ -331,7 +341,11 @@ def _find_dep_path(resolver: Resolver, start: str, target: str) -> list[str] | N
 
 
 def _output_json(resolver: Resolver, name: str | None, depth: int, show_all: bool) -> None:
-    """Output dependency tree as JSON."""
+    """Output dependency tree as JSON (the ``--json`` envelope).
+
+    ``data`` is the tree rooted at *name*, or the list of root trees.
+    """
+    from o3de_cli.core.json_output import emit_error, emit_response
 
     def _obj_to_dict(obj, visited: set, current_depth: int) -> dict:
         result = {
@@ -366,14 +380,14 @@ def _output_json(resolver: Resolver, name: str | None, depth: int, show_all: boo
 
     if name:
         obj = resolver.objects.get(name)
-        if obj:
-            console.print_json(json.dumps(_obj_to_dict(obj, {name}, 0)))
-        else:
-            console.print_json(json.dumps({"error": f"Object not found: {name}"}))
+        if not obj:
+            emit_error(f"Object not found: {name}", code="E_NOT_FOUND")
+            raise SystemExit(1)
+        emit_response(data=_obj_to_dict(obj, {name}, 0))
     else:
         if show_all:
             roots = list(resolver.objects.values())
         else:
             roots = [obj for obj in resolver.objects.values() if obj.parent is None]
         forest = [_obj_to_dict(r, {r.name}, 0) for r in roots]
-        console.print_json(json.dumps(forest))
+        emit_response(data=forest)
