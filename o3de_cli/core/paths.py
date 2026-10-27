@@ -17,11 +17,33 @@ On first run, o3de creates:
 
 import json
 import os
+import shutil
+import stat
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 if TYPE_CHECKING:
     from o3de_cli.core.models import ObjectType
+
+
+def rmtree_force(path: Path | str) -> None:
+    """Delete a directory tree, including read-only files.
+
+    Windows marks git pack files and some build artifacts read-only, which
+    makes a plain ``shutil.rmtree`` fail; clear the attribute and retry.
+    ``rmtree(onexc=...)`` only exists from Python 3.12, so older versions get
+    the equivalent ``onerror`` hook.
+    """
+
+    def _clear_readonly(func: Any, p: str, _exc: Any) -> None:
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_clear_readonly)
+    else:
+        shutil.rmtree(path, onerror=_clear_readonly)
 
 
 def to_posix_path(path: Path | str) -> str:

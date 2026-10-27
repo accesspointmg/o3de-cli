@@ -295,3 +295,29 @@ class TestFindObjectJson:
             json_path2, is_versioned2 = find_object_json(path2, "project")
             assert json_path2.name == "project.json"
             assert is_versioned2 is False
+
+
+class TestRmtreeForce:
+    """rmtree_force works on every supported Python, read-only files included."""
+
+    def test_removes_tree_with_read_only_file(self, tmp_path):
+        import os
+        import stat
+
+        from o3de_cli.core.paths import rmtree_force
+
+        tree = tmp_path / "tree"
+        (tree / "sub").mkdir(parents=True)
+        locked = tree / "sub" / "pack.idx"
+        locked.write_text("x")
+        os.chmod(locked, stat.S_IREAD)
+
+        rmtree_force(tree)
+        assert not tree.exists()
+
+    def test_accepts_str_path(self, tmp_path):
+        from o3de_cli.core.paths import rmtree_force
+
+        (tmp_path / "d").mkdir()
+        rmtree_force(str(tmp_path / "d"))
+        assert not (tmp_path / "d").exists()
