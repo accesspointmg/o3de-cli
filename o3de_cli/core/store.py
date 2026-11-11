@@ -313,7 +313,7 @@ def get_manifest_remote_urls(manifest_path: Path | None = None) -> list[str]:
 
     remote = manifest.get("remote", {})
     if isinstance(remote, dict):
-        urls.extend(u for u in remote.get("repos", []) if isinstance(u, str))
+        urls.extend(u for u in _as_list(remote.get("repos")) if isinstance(u, str))
 
     for u in manifest.get("remotes", []) or []:
         if isinstance(u, str):
@@ -469,6 +469,31 @@ def _dependency_specs(nested: dict, data: dict) -> list[str]:
                     if isinstance(dep, str):
                         dep_specs.append(dep)
     return dep_specs
+
+
+def _as_list(value: object) -> list:
+    """*value* if it is a list, else an empty list.
+
+    Third-party repo documents sometimes put a string where a list belongs;
+    iterating it would yield one bogus "URL" per character.
+    """
+    return value if isinstance(value, list) else []
+
+
+def _object_type_or_none(url: str, data: object) -> ObjectType | None:
+    """The object type of a fetched document, or None (with a warning) if it is not one.
+
+    Remote repo trees are third-party; one malformed or foreign document must
+    not abort a whole refresh.
+    """
+    if not isinstance(data, dict):
+        logger.warning(f"Skipping {url}: not a JSON object")
+        return None
+    try:
+        return get_object_type(data)
+    except ValueError as e:
+        logger.warning(f"Skipping {url}: not an O3DE object document ({e})")
+        return None
 
 
 class Store:
@@ -636,7 +661,9 @@ class Store:
                 continue
 
             # Parse object and extract remote links
-            obj_type = get_object_type(data)
+            obj_type = _object_type_or_none(url, data)
+            if obj_type is None:
+                continue
             remote_obj = self._parse_remote_object(url, data, obj_type)
 
             if remote_obj:
@@ -763,10 +790,13 @@ class Store:
         Children inherit the source control of the nearest enclosing repo:
         a repo passes on its own URL and source control (falling back to
         what it inherited), any other object passes on what it inherited.
+        A document that is not an O3DE object is skipped with a warning.
         """
         url, parent_repo_url, inherited_sc_url, inherited_sc_branch = item
 
-        obj_type = get_object_type(data)
+        obj_type = _object_type_or_none(url, data)
+        if obj_type is None:
+            return []
         remote_obj = self._parse_remote_object(
             url,
             data,
@@ -891,7 +921,7 @@ class Store:
         remote = data.get("remote", {})
         if isinstance(remote, dict):
             for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
-                urls.extend(u for u in remote.get(key, []) if isinstance(u, str))
+                urls.extend(u for u in _as_list(remote.get(key)) if isinstance(u, str))
 
         # Schema 2.0.0: children.* entries are paths relative to this
         # object's JSON location (contained objects)
@@ -899,7 +929,7 @@ class Store:
         if isinstance(children, dict) and base_url:
             base_dir = base_url.rsplit("/", 1)[0] + "/"
             for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
-                for rel in children.get(key, []):
+                for rel in _as_list(children.get(key)):
                     if not isinstance(rel, str) or not rel:
                         continue
                     if rel.startswith(("http://", "https://")):

@@ -492,13 +492,22 @@ def _name_from_object_url(obj_url: str) -> str:
     return filename
 
 
+def _as_list(value: object) -> list:
+    """*value* if it is a list, else an empty list.
+
+    Third-party repo documents sometimes put a string where a list belongs;
+    iterating it would yield one bogus "URL" per character.
+    """
+    return value if isinstance(value, list) else []
+
+
 def _children_from_2_0_0(url: str, data: dict, url_index: dict[str, dict]) -> list[str]:
     """Names of a repo's Schema 2.0.0 ``children.*`` that were crawled."""
     children: list[str] = []
     children_2 = data.get("children", {})
     if isinstance(children_2, dict):
         for key in _ALL_TYPE_KEYS:
-            for rel in children_2.get(key, []):
+            for rel in _as_list(children_2.get(key)):
                 if not isinstance(rel, str) or not rel:
                     continue
                 child_idx = url_index.get(_resolve_child_url(url, rel))
@@ -520,7 +529,7 @@ def _children_from_url_list(
     already there nor resolved locally.
     """
     children: list[str] = []
-    for obj_url in data.get(collection, []):
+    for obj_url in _as_list(data.get(collection)):
         if not isinstance(obj_url, str):
             continue
         child_name = _name_from_object_url(obj_url)
@@ -553,7 +562,7 @@ def _children_from_legacy_data(
     """
     type_singular = collection.rstrip("s")
     children: list[str] = []
-    for item in data.get(f"{collection}_data", []):
+    for item in _as_list(data.get(f"{collection}_data")):
         if not isinstance(item, dict):
             continue
         child_name = (
@@ -612,14 +621,14 @@ def _collect_repo_remotes(data: dict, url_index: dict[str, dict]) -> list[str]:
     Crawled URLs are shown by name, others by URL.
     """
     remotes: list[str] = []
-    for sub_url in data.get("repos", []):
+    for sub_url in _as_list(data.get("repos")):
         if not isinstance(sub_url, str):
             continue
         sub_idx = url_index.get(sub_url)
         remotes.append(sub_idx["name"] if sub_idx else sub_url)
     remote_section = data.get("remote", {})
     if isinstance(remote_section, dict):
-        for sub_url in remote_section.get("repos", []):
+        for sub_url in _as_list(remote_section.get("repos")):
             if not isinstance(sub_url, str):
                 continue
             sub_idx = url_index.get(sub_url)
@@ -659,21 +668,21 @@ def _crawl_links(url: str, data: dict, visited: Container[str]) -> list[str]:
     """
     found: list[str] = []
     # Legacy: top-level repos list
-    for sub_url in data.get("repos", []):
+    for sub_url in _as_list(data.get("repos")):
         if isinstance(sub_url, str) and sub_url not in visited:
             found.append(sub_url)
     # Schema 2.0.0: remote.*
     remote = data.get("remote", {})
     if isinstance(remote, dict):
         for key in _ALL_TYPE_KEYS:
-            for sub_url in remote.get(key, []):
+            for sub_url in _as_list(remote.get(key)):
                 if isinstance(sub_url, str) and sub_url not in visited:
                     found.append(sub_url)
     # Schema 2.0.0: children.*
     children = data.get("children", {})
     if isinstance(children, dict):
         for key in _ALL_TYPE_KEYS:
-            for rel in children.get(key, []):
+            for rel in _as_list(children.get(key)):
                 if not isinstance(rel, str) or not rel:
                     continue
                 child_url = _resolve_child_url(url, rel)
@@ -788,7 +797,7 @@ class Resolver:
         self.manifest_remotes.extend(local_remotes)
 
         # Schema 2.0.0: remote.repos contains repo URLs
-        for url in remote.get("repos", []):
+        for url in _as_list(remote.get("repos")):
             if url not in self.manifest_remotes:
                 self.manifest_remotes.append(url)
 
@@ -1352,8 +1361,11 @@ class Resolver:
                 # skip it and keep going (e.g. an empty/invalid json)
                 logger.warning(f"Skipping unupgradeable object {json_path}: {e}")
                 return None
-            if self._write_versioned_object(upgraded_data, path, expected_type):
-                data = upgraded_data
+            # Resolve with the upgraded data whether or not the 2.0.0 file can
+            # be written (a read-only checkout must resolve to the same names);
+            # the file is only a cache of the upgrade.
+            self._write_versioned_object(upgraded_data, path, expected_type)
+            data = upgraded_data
 
         name = get_object_name(data)
         version = get_object_version(data)
@@ -1434,16 +1446,19 @@ class Resolver:
         """For a registered JSON *file*, return ``(json_path, is_versioned)`` to load.
 
         A versioned file (``*.2-0-0.json``) is used as-is. For a legacy
-        file, whatever ``find_object_json`` picks in the same directory
-        wins if it is a different file (and is then treated as versioned).
+        file, a 2.0.0 file for the same object in the same directory wins;
+        otherwise the registered file itself is loaded, as legacy. (A
+        *different* legacy file next to it, e.g. ``project.json`` beside a
+        registered ``custom.json``, is not substituted, and is never treated
+        as versioned, which would skip its upgrade.)
         """
         if ".2-0-0." in json_file.name or "-2-0-0." in json_file.name:
             return json_file, True
         try:
-            found_path, _ = find_object_json(json_file.parent, expected_type.value)
+            found_path, found_versioned = find_object_json(json_file.parent, expected_type.value)
         except FileNotFoundError:
             return json_file, False
-        if found_path != json_file:
+        if found_versioned and found_path != json_file:
             return found_path, True
         return json_file, False
 
@@ -2178,7 +2193,7 @@ class Resolver:
         for obj in self.objects.values():
             obj_remote = obj.data.get("remote", {})
             if isinstance(obj_remote, dict):
-                for url in obj_remote.get("repos", []):
+                for url in _as_list(obj_remote.get("repos")):
                     all_remote_urls.add(url)
         return all_remote_urls
 
@@ -2270,7 +2285,7 @@ class Resolver:
         obj_remote = obj.data.get("remote", {})
         remote_names: list[str] = []
         if isinstance(obj_remote, dict):
-            for url in obj_remote.get("repos", []):
+            for url in _as_list(obj_remote.get("repos")):
                 rname = url_to_name.get(url, url)
                 if rname not in remote_names:
                     remote_names.append(rname)
