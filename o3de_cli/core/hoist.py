@@ -180,6 +180,9 @@ class HoistPlan:
     skipped: list[HoistOverlay] = field(default_factory=list)
     renames: list[tuple[str, str]] = field(default_factory=list)  # platform dir renames
     filter_args: list[str] = field(default_factory=list)
+    #: Problems found while planning (e.g. licenses that will be skipped), so a
+    #: dry-run reports what the real run would warn about
+    warnings: list[str] = field(default_factory=list)
 
     def dry_run_payload(self) -> dict:
         """The ``--dry-run --json`` payload (``skipped`` only when non-empty)."""
@@ -289,6 +292,11 @@ def plan_hoist(
     overlay_dirs, renames = platform_renames(detected, source, family)
     no_history = platforms_without_history(source, detected)
 
+    # The hoisted gem is a copy of this tree, so license paths that escape it
+    # here will be skipped by write_repo_metadata too. Report them now.
+    warnings: list[str] = []
+    object_licenses(obj_data, obj_root, warnings=warnings)
+
     overlays: list[HoistOverlay] = []
     skipped: list[HoistOverlay] = []
     for d, p in sorted(overlay_dirs.items()):
@@ -322,6 +330,7 @@ def plan_hoist(
         skipped=skipped,
         renames=renames,
         filter_args=build_filter_args(source.gem_rel, gem_target, renames),
+        warnings=warnings,
     )
 
 
