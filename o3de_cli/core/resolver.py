@@ -20,12 +20,12 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from o3de_cli.core.store import Store
+    from o3de_cli.core.store import RemoteObject, Store
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -209,6 +209,499 @@ class ResolvedObject:
         return f"ResolvedObject({self.object_type.value}:{self.name}@{self.version})"
 
 
+# ----------------------------------------------------------------------
+# Pure helpers
+#
+# Small, side-effect-free building blocks used by Resolver. They take
+# plain data in and return plain data out (a few also fill a caller-owned
+# dict), so each step of resolution can be read and tested on its own.
+# ----------------------------------------------------------------------
+
+# Object-type keys in the order the resolver walks them everywhere.
+_ALL_TYPE_KEYS = ("engines", "projects", "gems", "templates", "repos", "overlays")
+
+# Filenames too generic to name an object; the parent directory names it instead.
+_GENERIC_OBJECT_FILENAMES = frozenset(
+    {"gem.json", "template.json", "project.json", "engine.json", "repo.json"}
+)
+
+
+def _is_remote_url(path_str: str) -> bool:
+    """True for an http(s) URL, which names a remote repo rather than a local path."""
+    return path_str.startswith(("http://", "https://"))
+
+
+def _resolve_child_url(base_url: str, rel: str) -> str:
+    """Resolve a Schema 2.0.0 ``children`` entry against the URL of its document.
+
+    Absolute URLs pass through; anything else is relative to the directory
+    the document lives in.
+    """
+    if _is_remote_url(rel):
+        return rel
+    return base_url.rsplit("/", 1)[0] + "/" + rel.lstrip("/")
+
+
+def _child_object_dir(parent_dir: Path, child_rel_path: str) -> Path:
+    """Directory of a child object listed in a parent's ``children``.
+
+    Schema 2.0.0 entries name the child's JSON file, so its directory is
+    the file's parent; legacy entries name the directory itself.
+    """
+    rel_path = Path(child_rel_path)
+    if rel_path.suffix == ".json":
+        return parent_dir / rel_path.parent
+    return parent_dir / child_rel_path
+
+
+def _detect_object_type(
+    path: Path, type_names: tuple[str, ...] = ("gem", "project", "engine", "template")
+) -> ObjectType | None:
+    """Return the first of *type_names* that has an object JSON in *path*, or None."""
+    for type_name in type_names:
+        try:
+            find_object_json(path, type_name)
+            return ObjectType(type_name)
+        except FileNotFoundError:
+            continue
+    return None
+
+
+def _infer_template_type(data: dict, name: str) -> None:
+    """Fill an empty ``template.type`` by guessing from the template's name.
+
+    "my_project_template" becomes "project", and so on; an unguessable
+    name sets it to "". Mutates *data* in place.
+    """
+    tpl_header = data.get("template", {})
+    if isinstance(tpl_header, dict) and not tpl_header.get("type"):
+        inferred = ""
+        name_lower = (name or "").lower()
+        for kw in ("project", "gem", "engine", "repo"):
+            if kw in name_lower:
+                inferred = kw
+                break
+        tpl_header["type"] = inferred
+
+
+def _display_metadata(obj: "ResolvedObject") -> dict:
+    """display_name / summary / icon_path for the resolved manifest.
+
+    Schema 2.0.0 keeps display_name/description inside the type dict
+    (e.g. ``gem.display_name``); legacy objects keep display_name/summary
+    at the root. Icons are ``icon.relative_path`` (2.0.0) or ``icon_path``.
+    """
+    display_metadata = {}
+
+    type_data = obj.data.get(obj.object_type.value, {})
+
+    # Try Schema 2.0.0 location first, then legacy
+    display_name = type_data.get("display_name") or obj.data.get("display_name")
+    description = type_data.get("description") or obj.data.get("summary")
+
+    if display_name:
+        display_metadata["display_name"] = display_name
+    if description:
+        display_metadata["summary"] = description
+
+    icon_data = obj.data.get("icon", {})
+    icon_path = icon_data.get("relative_path") if isinstance(icon_data, dict) else None
+    if not icon_path:
+        icon_path = obj.data.get("icon_path")
+    if icon_path:
+        display_metadata["icon_path"] = icon_path
+
+    return display_metadata
+
+
+def _ancestry(obj: "ResolvedObject") -> list[dict]:
+    """``[{name, path}, ...]`` from the immediate parent up to the root."""
+    parents = []
+    current = obj.parent
+    while current:
+        parents.append(
+            {
+                "name": current.name,
+                "path": current.path.as_posix(),
+            }
+        )
+        current = current.parent
+    return parents
+
+
+def _release_versions(data: dict) -> list[str]:
+    """Version names of an object's ``releases`` (``name`` or ``version`` of each)."""
+    releases_list = data.get("releases", [])
+    release_versions = []
+    if releases_list and isinstance(releases_list, list):
+        for release in releases_list:
+            if isinstance(release, dict):
+                version = release.get("name") or release.get("version")
+                if version:
+                    release_versions.append(version)
+    return release_versions
+
+
+def _all_children(start: list[str], objects: dict[str, "ResolvedObject"]) -> list[dict]:
+    """Breadth-first transitive closure of children, as ``[{name, type}, ...]``.
+
+    *start* is the list of direct child names; each name appears once.
+    A name that isn't a resolved object gets an empty type.
+    """
+    result: list[dict] = []
+    seen: set[str] = set()
+    queue = list(start)
+    while queue:
+        cn = queue.pop(0)
+        if cn in seen:
+            continue
+        seen.add(cn)
+        cobj = objects.get(cn)
+        ctype = cobj.object_type.value if cobj else ""
+        result.append({"name": cn, "type": ctype})
+        if cobj:
+            for cc in cobj.children:
+                if cc.name not in seen:
+                    queue.append(cc.name)
+    return result
+
+
+def _all_remotes(
+    start: list[str],
+    remote_objects: dict[str, dict],
+    objects: dict[str, "ResolvedObject"],
+) -> list[dict]:
+    """Breadth-first walk through remote repos, as ``[{name, type}, ...]``.
+
+    Each remote is listed, followed by the objects it advertises; then
+    its own remotes are queued. Unknown remotes are assumed to be repos.
+    An advertised object with no remote type takes its local type, if any.
+    """
+    result: list[dict] = []
+    seen: set[str] = set()
+    queue = list(start)
+    while queue:
+        rn = queue.pop(0)
+        if rn in seen:
+            continue
+        seen.add(rn)
+        robj = remote_objects.get(rn, {})
+        rtype = robj.get("type", "repo")
+        result.append({"name": rn, "type": rtype})
+        # Add children of this remote (advertised objects)
+        for child in robj.get("children", []):
+            if child not in seen:
+                child_data = remote_objects.get(child, {})
+                ctype = child_data.get("type", "")
+                if not ctype and child in objects:
+                    ctype = objects[child].object_type.value
+                result.append({"name": child, "type": ctype})
+                seen.add(child)
+        # Enqueue sub-remotes for transitive walk
+        for sub in robj.get("remotes", []):
+            if sub not in seen:
+                queue.append(sub)
+    return result
+
+
+def _url_to_repo_names(crawled: dict[str, dict]) -> dict[str, str]:
+    """Map each crawled URL to the name it is shown under.
+
+    Errored URLs keep the URL itself as their name.
+    """
+    url_to_name: dict[str, str] = {}
+    for url, data in crawled.items():
+        if not data.get("_error"):
+            try:
+                url_to_name[url] = get_object_name(data) or data.get("repo_name", url)
+            except Exception:
+                url_to_name[url] = data.get("repo_name", url)
+        else:
+            url_to_name[url] = url
+    return url_to_name
+
+
+def _index_crawled_documents(crawled: dict[str, dict]) -> dict[str, dict]:
+    """Index every successfully crawled document by URL.
+
+    Returns ``{url: {"name", "type", "version"}}`` so 2.0.0 children,
+    which are fetched as their own documents, resolve to canonical names.
+    A document with no 2.0.0 header is treated as a legacy repo.
+    """
+    url_index: dict[str, dict] = {}
+    for url, data in crawled.items():
+        if data.get("_error"):
+            continue
+        try:
+            obj_type = get_object_type(data)
+            name = get_object_name(data) or url
+            version = get_object_version(data) or ""
+        except Exception:
+            # Legacy repo without 2.0.0 header
+            obj_type = ObjectType.REPO
+            name = data.get("repo_name", url)
+            version = ""
+        url_index[url] = {"name": name, "type": obj_type.value, "version": version}
+    return url_index
+
+
+def _error_repo_entry(url: str, error: Any) -> dict:
+    """Cache entry for a remote repo URL that could not be crawled."""
+    return {
+        "url": url,
+        "type": "repo",
+        "version": "",
+        "children": [],
+        "remotes": [],
+        "dependencies": [],
+        "status": "error",
+        "display_metadata": {"summary": f"Error: {error}"},
+    }
+
+
+def _remote_document_entry(url: str, data: dict, idx: dict) -> dict:
+    """Cache entry for a crawled non-repo document (a 2.0.0 child of a repo)."""
+    header = data.get(idx["type"], {}) if isinstance(data.get(idx["type"]), dict) else {}
+    dm = {}
+    if header.get("display_name"):
+        dm["display_name"] = header["display_name"]
+    if header.get("description"):
+        dm["summary"] = header["description"]
+    return {
+        "url": url,
+        "type": idx["type"],
+        "version": idx["version"],
+        "children": [],
+        "remotes": [],
+        "dependencies": [],
+        "status": "remote",
+        "display_metadata": dm or None,
+    }
+
+
+def _name_from_object_url(obj_url: str) -> str:
+    """Name a remotely advertised object after its URL.
+
+    Uses the file name, or the parent path segment when the file name is
+    generic (``.../MyGem/gem.json`` -> ``MyGem``).
+    """
+    parts = obj_url.rstrip("/").split("/")
+    filename = parts[-1] if parts else obj_url
+    if filename.lower() in _GENERIC_OBJECT_FILENAMES and len(parts) >= 2:
+        return parts[-2]
+    return filename
+
+
+def _children_from_2_0_0(url: str, data: dict, url_index: dict[str, dict]) -> list[str]:
+    """Names of a repo's Schema 2.0.0 ``children.*`` that were crawled."""
+    children: list[str] = []
+    children_2 = data.get("children", {})
+    if isinstance(children_2, dict):
+        for key in _ALL_TYPE_KEYS:
+            for rel in children_2.get(key, []):
+                if not isinstance(rel, str) or not rel:
+                    continue
+                child_idx = url_index.get(_resolve_child_url(url, rel))
+                if child_idx:
+                    children.append(child_idx["name"])
+    return children
+
+
+def _children_from_url_list(
+    collection: str,
+    data: dict,
+    repo_name: str,
+    remote_objects: dict[str, dict],
+    local_objects: Container[str],
+) -> list[str]:
+    """Names of the objects a repo lists as URLs under *collection*.
+
+    Adds a remote entry to *remote_objects* for each one that is neither
+    already there nor resolved locally.
+    """
+    children: list[str] = []
+    for obj_url in data.get(collection, []):
+        if not isinstance(obj_url, str):
+            continue
+        child_name = _name_from_object_url(obj_url)
+        if child_name not in remote_objects and child_name not in local_objects:
+            remote_objects[child_name] = {
+                "url": obj_url,
+                "type": collection.rstrip("s"),
+                "version": "",
+                "children": [],
+                "remotes": [],
+                "dependencies": [],
+                "status": "remote",
+                "repo": repo_name,
+            }
+        children.append(child_name)
+    return children
+
+
+def _children_from_legacy_data(
+    collection: str,
+    data: dict,
+    repo_name: str,
+    remote_objects: dict[str, dict],
+    local_objects: Container[str],
+) -> list[str]:
+    """Names of the objects a legacy repo describes in ``<collection>_data``.
+
+    Adds a remote entry to *remote_objects* for each one that is neither
+    already there nor resolved locally.
+    """
+    type_singular = collection.rstrip("s")
+    children: list[str] = []
+    for item in data.get(f"{collection}_data", []):
+        if not isinstance(item, dict):
+            continue
+        child_name = (
+            item.get(f"{type_singular}_name") or item.get("name") or item.get("display_name", "")
+        )
+        if child_name and child_name not in remote_objects and child_name not in local_objects:
+            remote_objects[child_name] = {
+                "url": item.get("repo_uri", item.get("origin_uri", "")),
+                "type": type_singular,
+                "version": item.get("version", ""),
+                "children": [],
+                "remotes": [],
+                "dependencies": [],
+                "status": "remote",
+                "repo": repo_name,
+                "display_metadata": {
+                    "display_name": item.get("display_name", ""),
+                    "summary": item.get("summary", ""),
+                }
+                if item.get("display_name") or item.get("summary")
+                else None,
+            }
+        if child_name:
+            children.append(child_name)
+    return children
+
+
+def _collect_repo_children(
+    url: str,
+    data: dict,
+    repo_name: str,
+    url_index: dict[str, dict],
+    remote_objects: dict[str, dict],
+    local_objects: Container[str],
+) -> list[str]:
+    """Every object a crawled repo advertises, in listing order.
+
+    2.0.0 ``children`` first, then for each collection its URL list
+    followed by its legacy ``<collection>_data`` list. Advertised objects
+    not known yet are added to *remote_objects*.
+    """
+    children = _children_from_2_0_0(url, data, url_index)
+    for collection in ("engines", "projects", "gems", "templates"):
+        children += _children_from_url_list(
+            collection, data, repo_name, remote_objects, local_objects
+        )
+        children += _children_from_legacy_data(
+            collection, data, repo_name, remote_objects, local_objects
+        )
+    return children
+
+
+def _collect_repo_remotes(data: dict, url_index: dict[str, dict]) -> list[str]:
+    """Names of the repos a repo itself advertises (legacy ``repos`` + ``remote.repos``).
+
+    Crawled URLs are shown by name, others by URL.
+    """
+    remotes: list[str] = []
+    for sub_url in data.get("repos", []):
+        if not isinstance(sub_url, str):
+            continue
+        sub_idx = url_index.get(sub_url)
+        remotes.append(sub_idx["name"] if sub_idx else sub_url)
+    remote_section = data.get("remote", {})
+    if isinstance(remote_section, dict):
+        for sub_url in remote_section.get("repos", []):
+            if not isinstance(sub_url, str):
+                continue
+            sub_idx = url_index.get(sub_url)
+            rname = sub_idx["name"] if sub_idx else sub_url
+            if rname not in remotes:
+                remotes.append(rname)
+    return remotes
+
+
+def _repo_entry(url: str, data: dict, children: list[str], remotes: list[str]) -> dict:
+    """Cache entry for a successfully crawled remote repo."""
+    repo_header = data.get("repo", {}) if isinstance(data.get("repo"), dict) else {}
+    display_name = repo_header.get("display_name") or data.get("repo_name", "")
+    summary = repo_header.get("description") or data.get("summary", "")
+    return {
+        "url": url,
+        "type": "repo",
+        "version": "",
+        "children": children,
+        "remotes": remotes,
+        "dependencies": [],
+        "status": "remote",
+        "display_metadata": {
+            "summary": summary,
+            "display_name": display_name,
+        }
+        if (summary or display_name)
+        else None,
+    }
+
+
+def _crawl_links(url: str, data: dict, visited: Container[str]) -> list[str]:
+    """URLs a crawled repo document points at that haven't been visited.
+
+    Follows legacy top-level ``repos``, Schema 2.0.0 ``remote.*`` (absolute
+    URLs) and Schema 2.0.0 ``children.*`` (relative to *url*'s directory).
+    """
+    found: list[str] = []
+    # Legacy: top-level repos list
+    for sub_url in data.get("repos", []):
+        if isinstance(sub_url, str) and sub_url not in visited:
+            found.append(sub_url)
+    # Schema 2.0.0: remote.*
+    remote = data.get("remote", {})
+    if isinstance(remote, dict):
+        for key in _ALL_TYPE_KEYS:
+            for sub_url in remote.get(key, []):
+                if isinstance(sub_url, str) and sub_url not in visited:
+                    found.append(sub_url)
+    # Schema 2.0.0: children.*
+    children = data.get("children", {})
+    if isinstance(children, dict):
+        for key in _ALL_TYPE_KEYS:
+            for rel in children.get(key, []):
+                if not isinstance(rel, str) or not rel:
+                    continue
+                child_url = _resolve_child_url(url, rel)
+                if child_url not in visited:
+                    found.append(child_url)
+    return found
+
+
+def _fetch_repo_document(client: Any, url: str) -> tuple[str, dict | None, str | None]:
+    """GET one repo document as ``(url, data, error)``; never raises.
+
+    A non-JSON answer for a URL that isn't a ``.json`` file is retried as
+    ``<url>/repo.json``.
+    """
+    try:
+        resp = client.get(url, follow_redirects=True)
+        if resp.status_code != 200 or "json" not in resp.headers.get("content-type", ""):
+            if not url.endswith(".json"):
+                alt_url = url.rstrip("/") + "/repo.json"
+                alt_resp = client.get(alt_url, follow_redirects=True)
+                if alt_resp.status_code == 200:
+                    resp = alt_resp
+        resp.raise_for_status()
+        return (url, resp.json(), None)
+    except Exception as e:
+        return (url, None, str(e))
+
+
 class Resolver:
     """
     Resolves the O3DE manifest into a complete, flattened view.
@@ -278,77 +771,21 @@ class Resolver:
         Returns:
             Dict of object_name -> ResolvedObject
         """
-        if not self.manifest_path.exists():
-            raise ResolverError(f"Manifest not found: {self.manifest_path}")
-
-        # Load manifest and compute hash
-        with open(self.manifest_path) as f:
-            self.manifest_data = json.load(f)
-        manifest_hash = compute_file_hash(self.manifest_path)
-        if manifest_hash:
-            self.file_hashes[self.manifest_path.as_posix()] = manifest_hash
-
-        # Upgrade manifest to sidecar if needed
-        if needs_upgrade(self.manifest_data):
-            upgraded_manifest = upgrade_to_latest(self.manifest_data, "manifest")
-            if upgraded_manifest is not None:
-                sidecar_name = "o3de_manifest.2-0-0.json"
-                sidecar_path = self.manifest_path.parent / sidecar_name
-                try:
-                    with open(sidecar_path, "w") as f:
-                        json.dump(upgraded_manifest, f, indent=2)
-                    logger.info(f"Created manifest sidecar: {sidecar_path}")
-                    # Ensure default directories (repos, overlays) exist on disk
-                    for key in ("repos_path", "overlays_path"):
-                        dir_str = upgraded_manifest.get("default", {}).get(key, "")
-                        if dir_str:
-                            Path(dir_str).mkdir(parents=True, exist_ok=True)
-                except OSError as e:
-                    logger.warning(f"Failed to write manifest sidecar: {e}")
+        manifest_data = self._load_manifest()
+        self._write_manifest_sidecar(manifest_data)
 
         # Handle both Schema 2.0.0 (local.engines) and legacy (engines at root) formats
-        local = self.manifest_data.get("local", {})
-        remote = self.manifest_data.get("remote", {})
+        local = manifest_data.get("local", {})
+        remote = manifest_data.get("remote", {})
 
         # Sanitize manifest: deduplicate and validate type assignments
-        dirty = self._sanitize_manifest(local)
-        if dirty:
-            try:
-                with open(self.manifest_path, "w") as f:
-                    json.dump(self.manifest_data, f, indent=2)
-                logger.info("Sanitized manifest (dedup / type fix)")
-            except OSError as e:
-                logger.warning(f"Failed to save sanitized manifest: {e}")
+        self._sanitize_and_save_manifest(local)
 
         # Note: We do NOT convert "restricteds" to "overlays"
         # They are different concepts with no upgrade path
 
-        # Collect all root paths to resolve
-        root_paths = []
-        stale_paths = []  # Track paths that don't exist
-        for obj_type in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
-            # Schema 2.0.0: local.engines, local.projects, etc.
-            paths = local.get(obj_type, [])
-            # Legacy: engines, projects, etc. at root level
-            if not paths:
-                paths = self.manifest_data.get(obj_type, []) or []
-            for path_str in paths:
-                # URLs (http/https) are remote repos, not local paths
-                if path_str.startswith(("http://", "https://")):
-                    if obj_type == "repos":
-                        self.manifest_remotes.append(path_str)
-                    continue
-                p = Path(path_str)
-                # Check if path exists (handle both file and directory paths)
-                if p.is_file():
-                    check_path = p.parent
-                else:
-                    check_path = p
-                if not check_path.exists():
-                    stale_paths.append((path_str, obj_type))
-                    logger.warning(f"Removing stale path from manifest: {path_str}")
-                else:
-                    root_paths.append((p, obj_type))
+        root_paths, stale_paths, local_remotes = self._partition_root_paths(local, manifest_data)
+        self.manifest_remotes.extend(local_remotes)
 
         # Schema 2.0.0: remote.repos contains repo URLs
         for url in remote.get("repos", []):
@@ -359,18 +796,132 @@ class Resolver:
         if stale_paths:
             self._remove_stale_paths(stale_paths)
 
+        self._resolve_root_objects(root_paths, progress_callback)
+        self._analyze_resolved_objects()
+
+        if progress_callback:
+            total = len(root_paths)
+            progress_callback("Complete", total, total)
+
+        logger.info(f"Resolved {len(self.objects)} objects")
+        return self.objects
+
+    def _record_file_hash(self, path: Path) -> None:
+        """Remember *path*'s SHA-256 for change detection (skipped if unreadable)."""
+        file_hash = compute_file_hash(path)
+        if file_hash:
+            self.file_hashes[path.as_posix()] = file_hash
+
+    def _load_manifest(self) -> dict:
+        """Load the manifest into ``manifest_data`` and record its hash.
+
+        Raises:
+            ResolverError: If the manifest file does not exist
+        """
+        if not self.manifest_path.exists():
+            raise ResolverError(f"Manifest not found: {self.manifest_path}")
+
+        with open(self.manifest_path) as f:
+            self.manifest_data = json.load(f)
+        self._record_file_hash(self.manifest_path)
+        return self.manifest_data
+
+    def _write_manifest_sidecar(self, manifest_data: dict) -> None:
+        """Write the upgraded ``o3de_manifest.2-0-0.json`` beside a legacy manifest.
+
+        The legacy manifest itself is left untouched. Also creates the
+        upgraded manifest's default repos/overlays directories. A write
+        failure is logged, not raised.
+        """
+        if not needs_upgrade(manifest_data):
+            return
+        upgraded_manifest = upgrade_to_latest(manifest_data, "manifest")
+        if upgraded_manifest is None:
+            return
+        sidecar_name = "o3de_manifest.2-0-0.json"
+        sidecar_path = self.manifest_path.parent / sidecar_name
+        try:
+            with open(sidecar_path, "w") as f:
+                json.dump(upgraded_manifest, f, indent=2)
+            logger.info(f"Created manifest sidecar: {sidecar_path}")
+            # Ensure default directories (repos, overlays) exist on disk
+            for key in ("repos_path", "overlays_path"):
+                dir_str = upgraded_manifest.get("default", {}).get(key, "")
+                if dir_str:
+                    Path(dir_str).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"Failed to write manifest sidecar: {e}")
+
+    def _sanitize_and_save_manifest(self, local: dict) -> None:
+        """Dedupe/retype the manifest's local lists and save it if anything changed."""
+        if not self._sanitize_manifest(local):
+            return
+        try:
+            with open(self.manifest_path, "w") as f:
+                json.dump(self.manifest_data, f, indent=2)
+            logger.info("Sanitized manifest (dedup / type fix)")
+        except OSError as e:
+            logger.warning(f"Failed to save sanitized manifest: {e}")
+
+    @staticmethod
+    def _partition_root_paths(
+        local: dict, manifest_data: dict
+    ) -> tuple[list[tuple[Path, str]], list[tuple[str, str]], list[str]]:
+        """Sort the manifest's registered entries into what to resolve.
+
+        Reads each type list from ``local`` (Schema 2.0.0), falling back to
+        the manifest root (legacy). Logs a warning for each stale path.
+
+        Returns:
+            ``(root_paths, stale_paths, remote_urls)``: existing local paths
+            as ``(Path, type_key)``, missing ones as ``(path_str, type_key)``,
+            and http(s) URLs found in the ``repos`` list. URLs in other
+            lists are ignored.
+        """
+        root_paths: list[tuple[Path, str]] = []
+        stale_paths: list[tuple[str, str]] = []
+        remote_urls: list[str] = []
+        for obj_type in _ALL_TYPE_KEYS:
+            # Schema 2.0.0: local.engines, local.projects, etc.
+            paths = local.get(obj_type, [])
+            # Legacy: engines, projects, etc. at root level
+            if not paths:
+                paths = manifest_data.get(obj_type, []) or []
+            for path_str in paths:
+                # URLs (http/https) are remote repos, not local paths
+                if _is_remote_url(path_str):
+                    if obj_type == "repos":
+                        remote_urls.append(path_str)
+                    continue
+                p = Path(path_str)
+                # Check if path exists (handle both file and directory paths)
+                check_path = p.parent if p.is_file() else p
+                if not check_path.exists():
+                    stale_paths.append((path_str, obj_type))
+                    logger.warning(f"Removing stale path from manifest: {path_str}")
+                else:
+                    root_paths.append((p, obj_type))
+        return root_paths, stale_paths, remote_urls
+
+    def _resolve_root_objects(
+        self,
+        root_paths: list[tuple[Path, str]],
+        progress_callback: Callable[[str, int, int], None] | None,
+    ) -> None:
+        """Resolve each registered root object (and, recursively, its children)."""
         total = len(root_paths)
-        current = 0
-
-        # Resolve each root object
-        for path, obj_type_str in root_paths:
-            current += 1
-
+        for current, (path, obj_type_str) in enumerate(root_paths, 1):
             if progress_callback:
                 progress_callback(f"Resolving {path.name}", current, total)
 
             self._resolve_object(path, ObjectType(obj_type_str.rstrip("s")))
 
+    def _analyze_resolved_objects(self) -> None:
+        """Post-resolution passes over the full object set.
+
+        Inheritance, overlay matching, the dependency DAG and conflict
+        detection, then deprecation and peer-dependency warnings.
+        """
         # Inherit properties from parents to children
         self._apply_inheritance()
 
@@ -391,12 +942,6 @@ class Resolver:
         # Check for missing peer dependencies
         self._check_peer_dependencies()
 
-        if progress_callback:
-            progress_callback("Complete", total, total)
-
-        logger.info(f"Resolved {len(self.objects)} objects")
-        return self.objects
-
     # ------------------------------------------------------------------
     # Remote repo crawling
     # ------------------------------------------------------------------
@@ -412,31 +957,12 @@ class Resolver:
 
         Uses wave-based parallel fetching for speed.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         import httpx
 
         visited: dict[str, dict] = {}
         wave = list(urls)
 
         with httpx.Client(timeout=10) as client:
-
-            def _fetch(url: str) -> tuple[str, dict | None, str | None]:
-                try:
-                    resp = client.get(url, follow_redirects=True)
-                    if resp.status_code != 200 or "json" not in resp.headers.get(
-                        "content-type", ""
-                    ):
-                        if not url.endswith(".json"):
-                            alt_url = url.rstrip("/") + "/repo.json"
-                            alt_resp = client.get(alt_url, follow_redirects=True)
-                            if alt_resp.status_code == 200:
-                                resp = alt_resp
-                    resp.raise_for_status()
-                    return (url, resp.json(), None)
-                except Exception as e:
-                    return (url, None, str(e))
-
             while wave:
                 # De-duplicate against already-visited
                 pending = [u for u in wave if u not in visited]
@@ -447,13 +973,7 @@ class Resolver:
                 for u in pending:
                     visited[u] = {}
 
-                # Parallel fetch
-                url_to_result: dict[str, tuple[dict | None, str | None]] = {}
-                with ThreadPoolExecutor(max_workers=min(32, len(pending))) as executor:
-                    futures = {executor.submit(_fetch, u): u for u in pending}
-                    for future in as_completed(futures):
-                        url, data, error = future.result()
-                        url_to_result[url] = (data, error)
+                url_to_result = self._fetch_repo_wave(client, pending)
 
                 # Process results, discover next wave
                 next_wave: list[str] = []
@@ -465,52 +985,27 @@ class Resolver:
                         continue
 
                     visited[url] = data
-
-                    # Legacy: top-level repos list
-                    for sub_url in data.get("repos", []):
-                        if isinstance(sub_url, str) and sub_url not in visited:
-                            next_wave.append(sub_url)
-                    # Schema 2.0.0: remote.*
-                    remote = data.get("remote", {})
-                    if isinstance(remote, dict):
-                        for key in [
-                            "engines",
-                            "projects",
-                            "gems",
-                            "templates",
-                            "repos",
-                            "overlays",
-                        ]:
-                            for sub_url in remote.get(key, []):
-                                if isinstance(sub_url, str) and sub_url not in visited:
-                                    next_wave.append(sub_url)
-                    # Schema 2.0.0: children.*
-                    children = data.get("children", {})
-                    if isinstance(children, dict):
-                        base_dir = url.rsplit("/", 1)[0] + "/"
-                        for key in [
-                            "engines",
-                            "projects",
-                            "gems",
-                            "templates",
-                            "repos",
-                            "overlays",
-                        ]:
-                            for rel in children.get(key, []):
-                                if not isinstance(rel, str) or not rel:
-                                    continue
-                                child_url = (
-                                    rel
-                                    if rel.startswith(("http://", "https://"))
-                                    else base_dir + rel.lstrip("/")
-                                )
-                                if child_url not in visited:
-                                    next_wave.append(child_url)
+                    next_wave.extend(_crawl_links(url, data, visited))
                     logger.info(f"Crawled remote repo: {url}")
 
                 wave = next_wave
 
         return visited
+
+    @staticmethod
+    def _fetch_repo_wave(
+        client: Any, pending: list[str]
+    ) -> dict[str, tuple[dict | None, str | None]]:
+        """Fetch every URL in *pending* in parallel: ``{url: (data, error)}``."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        url_to_result: dict[str, tuple[dict | None, str | None]] = {}
+        with ThreadPoolExecutor(max_workers=min(32, len(pending))) as executor:
+            futures = {executor.submit(_fetch_repo_document, client, u): u for u in pending}
+            for future in as_completed(futures):
+                url, data, error = future.result()
+                url_to_result[url] = (data, error)
+        return url_to_result
 
     def _build_remote_objects(self) -> dict[str, dict]:
         """
@@ -528,43 +1023,11 @@ class Resolver:
             Dict of object_name -> resolved object dict
         """
         remote_objects: dict[str, dict] = {}
-
-        # First pass: index every successfully crawled document by URL so
-        # 2.0.0 children (fetched as their own documents) resolve to
-        # canonical names.
-        url_index: dict[str, dict] = {}  # url -> {name, type, version}
-        for url, data in self._crawled_remotes.items():
-            if data.get("_error"):
-                continue
-            try:
-                obj_type = get_object_type(data)
-                name = get_object_name(data) or url
-                version = get_object_version(data) or ""
-            except Exception:
-                # Legacy repo without 2.0.0 header
-                obj_type = ObjectType.REPO
-                name = data.get("repo_name", url)
-                version = ""
-            url_index[url] = {"name": name, "type": obj_type.value, "version": version}
-
-        def _resolve_child_url(base_url: str, rel: str) -> str:
-            if rel.startswith(("http://", "https://")):
-                return rel
-            return base_url.rsplit("/", 1)[0] + "/" + rel.lstrip("/")
+        url_index = _index_crawled_documents(self._crawled_remotes)
 
         for url, data in self._crawled_remotes.items():
             if data.get("_error"):
-                repo_name = url
-                remote_objects[repo_name] = {
-                    "url": url,
-                    "type": "repo",
-                    "version": "",
-                    "children": [],
-                    "remotes": [],
-                    "dependencies": [],
-                    "status": "error",
-                    "display_metadata": {"summary": f"Error: {data['_error']}"},
-                }
+                remote_objects[url] = _error_repo_entry(url, data["_error"])
                 continue
 
             idx = url_index[url]
@@ -574,145 +1037,14 @@ class Resolver:
             # surface as remote objects for drill-down.
             if idx["type"] != "repo":
                 if obj_name not in remote_objects and obj_name not in self.objects:
-                    header = (
-                        data.get(idx["type"], {}) if isinstance(data.get(idx["type"]), dict) else {}
-                    )
-                    dm = {}
-                    if header.get("display_name"):
-                        dm["display_name"] = header["display_name"]
-                    if header.get("description"):
-                        dm["summary"] = header["description"]
-                    remote_objects[obj_name] = {
-                        "url": url,
-                        "type": idx["type"],
-                        "version": idx["version"],
-                        "children": [],
-                        "remotes": [],
-                        "dependencies": [],
-                        "status": "remote",
-                        "display_metadata": dm or None,
-                    }
+                    remote_objects[obj_name] = _remote_document_entry(url, data, idx)
                 continue
 
-            repo_name = obj_name
-
-            # Collect children
-            children: list[str] = []
-
-            # Schema 2.0.0: children.* relative paths -> crawled documents
-            children_2 = data.get("children", {})
-            if isinstance(children_2, dict):
-                for key in ["engines", "projects", "gems", "templates", "repos", "overlays"]:
-                    for rel in children_2.get(key, []):
-                        if not isinstance(rel, str) or not rel:
-                            continue
-                        child_url = _resolve_child_url(url, rel)
-                        child_idx = url_index.get(child_url)
-                        if child_idx:
-                            children.append(child_idx["name"])
-
-            for collection in ["engines", "projects", "gems", "templates"]:
-                # Standard format: list of URLs
-                for obj_url in data.get(collection, []):
-                    if isinstance(obj_url, str):
-                        # Extract name from URL: use parent path segment if
-                        # the filename is generic (gem.json, template.json, etc.)
-                        parts = obj_url.rstrip("/").split("/")
-                        filename = parts[-1] if parts else obj_url
-                        generic = {
-                            "gem.json",
-                            "template.json",
-                            "project.json",
-                            "engine.json",
-                            "repo.json",
-                        }
-                        if filename.lower() in generic and len(parts) >= 2:
-                            child_name = parts[-2]
-                        else:
-                            child_name = filename
-                        # Create a remote object entry for this child
-                        if child_name not in remote_objects and child_name not in self.objects:
-                            remote_objects[child_name] = {
-                                "url": obj_url,
-                                "type": collection.rstrip("s"),
-                                "version": "",
-                                "children": [],
-                                "remotes": [],
-                                "dependencies": [],
-                                "status": "remote",
-                                "repo": repo_name,
-                            }
-                        children.append(child_name)
-
-                # Legacy format: gems_data, projects_data, etc.
-                for item in data.get(f"{collection}_data", []):
-                    if isinstance(item, dict):
-                        type_singular = collection.rstrip("s")
-                        child_name = (
-                            item.get(f"{type_singular}_name")
-                            or item.get("name")
-                            or item.get("display_name", "")
-                        )
-                        if (
-                            child_name
-                            and child_name not in remote_objects
-                            and child_name not in self.objects
-                        ):
-                            remote_objects[child_name] = {
-                                "url": item.get("repo_uri", item.get("origin_uri", "")),
-                                "type": type_singular,
-                                "version": item.get("version", ""),
-                                "children": [],
-                                "remotes": [],
-                                "dependencies": [],
-                                "status": "remote",
-                                "repo": repo_name,
-                                "display_metadata": {
-                                    "display_name": item.get("display_name", ""),
-                                    "summary": item.get("summary", ""),
-                                }
-                                if item.get("display_name") or item.get("summary")
-                                else None,
-                            }
-                        if child_name:
-                            children.append(child_name)
-
-            # Collect remotes: repos this repo itself advertises
-            remotes: list[str] = []
-            for sub_url in data.get("repos", []):
-                if not isinstance(sub_url, str):
-                    continue
-                sub_idx = url_index.get(sub_url)
-                remotes.append(sub_idx["name"] if sub_idx else sub_url)
-            remote_section = data.get("remote", {})
-            if isinstance(remote_section, dict):
-                for sub_url in remote_section.get("repos", []):
-                    if not isinstance(sub_url, str):
-                        continue
-                    sub_idx = url_index.get(sub_url)
-                    rname = sub_idx["name"] if sub_idx else sub_url
-                    if rname not in remotes:
-                        remotes.append(rname)
-
-            repo_header = data.get("repo", {}) if isinstance(data.get("repo"), dict) else {}
-            display_name = repo_header.get("display_name") or data.get("repo_name", "")
-            summary = repo_header.get("description") or data.get("summary", "")
-
-            remote_objects[repo_name] = {
-                "url": url,
-                "type": "repo",
-                "version": "",
-                "children": children,
-                "remotes": remotes,
-                "dependencies": [],
-                "status": "remote",
-                "display_metadata": {
-                    "summary": summary,
-                    "display_name": display_name,
-                }
-                if (summary or display_name)
-                else None,
-            }
+            children = _collect_repo_children(
+                url, data, obj_name, url_index, remote_objects, self.objects
+            )
+            remotes = _collect_repo_remotes(data, url_index)
+            remote_objects[obj_name] = _repo_entry(url, data, children, remotes)
 
         return remote_objects
 
@@ -781,10 +1113,6 @@ class Resolver:
             ResolverError: If confirm=False and there are missing deps (contains
                            the list of missing deps for the caller to present)
         """
-        from .models import ObjectType
-        from .paths import get_default_path_for_type
-        from .store import RemoteObject, Store
-
         missing = self.get_missing_dependencies()
         if not missing:
             return []
@@ -795,26 +1123,7 @@ class Resolver:
             if dep_spec.name not in unique_missing:
                 unique_missing[dep_spec.name] = dep_spec
 
-        # Search the store for each missing dep
-        install_plan: list[tuple[ObjectNameVersion, RemoteObject]] = []
-        not_found: list[str] = []
-
-        for dep_name, dep_spec in unique_missing.items():
-            # Search across all object types
-            candidates = store.search(dep_name)
-
-            # Find exact name match with compatible version
-            best: RemoteObject | None = None
-            for candidate in candidates:
-                if candidate.name == dep_name:
-                    if dep_spec.matches(candidate.version):
-                        if best is None or store._is_newer_version(candidate.version, best.version):
-                            best = candidate
-
-            if best:
-                install_plan.append((dep_spec, best))
-            else:
-                not_found.append(dep_name)
+        install_plan, not_found = self._plan_installs(store, unique_missing)
 
         if not install_plan and not_found:
             logger.warning(f"Could not find remote objects for: {', '.join(not_found)}")
@@ -841,11 +1150,61 @@ class Resolver:
                 + "\n".join(f"  {p['name']}@{p['version']} ({p['type']})" for p in plan_summary)
             )
 
-        # Actually download and register each missing dep
+        installed = self._install_planned(store, install_plan, progress_callback)
+
+        if installed:
+            logger.info(f"Auto-installed {len(installed)} dependencies")
+
+        return installed
+
+    @staticmethod
+    def _plan_installs(
+        store: "Store", unique_missing: dict[str, ObjectNameVersion]
+    ) -> tuple[list[tuple[ObjectNameVersion, "RemoteObject"]], list[str]]:
+        """Pick a remote object for each missing dependency.
+
+        For each one, the newest store object with exactly that name and a
+        version the constraint accepts.
+
+        Returns:
+            ``(install_plan, not_found)``: ``(spec, remote)`` pairs, and the
+            names nothing in the store satisfies.
+        """
+        install_plan: list[tuple[ObjectNameVersion, RemoteObject]] = []
+        not_found: list[str] = []
+
+        for dep_name, dep_spec in unique_missing.items():
+            # Search across all object types
+            candidates = store.search(dep_name)
+
+            # Find exact name match with compatible version
+            best: RemoteObject | None = None
+            for candidate in candidates:
+                if candidate.name == dep_name:
+                    if dep_spec.matches(candidate.version):
+                        if best is None or store._is_newer_version(candidate.version, best.version):
+                            best = candidate
+
+            if best:
+                install_plan.append((dep_spec, best))
+            else:
+                not_found.append(dep_name)
+
+        return install_plan, not_found
+
+    def _install_planned(
+        self,
+        store: "Store",
+        install_plan: list[tuple[ObjectNameVersion, "RemoteObject"]],
+        progress_callback: Callable[[str, int, int], None] | None,
+    ) -> list[dict]:
+        """Download and register each planned object; a failed download is logged and skipped."""
+        from .paths import get_default_path_for_type
+
         installed: list[dict] = []
         total = len(install_plan)
 
-        for idx, (dep_spec, remote) in enumerate(install_plan, 1):
+        for idx, (_dep_spec, remote) in enumerate(install_plan, 1):
             if progress_callback:
                 progress_callback(f"Installing {remote.name}@{remote.version}", idx, total)
 
@@ -871,9 +1230,6 @@ class Resolver:
                     "source": remote.effective_source_control_url or remote.download_url or "",
                 }
             )
-
-        if installed:
-            logger.info(f"Auto-installed {len(installed)} dependencies")
 
         return installed
 
@@ -964,71 +1320,24 @@ class Resolver:
                         resolved.peer_dependencies.append(ObjectNameVersion(dep))
 
     def _resolve_object(self, path: Path, expected_type: ObjectType) -> ResolvedObject | None:
-        """Resolve a single object and its children."""
-        if not path.exists():
-            logger.warning(f"Object path does not exist: {path}")
+        """Resolve a single object and its children.
+
+        Locates and loads the object's JSON (upgrading a legacy file to a
+        2.0.0 sidecar), settles a clash with an already-resolved object of
+        the same name, registers the result, then recurses into its
+        ``children`` and any O3DE objects in ``external_subdirectories``.
+
+        Returns:
+            The resolved object (or the already-resolved one that wins), or
+            None if *path* holds no usable object.
+        """
+        located = self._locate_object_json(path, expected_type)
+        if located is None:
             return None
+        path, json_path, is_versioned, expected_type = located
 
-        json_path: Path | None
-
-        # Handle paths pointing directly to JSON files
-        if path.is_file() and path.suffix == ".json":
-            original_json_path = path
-            is_versioned = ".2-0-0." in path.name or "-2-0-0." in path.name
-            # Use parent directory as the object root
-            path = path.parent
-
-            # If legacy file, check if versioned file exists and prefer it
-            if not is_versioned:
-                try:
-                    versioned_path, _ = find_object_json(path, expected_type.value)
-                    if versioned_path != original_json_path:
-                        json_path = versioned_path
-                        is_versioned = True
-                    else:
-                        json_path = original_json_path
-                except FileNotFoundError:
-                    json_path = original_json_path
-            else:
-                json_path = original_json_path
-        else:
-            # Find the object JSON - prefer versioned 2.0.0 file over legacy
-            try:
-                json_path, is_versioned = find_object_json(path, expected_type.value)
-            except FileNotFoundError:
-                # Try to detect type from existing JSON files
-                json_path = None
-                is_versioned = False
-                for type_name in ["engine", "project", "gem", "template", "repo", "overlay"]:
-                    try:
-                        json_path, is_versioned = find_object_json(path, type_name)
-                        expected_type = ObjectType(type_name)
-                        break
-                    except FileNotFoundError:
-                        continue
-
-                if json_path is None:
-                    logger.warning(f"No object JSON found in: {path}")
-                    return None
-
-        # Load JSON
         try:
-            with open(json_path) as f:
-                data = json.load(f)
-            # Compute and store hash for change detection
-            file_hash = compute_file_hash(json_path)
-            if file_hash:
-                self.file_hashes[json_path.as_posix()] = file_hash
-
-            # Also hash the legacy file if we're using the versioned one
-            # This detects if someone edits the legacy file
-            if is_versioned:
-                legacy_name = get_object_json_filename(expected_type.value)
-                legacy_path = path / legacy_name
-                if legacy_path.exists():
-                    legacy_hash = compute_file_hash(legacy_path)
-                    if legacy_hash:
-                        self.file_hashes[legacy_path.as_posix()] = legacy_hash
+            data = self._load_object_json(json_path, path, is_versioned, expected_type)
         except (OSError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to load {json_path}: {e}")
             return None
@@ -1043,79 +1352,27 @@ class Resolver:
                 # skip it and keep going (e.g. an empty/invalid json)
                 logger.warning(f"Skipping unupgradeable object {json_path}: {e}")
                 return None
-
-            # Write to versioned file (legacy file remains untouched)
-            versioned_filename = get_versioned_object_json_filename(expected_type.value, "2.0.0")
-            versioned_path = path / versioned_filename
-            try:
-                with open(versioned_path, "w") as f:
-                    json.dump(upgraded_data, f, indent=2)
-                logger.info(f"Created versioned file: {versioned_path}")
+            if self._write_versioned_object(upgraded_data, path, expected_type):
                 data = upgraded_data
-            except OSError as e:
-                logger.warning(f"Failed to write versioned file {versioned_path}: {e}")
-                # Continue with upgraded data in memory even if write failed
 
-        # Get name and version
         name = get_object_name(data)
         version = get_object_version(data)
 
-        # Enrich empty template type by inferring from name
         if expected_type == ObjectType.TEMPLATE:
-            tpl_header = data.get("template", {})
-            if isinstance(tpl_header, dict) and not tpl_header.get("type"):
-                inferred = ""
-                name_lower = (name or "").lower()
-                for kw in ("project", "gem", "engine", "repo"):
-                    if kw in name_lower:
-                        inferred = kw
-                        break
-                tpl_header["type"] = inferred
+            _infer_template_type(data, name)
 
         if not name:
             logger.warning(f"No name in {json_path}")
             return None
 
-        # Check if already resolved (can happen when object is both a root path
-        # and a child of another object, or when multiple versions of the
-        # same object exist on disk, e.g. PhysX 4.x and 5.x directories).
+        # Already resolved (a root that is also a child, or several versions
+        # of one object on disk): either keep the existing one, or fall
+        # through and let this newer one replace it.
         if name in self.objects:
-            existing = self.objects[name]
-            if existing.path and existing.path.resolve() == path.resolve():
-                # Same object encountered again — preserve parent chain
-                return existing
-            # Different path with the same name: keep the newest version
-            # (latest-compatible strategy, consistent with the solver)
-            try:
-                from packaging.version import Version
+            kept = self._reconcile_duplicate(name, version, path, expected_type, data)
+            if kept is not None:
+                return kept
 
-                is_newer = Version(version) > Version(existing.version)
-            except Exception:
-                is_newer = False
-            if not is_newer:
-                logger.debug(
-                    f"Skipping older/duplicate {name}@{version} at {path} "
-                    f"(keeping {existing.version} at {existing.path})"
-                )
-                # Retain the alternate version for override candidates
-                if version not in self.objects_all.get(name, {}):
-                    alternate = ResolvedObject(
-                        path=path,
-                        object_type=expected_type,
-                        name=name,
-                        version=version,
-                        data=data,
-                    )
-                    self._parse_object_dependencies(alternate, data, expected_type)
-                    self.objects_all.setdefault(name, {})[version] = alternate
-                return existing
-            logger.debug(f"Replacing {name}@{existing.version} with newer {version} at {path}")
-            # fall through to create the newer object, which will
-            # overwrite the registry entries below
-            # (the existing object stays available in objects_all)
-            self.objects_all.setdefault(name, {})[existing.version] = existing
-
-        # Create resolved object
         resolved = ResolvedObject(
             path=path,
             object_type=expected_type,
@@ -1123,13 +1380,161 @@ class Resolver:
             version=version,
             data=data,
         )
-
-        # Parse dependencies
         self._parse_object_dependencies(resolved, data, expected_type)
+        self._register_object(resolved)
 
-        # Store in appropriate collection
-        self.objects[name] = resolved
-        self.objects_all.setdefault(name, {})[version] = resolved
+        self._resolve_declared_children(resolved, data, path)
+        self._resolve_external_subdirectories(resolved, data, path)
+
+        return resolved
+
+    def _locate_object_json(
+        self, path: Path, expected_type: ObjectType
+    ) -> tuple[Path, Path, bool, ObjectType] | None:
+        """Find the JSON file that describes the object at *path*.
+
+        *path* is the object directory or a JSON file in it. The 2.0.0
+        versioned file is preferred over the legacy one. If a directory has
+        no JSON for *expected_type*, every type is tried in turn.
+
+        Returns:
+            ``(object_dir, json_path, is_versioned, object_type)``, or None
+            (with a warning) when *path* is missing or holds no object JSON.
+        """
+        if not path.exists():
+            logger.warning(f"Object path does not exist: {path}")
+            return None
+
+        # Handle paths pointing directly to JSON files
+        if path.is_file() and path.suffix == ".json":
+            json_path, is_versioned = self._prefer_versioned_json(path, expected_type)
+            # Use parent directory as the object root
+            return path.parent, json_path, is_versioned, expected_type
+
+        # Find the object JSON - prefer versioned 2.0.0 file over legacy
+        try:
+            json_path, is_versioned = find_object_json(path, expected_type.value)
+            return path, json_path, is_versioned, expected_type
+        except FileNotFoundError:
+            pass
+
+        # Try to detect type from existing JSON files
+        for type_name in ["engine", "project", "gem", "template", "repo", "overlay"]:
+            try:
+                json_path, is_versioned = find_object_json(path, type_name)
+                return path, json_path, is_versioned, ObjectType(type_name)
+            except FileNotFoundError:
+                continue
+
+        logger.warning(f"No object JSON found in: {path}")
+        return None
+
+    @staticmethod
+    def _prefer_versioned_json(json_file: Path, expected_type: ObjectType) -> tuple[Path, bool]:
+        """For a registered JSON *file*, return ``(json_path, is_versioned)`` to load.
+
+        A versioned file (``*.2-0-0.json``) is used as-is. For a legacy
+        file, whatever ``find_object_json`` picks in the same directory
+        wins if it is a different file (and is then treated as versioned).
+        """
+        if ".2-0-0." in json_file.name or "-2-0-0." in json_file.name:
+            return json_file, True
+        try:
+            found_path, _ = find_object_json(json_file.parent, expected_type.value)
+        except FileNotFoundError:
+            return json_file, False
+        if found_path != json_file:
+            return found_path, True
+        return json_file, False
+
+    def _load_object_json(
+        self, json_path: Path, obj_dir: Path, is_versioned: bool, expected_type: ObjectType
+    ) -> Any:
+        """Read *json_path* and record its hash for change detection.
+
+        When the versioned file is used, the legacy file beside it is
+        hashed too, so an edit to it is still noticed.
+
+        Raises:
+            OSError, json.JSONDecodeError: If the file can't be read or parsed
+        """
+        with open(json_path) as f:
+            data = json.load(f)
+        self._record_file_hash(json_path)
+
+        if is_versioned:
+            legacy_path = obj_dir / get_object_json_filename(expected_type.value)
+            if legacy_path.exists():
+                self._record_file_hash(legacy_path)
+        return data
+
+    @staticmethod
+    def _write_versioned_object(
+        upgraded_data: Any, obj_dir: Path, expected_type: ObjectType
+    ) -> bool:
+        """Write upgraded object data to its 2.0.0 versioned file beside the legacy one.
+
+        The legacy file is left untouched. Returns True if the file was
+        written; a failure is logged and returns False.
+        """
+        versioned_filename = get_versioned_object_json_filename(expected_type.value, "2.0.0")
+        versioned_path = obj_dir / versioned_filename
+        try:
+            with open(versioned_path, "w") as f:
+                json.dump(upgraded_data, f, indent=2)
+            logger.info(f"Created versioned file: {versioned_path}")
+            return True
+        except OSError as e:
+            logger.warning(f"Failed to write versioned file {versioned_path}: {e}")
+            return False
+
+    def _reconcile_duplicate(
+        self, name: str, version: str, path: Path, expected_type: ObjectType, data: dict
+    ) -> ResolvedObject | None:
+        """Settle an object whose *name* is already resolved.
+
+        The same directory again returns the existing object (keeping its
+        parent chain). Otherwise the newest version wins, consistent with
+        the solver: an older or unparseable version returns the existing
+        object and is kept in ``objects_all`` as an override candidate; a
+        newer one returns None so the caller replaces the existing object,
+        which stays in ``objects_all``.
+        """
+        existing = self.objects[name]
+        if existing.path and existing.path.resolve() == path.resolve():
+            return existing
+
+        try:
+            is_newer = Version(version) > Version(existing.version)
+        except Exception:
+            is_newer = False
+
+        if not is_newer:
+            logger.debug(
+                f"Skipping older/duplicate {name}@{version} at {path} "
+                f"(keeping {existing.version} at {existing.path})"
+            )
+            # Retain the alternate version for override candidates
+            if version not in self.objects_all.get(name, {}):
+                alternate = ResolvedObject(
+                    path=path,
+                    object_type=expected_type,
+                    name=name,
+                    version=version,
+                    data=data,
+                )
+                self._parse_object_dependencies(alternate, data, expected_type)
+                self.objects_all.setdefault(name, {})[version] = alternate
+            return existing
+
+        logger.debug(f"Replacing {name}@{existing.version} with newer {version} at {path}")
+        self.objects_all.setdefault(name, {})[existing.version] = existing
+        return None
+
+    def _register_object(self, resolved: ResolvedObject) -> None:
+        """Index *resolved* by name, by name+version, and in its per-type dict."""
+        self.objects[resolved.name] = resolved
+        self.objects_all.setdefault(resolved.name, {})[resolved.version] = resolved
 
         type_dict = {
             ObjectType.ENGINE: self.engines,
@@ -1138,73 +1543,68 @@ class Resolver:
             ObjectType.TEMPLATE: self.templates,
             ObjectType.REPO: self.repos,
             ObjectType.OVERLAY: self.overlays,
-        }.get(expected_type)
+        }.get(resolved.object_type)
 
         if type_dict is not None:
-            type_dict[name] = resolved
+            type_dict[resolved.name] = resolved
 
-        # Resolve children
-        # Schema 2.0.0: children is a dict with type keys, paths include JSON filename
-        # e.g., {"gems": ["Gems/MyGem/gem.json"], "projects": ["MyProject/project.json"]}
+    def _attach_child(
+        self, parent: ResolvedObject, child_path: Path, child_type: ObjectType
+    ) -> None:
+        """Resolve the object at *child_path* and link it under *parent*."""
+        child_resolved = self._resolve_object(child_path, child_type)
+        if child_resolved:
+            child_resolved.parent = parent
+            parent.children.append(child_resolved)
+
+    def _resolve_declared_children(self, parent: ResolvedObject, data: dict, obj_dir: Path) -> None:
+        """Resolve the objects listed in *data*'s ``children`` dict.
+
+        Schema 2.0.0: ``{"gems": ["Gems/MyGem/gem.json"], ...}`` with paths
+        relative to *obj_dir*. Unknown type keys (e.g. legacy "restricted")
+        and non-list values are skipped.
+        """
         children = data.get("children", {})
-        if isinstance(children, dict):
-            for child_type_str, child_paths in children.items():
-                if not isinstance(child_paths, list):
-                    continue
+        if not isinstance(children, dict):
+            return
+        for child_type_str, child_paths in children.items():
+            if not isinstance(child_paths, list):
+                continue
 
-                # Skip unknown object types (e.g., "restricted" from legacy O3DE)
-                try:
-                    child_type = ObjectType(child_type_str.rstrip("s"))
-                except ValueError:
-                    logger.debug(f"Skipping unknown object type: {child_type_str}")
-                    continue
+            # Skip unknown object types (e.g., "restricted" from legacy O3DE)
+            try:
+                child_type = ObjectType(child_type_str.rstrip("s"))
+            except ValueError:
+                logger.debug(f"Skipping unknown object type: {child_type_str}")
+                continue
 
-                for child_rel_path in child_paths:
-                    # Schema 2.0.0 paths include JSON filename, extract directory
-                    rel_path = Path(child_rel_path)
-                    if rel_path.suffix == ".json":
-                        # Path is to JSON file, use parent as object directory
-                        child_path = path / rel_path.parent
-                    else:
-                        # Legacy path without JSON filename
-                        child_path = path / child_rel_path
-                    child_resolved = self._resolve_object(child_path, child_type)
-                    if child_resolved:
-                        child_resolved.parent = resolved
-                        resolved.children.append(child_resolved)
+            for child_rel_path in child_paths:
+                self._attach_child(parent, _child_object_dir(obj_dir, child_rel_path), child_type)
 
-        # Legacy format: external_subdirectories is a list of paths
-        # These SHOULD be CMake-only directories (not O3DE objects), but people often
-        # mistakenly put gem paths here. We try to detect actual O3DE objects.
+    def _resolve_external_subdirectories(
+        self, parent: ResolvedObject, data: dict, obj_dir: Path
+    ) -> None:
+        """Resolve O3DE objects mistakenly listed in legacy ``external_subdirectories``.
+
+        These should be CMake-only directories, but people often put gem
+        paths there. Directories with an object JSON are resolved as
+        children; plain CMake directories and missing paths are skipped.
+        """
         external_subdirs = data.get("external_subdirectories", [])
-        if isinstance(external_subdirs, list):
-            for child_rel_path in external_subdirs:
-                child_path = path / child_rel_path
-                if not child_path.exists():
-                    continue
+        if not isinstance(external_subdirs, list):
+            return
+        for child_rel_path in external_subdirs:
+            child_path = obj_dir / child_rel_path
+            if not child_path.exists():
+                continue
 
-                # Try to detect O3DE object type from existing JSON
-                detected_type = None
-                for type_name in ["gem", "project", "engine", "template"]:
-                    try:
-                        find_object_json(child_path, type_name)
-                        detected_type = ObjectType(type_name)
-                        break
-                    except FileNotFoundError:
-                        continue
-
-                if detected_type:
-                    # It's an O3DE object (probably a gem mistakenly in external_subdirectories)
-                    child_resolved = self._resolve_object(child_path, detected_type)
-                    if child_resolved:
-                        child_resolved.parent = resolved
-                        resolved.children.append(child_resolved)
-                else:
-                    # True external subdirectory - just CMakeLists.txt, not an O3DE object
-                    # Skip for object resolution (CMake will pick it up during build)
-                    logger.debug(f"Skipping non-O3DE external subdirectory: {child_path}")
-
-        return resolved
+            detected_type = _detect_object_type(child_path)
+            if detected_type:
+                self._attach_child(parent, child_path, detected_type)
+            else:
+                # True external subdirectory - just CMakeLists.txt, not an O3DE object
+                # Skip for object resolution (CMake will pick it up during build)
+                logger.debug(f"Skipping non-O3DE external subdirectory: {child_path}")
 
     # Type-key → expected JSON filename inside the registered directory
     _TYPE_JSON = {
@@ -1650,217 +2050,40 @@ class Resolver:
         Returns:
             Path to saved file (even in dry-run mode)
         """
+        resolved_data = self._build_resolved_data()
+
+        if self.dry_run:
+            logger.info(f"Dry-run: would save resolved manifest to {self.resolved_path}")
+            return self.resolved_path
+
+        with open(self.resolved_path, "w") as f:
+            json.dump(resolved_data, f, indent=2)
+
+        logger.info(f"Saved resolved manifest: {self.resolved_path}")
+        return self.resolved_path
+
+    def _build_resolved_data(self) -> dict[str, Any]:
+        """Compute the resolved-manifest document that ``save()`` writes.
+
+        Crawls the remote repos the manifest and objects advertise (the only
+        network access) and reads git info for each local object, but
+        writes nothing.
+        """
         # Use default data as-is; we do NOT convert restricteds_path to overlays_path
         # because restricted and overlay are different concepts
         assert self.manifest_data is not None, "save() requires resolve() first"
         default_data = dict(self.manifest_data.get("default", {}))
 
-        # First pass: compute dependents by inverting dependencies
-        dependents_map: dict[str, list[str]] = {}  # object_name -> list of names that depend on it
-        for name, obj in self.objects.items():
-            for dep in obj.dependencies:
-                # Find matching object
-                dep_name = dep.name
-                if dep_name in self.objects:
-                    if dep_name not in dependents_map:
-                        dependents_map[dep_name] = []
-                    if name not in dependents_map[dep_name]:
-                        dependents_map[dep_name].append(name)
+        dependents_map = self._compute_dependents_map()
+        resolved_data = self._resolved_data_skeleton(default_data)
 
-        resolved_data = {
-            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-resolved-manifest-2.0.0.json",
-            "$schemaVersion": "2.0.0",
-            "resolved_at": __import__("datetime").datetime.now().isoformat(),
-            "manifest_path": self.manifest_path.as_posix(),
-            # Defaults from manifest (normalized)
-            "default": default_data,
-            # File hashes for change detection
-            "file_hashes": self.file_hashes,
-            # All resolved objects with full paths
-            "objects": {},
-            # By-type lists for convenience
-            "engines": [],
-            "projects": [],
-            "gems": [],
-            "templates": [],
-            "repos": [],
-            "overlays": [],
-        }
-
-        # Crawl all remote repo URLs discovered from manifest and objects
-        all_remote_urls: set[str] = set(self.manifest_remotes)
-        for name, obj in self.objects.items():
-            obj_remote = obj.data.get("remote", {})
-            if isinstance(obj_remote, dict):
-                for url in obj_remote.get("repos", []):
-                    all_remote_urls.add(url)
-
-        # Pre-crawl and build remote objects
-        if all_remote_urls:
-            crawled = self._crawl_remote_repos(list(all_remote_urls))
-            self._crawled_remotes.update(crawled)
-        remote_objects = self._build_remote_objects()
-
-        # Build URL->repo_name mapping for resolving object remotes
-        url_to_name: dict[str, str] = {}
-        for url, data in self._crawled_remotes.items():
-            if not data.get("_error"):
-                try:
-                    url_to_name[url] = get_object_name(data) or data.get("repo_name", url)
-                except Exception:
-                    url_to_name[url] = data.get("repo_name", url)
-            else:
-                url_to_name[url] = url
+        remote_objects = self._crawl_and_build_remote_objects()
+        url_to_name = _url_to_repo_names(self._crawled_remotes)
 
         for name, obj in self.objects.items():
-            # Extract display metadata from object data
-            # Schema 2.0.0: display_name/description are inside the type dict (e.g., gem.display_name)
-            # Legacy: display_name/summary at root level
-            display_metadata = {}
-
-            type_key = obj.object_type.value  # "gem", "engine", etc.
-            type_data = obj.data.get(type_key, {})
-
-            # Try Schema 2.0.0 location first, then legacy
-            display_name = type_data.get("display_name") or obj.data.get("display_name")
-            description = type_data.get("description") or obj.data.get("summary")
-
-            if display_name:
-                display_metadata["display_name"] = display_name
-            if description:
-                display_metadata["summary"] = description
-
-            # Icon: Schema 2.0.0 has icon.relative_path, legacy has icon_path
-            icon_data = obj.data.get("icon", {})
-            icon_path = icon_data.get("relative_path") if isinstance(icon_data, dict) else None
-            if not icon_path:
-                icon_path = obj.data.get("icon_path")
-            if icon_path:
-                display_metadata["icon_path"] = icon_path
-
-            # Get git info for cloned repos
-            git_info = {}
-            remote_url = get_local_git_remote(str(obj.path))
-            if remote_url:
-                git_info["remote_url"] = remote_url
-                branch = get_local_git_branch(str(obj.path))
-                if branch:
-                    git_info["branch"] = branch
-
-            # Compute full ancestry chain (immediate parent to root)
-            # Each entry has name and path for navigation
-            parents = []
-            current = obj.parent
-            while current:
-                parents.append(
-                    {
-                        "name": current.name,
-                        "path": current.path.as_posix(),
-                    }
-                )
-                current = current.parent
-
-            # Extract releases (version names only for caching)
-            releases_list = obj.data.get("releases", [])
-            release_versions = []
-            if releases_list and isinstance(releases_list, list):
-                for release in releases_list:
-                    if isinstance(release, dict):
-                        version = release.get("name") or release.get("version")
-                        if version:
-                            release_versions.append(version)
-
-            resolved_data["objects"][name] = {
-                "path": obj.path.as_posix(),
-                "type": obj.object_type.value,
-                "version": obj.version,
-                "children": [c.name for c in obj.children],
-                "dependencies": [str(d) for d in obj.dependencies],
-                "optional_dependencies": [str(d) for d in obj.optional_dependencies] or None,
-                "peer_dependencies": [str(d) for d in obj.peer_dependencies] or None,
-                "all_dependencies": [
-                    {"name": dn, "version": dv} for dn, dv in self.dependency_graph.get(name, [])
-                ]
-                or None,
-                "dependents": dependents_map.get(name, []),
-                "overlays": [o.name for o in obj.overlays],
-                "parent": obj.parent.name if obj.parent else None,
-                "parents": parents,  # Full ancestry: [{name, path}, ...] from immediate parent to root
-                "display_metadata": display_metadata if display_metadata else None,
-                "git_info": git_info if git_info else None,
-                "releases": release_versions if release_versions else None,
-                # Inheritable properties (effective values after inheritance)
-                "origin": obj.data.get("origin") or None,
-                "licenses": obj.data.get("licenses") or None,
-                "source_control": obj.data.get("source_control") or None,
-                "documentation": obj.data.get("documentation") or None,
-                # Which properties were inherited and from whom
-                "inherited_from": obj.inherited_from if obj.inherited_from else None,
-            }
-
-            # Compute all_children: transitive closure of children
-            if obj.children:
-                ac_list: list[dict] = []
-                ac_seen: set[str] = set()
-                ac_q = [c.name for c in obj.children]
-                while ac_q:
-                    cn = ac_q.pop(0)
-                    if cn in ac_seen:
-                        continue
-                    ac_seen.add(cn)
-                    cobj = self.objects.get(cn)
-                    ctype = cobj.object_type.value if cobj else ""
-                    ac_list.append({"name": cn, "type": ctype})
-                    if cobj:
-                        for cc in cobj.children:
-                            if cc.name not in ac_seen:
-                                ac_q.append(cc.name)
-                resolved_data["objects"][name]["all_children"] = ac_list or None
-
-            # Build remotes for this object (list of repo names, like children)
-            # Only remotes the object ITSELF advertises in its remote section.
-            # Manifest-level remotes belong to the manifest root node only —
-            # attaching them to root objects would falsely make every
-            # top-level object advertise the user's registered repos.
-            obj_remote = obj.data.get("remote", {})
-            remote_names: list[str] = []
-            if isinstance(obj_remote, dict):
-                for url in obj_remote.get("repos", []):
-                    rname = url_to_name.get(url, url)
-                    if rname not in remote_names:
-                        remote_names.append(rname)
-            if remote_names:
-                resolved_data["objects"][name]["remotes"] = remote_names
-
-            # all_remotes = transitive closure through remote chains
-            # Walk: object -> remotes -> remotes' remotes, etc.
-            if remote_names:
-                all_remote_set: list[dict] = []
-                seen: set[str] = set()
-                queue = list(remote_names)
-                while queue:
-                    rn = queue.pop(0)
-                    if rn in seen:
-                        continue
-                    seen.add(rn)
-                    robj = remote_objects.get(rn, {})
-                    rtype = robj.get("type", "repo")
-                    all_remote_set.append({"name": rn, "type": rtype})
-                    # Add children of this remote (advertised objects)
-                    for child in robj.get("children", []):
-                        if child not in seen:
-                            child_data = remote_objects.get(child, {})
-                            ctype = child_data.get("type", "")
-                            if not ctype and child in self.objects:
-                                ctype = self.objects[child].object_type.value
-                            all_remote_set.append({"name": child, "type": ctype})
-                            seen.add(child)
-                    # Enqueue sub-remotes for transitive walk
-                    for sub in robj.get("remotes", []):
-                        if sub not in seen:
-                            queue.append(sub)
-                if all_remote_set:
-                    resolved_data["objects"][name]["all_remotes"] = all_remote_set
+            resolved_data["objects"][name] = self._object_entry(
+                name, obj, dependents_map, remote_objects, url_to_name
+            )
 
             # Add to type list
             type_key = obj.object_type.value + "s"
@@ -1887,70 +2110,9 @@ class Resolver:
                         }
                     )
 
-        # Create manifest root entry — the tree root
-        manifest_name = "o3de_manifest"
-        # Root children = all root-level objects (no parent)
-        root_children = [n for n, o in self.objects.items() if o.parent is None]
-        # Root remotes = manifest-level repo names
-        root_remotes = [url_to_name.get(u, u) for u in self.manifest_remotes]
-
-        # Compute all_children (transitive closure) for manifest root
-        root_all_children: list[dict] = []
-        ac_seen = set()
-        ac_queue = list(root_children)
-        while ac_queue:
-            cn = ac_queue.pop(0)
-            if cn in ac_seen:
-                continue
-            ac_seen.add(cn)
-            cobj = self.objects.get(cn)
-            ctype = cobj.object_type.value if cobj else ""
-            root_all_children.append({"name": cn, "type": ctype})
-            if cobj:
-                for cc in cobj.children:
-                    if cc.name not in ac_seen:
-                        ac_queue.append(cc.name)
-
-        # Compute all_remotes for manifest root:
-        # Aggregate from manifest's own remotes PLUS all descendants' remotes
-        all_obj_remote_names: set[str] = set(root_remotes)
-        for name in resolved_data["objects"]:
-            obj_remotes = resolved_data["objects"][name].get("remotes", [])
-            for rn in obj_remotes:
-                all_obj_remote_names.add(rn)
-
-        root_all_remotes: list[dict] = []
-        if all_obj_remote_names:
-            seen = set()
-            queue = list(all_obj_remote_names)
-            while queue:
-                rn = queue.pop(0)
-                if rn in seen:
-                    continue
-                seen.add(rn)
-                robj = remote_objects.get(rn, {})
-                rtype = robj.get("type", "repo")
-                root_all_remotes.append({"name": rn, "type": rtype})
-                for child in robj.get("children", []):
-                    if child not in seen:
-                        child_data = remote_objects.get(child, {})
-                        ctype = child_data.get("type", "")
-                        if not ctype and child in self.objects:
-                            ctype = self.objects[child].object_type.value
-                        root_all_remotes.append({"name": child, "type": ctype})
-                        seen.add(child)
-                for sub in robj.get("remotes", []):
-                    if sub not in seen:
-                        queue.append(sub)
-
-        resolved_data["manifest_root"] = {
-            "name": manifest_name,
-            "path": self.manifest_path.as_posix(),
-            "children": root_children,
-            "all_children": root_all_children if root_all_children else None,
-            "remotes": root_remotes,
-            "all_remotes": root_all_remotes if root_all_remotes else None,
-        }
+        resolved_data["manifest_root"] = self._manifest_root_entry(
+            resolved_data["objects"], remote_objects, url_to_name
+        )
 
         # Include locked transitive dependencies for reproducibility
         if self.locked_dependencies:
@@ -1970,15 +2132,184 @@ class Resolver:
                 for c in self.conflicts
             ]
 
-        if self.dry_run:
-            logger.info(f"Dry-run: would save resolved manifest to {self.resolved_path}")
-            return self.resolved_path
+        return resolved_data
 
-        with open(self.resolved_path, "w") as f:
-            json.dump(resolved_data, f, indent=2)
+    def _compute_dependents_map(self) -> dict[str, list[str]]:
+        """Invert dependencies: ``{object_name: [names of resolved objects that depend on it]}``.
 
-        logger.info(f"Saved resolved manifest: {self.resolved_path}")
-        return self.resolved_path
+        Only dependencies that are themselves resolved appear as keys.
+        """
+        dependents_map: dict[str, list[str]] = {}
+        for name, obj in self.objects.items():
+            for dep in obj.dependencies:
+                dep_name = dep.name
+                if dep_name in self.objects:
+                    if dep_name not in dependents_map:
+                        dependents_map[dep_name] = []
+                    if name not in dependents_map[dep_name]:
+                        dependents_map[dep_name].append(name)
+        return dependents_map
+
+    def _resolved_data_skeleton(self, default_data: dict) -> dict[str, Any]:
+        """Header fields and empty object/type collections of the resolved manifest."""
+        return {
+            "$schema": "https://raw.githubusercontent.com/accesspointmg/canonical.o3de.org/main/src/o3de-resolved-manifest-2.0.0.json",
+            "$schemaVersion": "2.0.0",
+            "resolved_at": __import__("datetime").datetime.now().isoformat(),
+            "manifest_path": self.manifest_path.as_posix(),
+            # Defaults from manifest (normalized)
+            "default": default_data,
+            # File hashes for change detection
+            "file_hashes": self.file_hashes,
+            # All resolved objects with full paths
+            "objects": {},
+            # By-type lists for convenience
+            "engines": [],
+            "projects": [],
+            "gems": [],
+            "templates": [],
+            "repos": [],
+            "overlays": [],
+        }
+
+    def _collect_remote_repo_urls(self) -> set[str]:
+        """Every remote repo URL to crawl: the manifest's plus each object's ``remote.repos``."""
+        all_remote_urls: set[str] = set(self.manifest_remotes)
+        for obj in self.objects.values():
+            obj_remote = obj.data.get("remote", {})
+            if isinstance(obj_remote, dict):
+                for url in obj_remote.get("repos", []):
+                    all_remote_urls.add(url)
+        return all_remote_urls
+
+    def _crawl_and_build_remote_objects(self) -> dict[str, dict]:
+        """Crawl all advertised remote repos (if any) and build their cache entries."""
+        all_remote_urls = self._collect_remote_repo_urls()
+        if all_remote_urls:
+            crawled = self._crawl_remote_repos(list(all_remote_urls))
+            self._crawled_remotes.update(crawled)
+        return self._build_remote_objects()
+
+    def _git_info(self, obj: ResolvedObject) -> dict:
+        """``{remote_url, branch}`` of the git checkout at *obj*'s path (empty if none)."""
+        git_info = {}
+        remote_url = get_local_git_remote(str(obj.path))
+        if remote_url:
+            git_info["remote_url"] = remote_url
+            branch = get_local_git_branch(str(obj.path))
+            if branch:
+                git_info["branch"] = branch
+        return git_info
+
+    def _object_entry(
+        self,
+        name: str,
+        obj: ResolvedObject,
+        dependents_map: dict[str, list[str]],
+        remote_objects: dict[str, dict],
+        url_to_name: dict[str, str],
+    ) -> dict:
+        """The resolved-manifest entry for one local object."""
+        display_metadata = _display_metadata(obj)
+        git_info = self._git_info(obj)
+        parents = _ancestry(obj)
+        release_versions = _release_versions(obj.data)
+
+        entry: dict[str, Any] = {
+            "path": obj.path.as_posix(),
+            "type": obj.object_type.value,
+            "version": obj.version,
+            "children": [c.name for c in obj.children],
+            "dependencies": [str(d) for d in obj.dependencies],
+            "optional_dependencies": [str(d) for d in obj.optional_dependencies] or None,
+            "peer_dependencies": [str(d) for d in obj.peer_dependencies] or None,
+            "all_dependencies": [
+                {"name": dn, "version": dv} for dn, dv in self.dependency_graph.get(name, [])
+            ]
+            or None,
+            "dependents": dependents_map.get(name, []),
+            "overlays": [o.name for o in obj.overlays],
+            "parent": obj.parent.name if obj.parent else None,
+            "parents": parents,  # Full ancestry: [{name, path}, ...] from immediate parent to root
+            "display_metadata": display_metadata if display_metadata else None,
+            "git_info": git_info if git_info else None,
+            "releases": release_versions if release_versions else None,
+            # Inheritable properties (effective values after inheritance)
+            "origin": obj.data.get("origin") or None,
+            "licenses": obj.data.get("licenses") or None,
+            "source_control": obj.data.get("source_control") or None,
+            "documentation": obj.data.get("documentation") or None,
+            # Which properties were inherited and from whom
+            "inherited_from": obj.inherited_from if obj.inherited_from else None,
+        }
+
+        # all_children: transitive closure of children
+        if obj.children:
+            entry["all_children"] = (
+                _all_children([c.name for c in obj.children], self.objects) or None
+            )
+
+        # remotes: only the repos the object ITSELF advertises in its remote
+        # section. Manifest-level remotes belong to the manifest root node
+        # only — attaching them to root objects would falsely make every
+        # top-level object advertise the user's registered repos.
+        remote_names = self._object_remote_names(obj, url_to_name)
+        if remote_names:
+            entry["remotes"] = remote_names
+
+            # all_remotes = transitive closure through remote chains
+            all_remote_set = _all_remotes(remote_names, remote_objects, self.objects)
+            if all_remote_set:
+                entry["all_remotes"] = all_remote_set
+
+        return entry
+
+    @staticmethod
+    def _object_remote_names(obj: ResolvedObject, url_to_name: dict[str, str]) -> list[str]:
+        """Names (crawled name, else URL) of the repos in *obj*'s ``remote.repos``, deduplicated."""
+        obj_remote = obj.data.get("remote", {})
+        remote_names: list[str] = []
+        if isinstance(obj_remote, dict):
+            for url in obj_remote.get("repos", []):
+                rname = url_to_name.get(url, url)
+                if rname not in remote_names:
+                    remote_names.append(rname)
+        return remote_names
+
+    def _manifest_root_entry(
+        self,
+        objects_out: dict[str, dict],
+        remote_objects: dict[str, dict],
+        url_to_name: dict[str, str],
+    ) -> dict:
+        """The ``manifest_root`` node: the tree root above every root-level object.
+
+        Its ``all_remotes`` covers the manifest's own remotes plus every
+        remote any entry in *objects_out* (local or remote) lists.
+        """
+        # Root children = all root-level objects (no parent)
+        root_children = [n for n, o in self.objects.items() if o.parent is None]
+        # Root remotes = manifest-level repo names
+        root_remotes = [url_to_name.get(u, u) for u in self.manifest_remotes]
+
+        root_all_children = _all_children(root_children, self.objects)
+
+        # Aggregate from manifest's own remotes PLUS all descendants' remotes
+        all_obj_remote_names: set[str] = set(root_remotes)
+        for entry in objects_out.values():
+            for rn in entry.get("remotes", []):
+                all_obj_remote_names.add(rn)
+
+        root_all_remotes = _all_remotes(list(all_obj_remote_names), remote_objects, self.objects)
+
+        return {
+            "name": "o3de_manifest",
+            "path": self.manifest_path.as_posix(),
+            "children": root_children,
+            "all_children": root_all_children if root_all_children else None,
+            "remotes": root_remotes,
+            "all_remotes": root_all_remotes if root_all_remotes else None,
+        }
 
     def load_resolved(self) -> dict:
         """Load existing resolved manifest."""
