@@ -16,9 +16,13 @@ from o3de_cli.core import (
     Resolver,
     get_manifest_path,
 )
+from o3de_cli.core.audit_checks import collect_issues
 from o3de_cli.core.store import compute_sha256
 
 console = Console()
+
+# Historical private name, kept importable from this module.
+_collect_issues = collect_issues
 
 
 @click.command("audit")
@@ -68,149 +72,6 @@ def audit(as_json: bool) -> None:
 
     if total > 0:
         raise SystemExit(1)
-
-
-def _collect_issues(resolver: Resolver) -> dict[str, list[dict]]:
-    """Collect all audit issues from a resolved manifest.
-
-    Returns a dict keyed by issue category.
-    """
-    issues: dict[str, list[dict]] = {
-        "deprecated": [],
-        "missing_integrity": [],
-        "missing_dependencies": [],
-        "missing_peer_dependencies": [],
-        "unresolvable_optional": [],
-        "conflicts": [],
-    }
-
-    for name, obj in resolver.objects.items():
-        # --- Deprecated check ---
-        type_key = obj.object_type.value
-        type_data = obj.data.get(type_key, {})
-        deprecated = type_data.get("deprecated") if isinstance(type_data, dict) else None
-        if not deprecated:
-            deprecated = obj.data.get("deprecated")
-        if deprecated:
-            msg = (
-                deprecated.get("message", str(deprecated))
-                if isinstance(deprecated, dict)
-                else str(deprecated)
-            )
-            replacement = deprecated.get("replacement", "") if isinstance(deprecated, dict) else ""
-            issues["deprecated"].append(
-                {
-                    "object": name,
-                    "message": msg,
-                    "replacement": replacement,
-                }
-            )
-
-        # --- Missing integrity on releases ---
-        releases = obj.data.get("releases", [])
-        if isinstance(releases, list):
-            for i, release in enumerate(releases):
-                if not isinstance(release, dict):
-                    continue
-                rel_name = release.get("name", f"release[{i}]")
-                for j, dl in enumerate(release.get("downloads", [])):
-                    if not isinstance(dl, dict):
-                        continue
-                    if dl.get("source") and not dl.get("source_sha256"):
-                        issues["missing_integrity"].append(
-                            {
-                                "object": name,
-                                "release": rel_name,
-                                "field": f"downloads[{j}].source_sha256",
-                            }
-                        )
-                    if dl.get("lfs") and not dl.get("lfs_sha256"):
-                        issues["missing_integrity"].append(
-                            {
-                                "object": name,
-                                "release": rel_name,
-                                "field": f"downloads[{j}].lfs_sha256",
-                            }
-                        )
-                for j, binary in enumerate(release.get("binaries", [])):
-                    if not isinstance(binary, dict):
-                        continue
-                    if binary.get("binary") and not binary.get("sha256"):
-                        issues["missing_integrity"].append(
-                            {
-                                "object": name,
-                                "release": rel_name,
-                                "field": f"binaries[{j}].sha256",
-                            }
-                        )
-
-        # --- Missing dependencies ---
-        for dep_spec in obj.dependencies:
-            candidate = resolver.objects.get(dep_spec.name)
-            if candidate is None:
-                issues["missing_dependencies"].append(
-                    {
-                        "object": name,
-                        "dependency": str(dep_spec),
-                        "reason": "not found",
-                    }
-                )
-            elif not dep_spec.matches(candidate.version):
-                issues["missing_dependencies"].append(
-                    {
-                        "object": name,
-                        "dependency": str(dep_spec),
-                        "reason": f"version mismatch (found {candidate.version})",
-                    }
-                )
-
-        # --- Missing peer dependencies ---
-        for peer_spec in obj.peer_dependencies:
-            candidate = resolver.objects.get(peer_spec.name)
-            if candidate is None:
-                issues["missing_peer_dependencies"].append(
-                    {
-                        "object": name,
-                        "peer": str(peer_spec),
-                        "reason": "not installed",
-                    }
-                )
-            elif not peer_spec.matches(candidate.version):
-                issues["missing_peer_dependencies"].append(
-                    {
-                        "object": name,
-                        "peer": str(peer_spec),
-                        "reason": f"version mismatch (found {candidate.version})",
-                    }
-                )
-
-        # --- Unresolvable optional dependencies ---
-        for opt_spec in obj.optional_dependencies:
-            candidate = resolver.objects.get(opt_spec.name)
-            if candidate is not None and not opt_spec.matches(candidate.version):
-                issues["unresolvable_optional"].append(
-                    {
-                        "object": name,
-                        "optional": str(opt_spec),
-                        "reason": f"found {candidate.version} but constraint not met",
-                    }
-                )
-
-    # --- Version conflicts ---
-    for conflict in resolver.conflicts:
-        issues["conflicts"].append(
-            {
-                "dependency": conflict.dependency_name,
-                "requirer_a": conflict.requirer_a,
-                "constraint_a": conflict.constraint_a,
-                "requirer_b": conflict.requirer_b,
-                "constraint_b": conflict.constraint_b,
-                "resolved_version": conflict.resolved_version,
-            }
-        )
-
-    # Remove empty categories
-    return {k: v for k, v in issues.items() if v}
 
 
 def _display_issues(issues: dict[str, list[dict]]) -> None:

@@ -72,8 +72,12 @@ from o3de_cli.core.workspace_ops import (
     attributions_change,
     build_layout,
     build_source_paths,
+    candidate_summary,
+    candidates_report,
     change_overlays,
+    chosen_objects,
     explicit_overlay_tuples,
+    override_summary,
     parse_tag_selection,
     plan_cmake_commands,
     plan_resync,
@@ -81,6 +85,9 @@ from o3de_cli.core.workspace_ops import (
     secondary_engine_objects,
     select_root,
     solve_create_dependencies,
+    solve_failure_message,
+    solve_report,
+    solve_workspace_root,
 )
 
 # Helpers that moved to core.workspace_ops, kept under their old names
@@ -593,24 +600,25 @@ def candidates_command(
     with artifact availability: source path, locally built binary install,
     and remote prebuilt binary for this platform.
     """
-    from o3de_cli.core.json_output import emit_error, emit_response
+    from o3de_cli.core.json_output import emit_response
     from o3de_cli.core.solver import list_candidates
 
     ws_path = _resolve_workspace_path(name_or_path)
     if ws_path is None:
-        if as_json:
-            emit_error(f"Workspace not found: {name_or_path}", code="E_WS_NOT_FOUND")
-        else:
-            console.print(f"[red]Workspace not found:[/red] {name_or_path}")
-        raise SystemExit(1)
-
+        _exit_with_error(
+            as_json,
+            f"Workspace not found: {name_or_path}",
+            "E_WS_NOT_FOUND",
+            f"[red]Workspace not found:[/red] {name_or_path}",
+        )
     meta = _read_workspace_meta(ws_path)
     if meta is None:
-        if as_json:
-            emit_error(f"Not a valid workspace: {ws_path}", code="E_WS_INVALID")
-        else:
-            console.print(f"[red]Not a valid workspace:[/red] {ws_path}")
-        raise SystemExit(1)
+        _exit_with_error(
+            as_json,
+            f"Not a valid workspace: {ws_path}",
+            "E_WS_INVALID",
+            f"[red]Not a valid workspace:[/red] {ws_path}",
+        )
 
     resolver = Resolver()
     resolver.resolve()
@@ -622,91 +630,31 @@ def candidates_command(
         store = Store()
         store.refresh_sync(resolver.manifest_remotes)
 
-    root_name = _workspace_root_name(meta, resolver)
-    pins = {n: o.version for n, o in meta.overrides.items()}
-    solve_result = None
-    if root_name and root_name in resolver.objects:
-        solve_result = solve_for_workspace(
-            root_name=root_name,
-            resolver=resolver,
-            store=store,
-            overrides=pins,
-        )
-
-    # Collect the object set to report: solved candidates + children,
-    # falling back to workspace sources
-    chosen: dict[str, tuple[str, str, str]] = {}  # name -> (version, type, path)
-    if solve_result and solve_result.is_resolved:
-        for cand_map in (solve_result.candidates, solve_result.children):
-            for cname, cand in cand_map.items():
-                chosen[cname] = (
-                    cand.version,
-                    cand.object_type.value,
-                    str(cand.path) if cand.path else "",
-                )
-    else:
-        for bucket, type_name in (
-            (meta.sources.engines, "engine"),
-            (meta.sources.projects, "project"),
-            (meta.sources.gems, "gem"),
-            (meta.sources.templates, "template"),
-        ):
-            for cname, cpath in bucket.items():
-                chosen[cname] = ("", type_name, cpath)
-
+    solve_result = solve_workspace_root(meta, resolver, store, solve_for_workspace)
+    # The solved candidates and children, falling back to workspace sources
+    chosen = chosen_objects(meta, solve_result)
     names = [object_name] if object_name else sorted(chosen)
-    objects_out: list[dict[str, Any]] = []
-    for cname in names:
-        version, type_name, path = chosen.get(cname, ("", "", ""))
-        cands = list_candidates(cname, resolver, store)
-        override = meta.overrides.get(cname)
-        objects_out.append(
-            {
-                "name": cname,
-                "type": type_name,
-                "chosen_version": version,
-                "chosen_path": path,
-                "override": override.model_dump() if override else None,
-                "candidates": [
-                    {
-                        "version": c.version,
-                        "status": c.status.value,
-                        "path": str(c.path) if c.path else None,
-                        "local_binary_path": (
-                            str(c.local_binary_path) if c.local_binary_path else None
-                        ),
-                        "remote_binary": c.remote_binary,
-                    }
-                    for c in cands
-                ],
-            }
-        )
+    objects_out = candidates_report(meta, chosen, names, resolver, store, list_candidates)
 
     if as_json:
         emit_response(data={"workspace": str(ws_path), "objects": objects_out})
         return
+    _render_candidates(meta, objects_out)
 
+
+def _render_candidates(meta: WorkspaceMeta, objects_out: list[dict[str, Any]]) -> None:
     table = Table(title=f"Candidates — {meta.workspace.name}")
     table.add_column("Object")
     table.add_column("Chosen")
     table.add_column("Candidates")
     table.add_column("Override")
     for entry in objects_out:
-        cand_strs = []
-        for c in entry["candidates"]:
-            forms = ["source"] if c["path"] else []
-            if c["local_binary_path"]:
-                forms.append("local-binary")
-            if c["remote_binary"]:
-                forms.append("remote-binary")
-            cand_strs.append(f"{c['version']} ({c['status']}; {'/'.join(forms) or '—'})")
-        ov = entry["override"]
-        ov_str = f"{ov['version']} [{ov['artifact']}]" if ov else ""
+        cand_strs = [candidate_summary(c) for c in entry["candidates"]]
         table.add_row(
             entry["name"],
             entry["chosen_version"],
             ", ".join(cand_strs) or "—",
-            ov_str,
+            override_summary(entry["override"]),
         )
     console.print(table)
 
@@ -1232,105 +1180,82 @@ def solve_command(
     from o3de_cli.core.store import Store
 
     with _spinner(disable=as_json) as progress:
-        task = progress.add_task("Resolving manifest...", total=None)
-
-        resolver = Resolver()
-        resolver.resolve()
-
-        store = None
-        if include_store:
-            progress.update(task, description="Refreshing store...")
-            store = Store()
-            store.refresh_sync(resolver.manifest_remotes)
-
-        progress.update(task, description="Solving dependencies...")
-
-        def on_progress(msg: str) -> None:
-            progress.update(task, description=msg)
-
-        result = solve_for_workspace(
-            root_name=root_name,
-            resolver=resolver,
-            store=store,
-            progress_callback=on_progress,
-        )
-
-        progress.update(task, description="Done")
+        result = _solve_with_progress(progress, root_name, Store if include_store else None)
 
     if as_json:
-        data = {
-            "root": result.root_name,
-            "root_version": result.root_version,
-            "resolved": result.is_resolved,
-            "conflict": result.conflict_message or None,
-            "candidates": {
-                name: {
-                    "version": c.version,
-                    "type": c.object_type.value,
-                    "status": c.status.value,
-                    "path": str(c.path) if c.path else None,
-                }
-                for name, c in result.candidates.items()
-            },
-            "children": {
-                name: {
-                    "version": c.version,
-                    "type": c.object_type.value,
-                    "path": str(c.path) if c.path else None,
-                }
-                for name, c in result.children.items()
-            },
-            "overlays": {
-                base: [
-                    {
-                        "name": o.name,
-                        "version": o.version,
-                        "precedence": o.precedence,
-                    }
-                    for o in entries
-                ]
-                for base, entries in result.overlays.items()
-            },
-        }
-        from o3de_cli.core.json_output import emit_error, emit_response
-
-        # A failed solve is an error in either mode; the solve report
-        # rides in the error document.
-        if not result.is_resolved:
-            emit_error(
-                f"Resolution failed: {result.conflict_message}"
-                if result.conflict_message
-                else "Resolution failed",
-                code="E_SOLVE_CONFLICT",
-                data=data,
-            )
-            raise SystemExit(1)
-        emit_response(data=data)
+        _emit_solve_json(result)
         return
 
     if not result.is_resolved:
         console.print(f"[red]Resolution failed:[/red] {result.conflict_message}")
         raise SystemExit(1)
+    _render_solve(result)
 
+
+def _solve_with_progress(
+    progress: Progress, root_name: str, store_factory: Callable[[], Any] | None
+) -> SolveResult:
+    """Resolve the manifest and solve *root_name*, reporting on *progress*.
+
+    *store_factory* (the Store class) is given with --include-store.
+    """
+    task = progress.add_task("Resolving manifest...", total=None)
+
+    resolver = Resolver()
+    resolver.resolve()
+
+    store = None
+    if store_factory is not None:
+        progress.update(task, description="Refreshing store...")
+        store = store_factory()
+        store.refresh_sync(resolver.manifest_remotes)
+
+    progress.update(task, description="Solving dependencies...")
+
+    def on_progress(msg: str) -> None:
+        progress.update(task, description=msg)
+
+    result = solve_for_workspace(
+        root_name=root_name,
+        resolver=resolver,
+        store=store,
+        progress_callback=on_progress,
+    )
+
+    progress.update(task, description="Done")
+    return result
+
+
+def _emit_solve_json(result: SolveResult) -> None:
+    """Emit the solve; a failed solve is an error whose data carries the report."""
+    from o3de_cli.core.json_output import emit_error, emit_response
+
+    data = solve_report(result)
+    if not result.is_resolved:
+        emit_error(solve_failure_message(result), code="E_SOLVE_CONFLICT", data=data)
+        raise SystemExit(1)
+    emit_response(data=data)
+
+
+_STATUS_STYLE = {
+    CandidateStatus.LOCAL: "green",
+    CandidateStatus.REMOTE: "blue",
+    CandidateStatus.UNKNOWN: "red",
+}
+
+
+def _render_solve(result: SolveResult) -> None:
     console.print(f"[bold]Workspace: {result.root_name}@{result.root_version}[/bold]")
     console.print()
 
-    # Build table
     table = Table(title="Resolved Dependencies")
     table.add_column("Name", style="cyan")
     table.add_column("Version")
     table.add_column("Type")
     table.add_column("Status")
     table.add_column("Path", style="dim")
-
-    status_style = {
-        CandidateStatus.LOCAL: "green",
-        CandidateStatus.REMOTE: "blue",
-        CandidateStatus.UNKNOWN: "red",
-    }
-
     for name, cand in sorted(result.candidates.items()):
-        style = status_style.get(cand.status, "white")
+        style = _STATUS_STYLE.get(cand.status, "white")
         table.add_row(
             name,
             cand.version,
@@ -1338,7 +1263,6 @@ def solve_command(
             f"[{style}]{cand.status.value}[/{style}]",
             str(cand.path) if cand.path else "",
         )
-
     console.print(table)
 
     # Contained objects (not dependencies)
@@ -1348,7 +1272,6 @@ def solve_command(
         for name, cand in sorted(result.children.items()):
             console.print(f"  [dim]{name}@{cand.version} ({cand.object_type.value})[/dim]")
 
-    # Overlays
     if result.overlays:
         console.print()
         console.print("[bold]Overlays:[/bold]")
