@@ -33,7 +33,7 @@ from o3de_cli.core.models import (
 )
 from o3de_cli.core.paths import rmtree_force
 from o3de_cli.core.resolver import Resolver
-from o3de_cli.core.solver import CandidateStatus, OverlayEntry, SolveResult
+from o3de_cli.core.solver import Candidate, CandidateStatus, OverlayEntry, SolveResult
 from o3de_cli.core.workspace import (
     Workspace,
     WorkspaceError,
@@ -1794,3 +1794,160 @@ def plan_cmake_commands(
     if not opts.configure_only:
         build_cmd = cmake_build_command(layout.build_dir, opts.config, opts.targets, opts.parallel)
     return configure_cmd, build_cmd
+
+
+# ---------------------------------------------------------------------------
+# Solve and candidates reports
+# ---------------------------------------------------------------------------
+
+# ``core.solver.list_candidates`` or a test double
+ListCandidatesFn = Callable[..., list[Candidate]]
+# object name -> (chosen version, object type, path)
+ChosenObjects = dict[str, tuple[str, str, str]]
+
+
+def solve_report(result: SolveResult) -> dict:
+    """The ``--json`` payload of ``workspace solve``: the solve, in full."""
+    return {
+        "root": result.root_name,
+        "root_version": result.root_version,
+        "resolved": result.is_resolved,
+        "conflict": result.conflict_message or None,
+        "candidates": {
+            name: {
+                "version": c.version,
+                "type": c.object_type.value,
+                "status": c.status.value,
+                "path": str(c.path) if c.path else None,
+            }
+            for name, c in result.candidates.items()
+        },
+        "children": {
+            name: {
+                "version": c.version,
+                "type": c.object_type.value,
+                "path": str(c.path) if c.path else None,
+            }
+            for name, c in result.children.items()
+        },
+        "overlays": {
+            base: [
+                {
+                    "name": o.name,
+                    "version": o.version,
+                    "precedence": o.precedence,
+                }
+                for o in entries
+            ]
+            for base, entries in result.overlays.items()
+        },
+    }
+
+
+def solve_failure_message(result: SolveResult) -> str:
+    """The error message for a solve that did not resolve."""
+    if result.conflict_message:
+        return f"Resolution failed: {result.conflict_message}"
+    return "Resolution failed"
+
+
+def solve_workspace_root(
+    meta: WorkspaceMeta,
+    resolver: Resolver,
+    store: Any,
+    solve_fn: SolveFn,
+) -> SolveResult | None:
+    """Solve the workspace's root object with its overrides pinned.
+
+    None when the root is not an object the manifest resolved.
+    """
+    root_name = workspace_root_name(meta, resolver)
+    pins = {n: o.version for n, o in meta.overrides.items()}
+    if not root_name or root_name not in resolver.objects:
+        return None
+    return solve_fn(
+        root_name=root_name,
+        resolver=resolver,
+        store=store,
+        overrides=pins,
+    )
+
+
+def chosen_objects(meta: WorkspaceMeta, solve_result: SolveResult | None) -> ChosenObjects:
+    """The objects to report candidates for, with what the workspace chose.
+
+    The solved candidates and children when the solve resolved, else the
+    workspace's recorded sources (with no version).
+    """
+    chosen: ChosenObjects = {}
+    if solve_result and solve_result.is_resolved:
+        for cand_map in (solve_result.candidates, solve_result.children):
+            for cname, cand in cand_map.items():
+                chosen[cname] = (
+                    cand.version,
+                    cand.object_type.value,
+                    str(cand.path) if cand.path else "",
+                )
+        return chosen
+    for bucket, type_name in (
+        (meta.sources.engines, "engine"),
+        (meta.sources.projects, "project"),
+        (meta.sources.gems, "gem"),
+        (meta.sources.templates, "template"),
+    ):
+        for cname, cpath in bucket.items():
+            chosen[cname] = ("", type_name, cpath)
+    return chosen
+
+
+def candidate_entry(c: Candidate) -> dict[str, Any]:
+    """One candidate as ``workspace candidates`` reports it."""
+    return {
+        "version": c.version,
+        "status": c.status.value,
+        "path": str(c.path) if c.path else None,
+        "local_binary_path": (str(c.local_binary_path) if c.local_binary_path else None),
+        "remote_binary": c.remote_binary,
+    }
+
+
+def candidates_report(
+    meta: WorkspaceMeta,
+    chosen: ChosenObjects,
+    names: Iterable[str],
+    resolver: Resolver,
+    store: Any,
+    list_fn: ListCandidatesFn,
+) -> list[dict[str, Any]]:
+    """Every candidate for each of *names*, beside the chosen one and any override."""
+    objects_out: list[dict[str, Any]] = []
+    for cname in names:
+        version, type_name, path = chosen.get(cname, ("", "", ""))
+        cands = list_fn(cname, resolver, store)
+        override = meta.overrides.get(cname)
+        objects_out.append(
+            {
+                "name": cname,
+                "type": type_name,
+                "chosen_version": version,
+                "chosen_path": path,
+                "override": override.model_dump() if override else None,
+                "candidates": [candidate_entry(c) for c in cands],
+            }
+        )
+    return objects_out
+
+
+def candidate_summary(entry: dict[str, Any]) -> str:
+    """A reported candidate in one line: version, status and artifact forms."""
+    forms = ["source"] if entry["path"] else []
+    if entry["local_binary_path"]:
+        forms.append("local-binary")
+    if entry["remote_binary"]:
+        forms.append("remote-binary")
+    return f"{entry['version']} ({entry['status']}; {'/'.join(forms) or '—'})"
+
+
+def override_summary(override: dict[str, Any] | None) -> str:
+    """A reported override in one line, or "" for none."""
+    return f"{override['version']} [{override['artifact']}]" if override else ""

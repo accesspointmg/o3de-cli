@@ -5,6 +5,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -20,6 +21,7 @@ from o3de_cli.core import (
 )
 from o3de_cli.core.json_output import emit_error, emit_response
 from o3de_cli.core.paths import new_manifest_data
+from o3de_cli.core.resolve_report import object_counts, resolve_warnings, unique_by_dependency
 from o3de_cli.core.upgrade import (
     get_schema_version,
     needs_upgrade,
@@ -71,12 +73,50 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
         console.print("Run 'o3de init' to create a new manifest.")
         raise SystemExit(1)
 
-    with Progress(
+    resolver = _resolve_and_save(manifest_path, ui, as_json, dry_run=dry_run, no_save=no_save)
+
+    missing = resolver.get_missing_dependencies()
+    if missing:
+        ui.print(f"\n[yellow]Missing dependencies ({len(missing)}):[/yellow]")
+        for requirer, dep_spec in missing:
+            ui.print(f"  {requirer} → {dep_spec}")
+        if install or yes:
+            _auto_install_missing(
+                resolver,
+                manifest_path,
+                ui,
+                as_json,
+                dry_run=dry_run,
+                no_save=no_save,
+                preview=dry_run or (install and not yes),
+                yes=yes,
+            )
+
+    _print_conflicts_and_suggestions(resolver, ui)
+
+    counts = object_counts(resolver)
+    if as_json:
+        emit_response(data=counts, warnings=resolve_warnings(missing, resolver.conflicts))
+    else:
+        _print_resolved_table(counts, no_save)
+
+
+def _progress(ui: Console, as_json: bool, transient: bool = False) -> Progress:
+    """A status spinner on *ui*; off under --json."""
+    return Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=ui,
         disable=as_json,
-    ) as progress:
+        transient=transient,
+    )
+
+
+def _resolve_and_save(
+    manifest_path: Path, ui: Console, as_json: bool, dry_run: bool, no_save: bool
+) -> Resolver:
+    """Resolve the manifest behind a spinner, and save it unless *no_save*."""
+    with _progress(ui, as_json) as progress:
         task = progress.add_task("Resolving manifest...", total=None)
 
         def on_progress(msg: str, current: int, total: int):
@@ -91,134 +131,117 @@ def resolve_command(as_json: bool, no_save: bool, dry_run: bool, install: bool, 
                 progress.update(task, description="Dry-run: no files written")
             else:
                 progress.update(task, description=f"Saved: {resolved_path}")
+    return resolver
 
-    # Report missing dependencies
-    missing = resolver.get_missing_dependencies()
-    if missing:
-        ui.print(f"\n[yellow]Missing dependencies ({len(missing)}):[/yellow]")
-        for requirer, dep_spec in missing:
-            ui.print(f"  {requirer} → {dep_spec}")
 
-        # Auto-install flow
-        if install or yes:
-            from o3de_cli.core import Store
+def _auto_install_missing(
+    resolver: Resolver,
+    manifest_path: Path,
+    ui: Console,
+    as_json: bool,
+    dry_run: bool,
+    no_save: bool,
+    preview: bool,
+    yes: bool,
+) -> None:
+    """Fetch the missing dependencies from the remote registries (or preview it)."""
+    from o3de_cli.core import Store
 
-            store = Store()
+    store = Store()
 
-            # Refresh store from manifest remotes so search works
-            if resolver.manifest_remotes:
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=ui,
-                    disable=as_json,
-                    transient=True,
-                ) as progress:
-                    task = progress.add_task("Refreshing remote catalog...", total=None)
-                    store.refresh_sync(resolver.manifest_remotes)
+    # Refresh store from manifest remotes so search works
+    if resolver.manifest_remotes:
+        with _progress(ui, as_json, transient=True) as progress:
+            progress.add_task("Refreshing remote catalog...", total=None)
+            store.refresh_sync(resolver.manifest_remotes)
 
-            if dry_run or (install and not yes):
-                # Preview mode
-                plan = resolver.auto_install_missing(store, confirm=False, dry_run=True)
-                if plan:
-                    ui.print(f"\n[bold]Would install {len(plan)} dependencies:[/bold]")
-                    for item in plan:
-                        ui.print(
-                            f"  [cyan]{item['name']}[/cyan]@{item['version']} ({item['type']}) from {item['source']}"
-                        )
-                    if not yes:
-                        ui.print("\n[dim]Run with --yes to install, or --dry-run to preview.[/dim]")
-                else:
-                    ui.print("[yellow]No remote objects found for missing deps.[/yellow]")
-            else:
-                # Actually install
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=ui,
-                    disable=as_json,
-                ) as progress:
-                    task = progress.add_task("Installing dependencies...", total=None)
+    if preview:
+        _preview_auto_install(resolver, store, ui, yes)
+    else:
+        _install_and_reresolve(resolver, store, manifest_path, ui, as_json, dry_run, no_save)
 
-                    def on_install(msg: str, current: int, total: int):
-                        progress.update(task, description=msg, completed=current, total=total)
 
-                    installed = resolver.auto_install_missing(
-                        store,
-                        confirm=True,
-                        dry_run=False,
-                        progress_callback=on_install,
-                    )
+def _preview_auto_install(resolver: Resolver, store: Any, ui: Console, yes: bool) -> None:
+    plan = resolver.auto_install_missing(store, confirm=False, dry_run=True)
+    if not plan:
+        ui.print("[yellow]No remote objects found for missing deps.[/yellow]")
+        return
+    ui.print(f"\n[bold]Would install {len(plan)} dependencies:[/bold]")
+    for item in plan:
+        ui.print(
+            f"  [cyan]{item['name']}[/cyan]@{item['version']} ({item['type']}) from {item['source']}"
+        )
+    if not yes:
+        ui.print("\n[dim]Run with --yes to install, or --dry-run to preview.[/dim]")
 
-                if installed:
-                    ui.print(f"\n[green]Installed {len(installed)} dependencies:[/green]")
-                    for item in installed:
-                        ui.print(
-                            f"  [cyan]{item['name']}[/cyan]@{item['version']} → {item['path']}"
-                        )
 
-                    # Re-resolve with newly installed deps
-                    ui.print("\n[dim]Re-resolving with new dependencies...[/dim]")
-                    resolver2 = Resolver(manifest_path, dry_run=dry_run)
-                    resolver2.resolve()
-                    if not no_save:
-                        resolver2.save()
-                    ui.print("[green]Resolution updated.[/green]")
-                else:
-                    ui.print("[yellow]No dependencies could be installed.[/yellow]")
+def _install_and_reresolve(
+    resolver: Resolver,
+    store: Any,
+    manifest_path: Path,
+    ui: Console,
+    as_json: bool,
+    dry_run: bool,
+    no_save: bool,
+) -> None:
+    """Install the missing dependencies, then resolve (and save) again."""
+    with _progress(ui, as_json) as progress:
+        task = progress.add_task("Installing dependencies...", total=None)
 
-    # Report conflicts
+        def on_install(msg: str, current: int, total: int):
+            progress.update(task, description=msg, completed=current, total=total)
+
+        installed = resolver.auto_install_missing(
+            store,
+            confirm=True,
+            dry_run=False,
+            progress_callback=on_install,
+        )
+
+    if not installed:
+        ui.print("[yellow]No dependencies could be installed.[/yellow]")
+        return
+    ui.print(f"\n[green]Installed {len(installed)} dependencies:[/green]")
+    for item in installed:
+        ui.print(f"  [cyan]{item['name']}[/cyan]@{item['version']} → {item['path']}")
+
+    # Re-resolve with newly installed deps
+    ui.print("\n[dim]Re-resolving with new dependencies...[/dim]")
+    resolver2 = Resolver(manifest_path, dry_run=dry_run)
+    resolver2.resolve()
+    if not no_save:
+        resolver2.save()
+    ui.print("[green]Resolution updated.[/green]")
+
+
+def _print_conflicts_and_suggestions(resolver: Resolver, ui: Console) -> None:
+    """Version conflicts, then missing optional dependencies as suggestions."""
     if resolver.conflicts:
         ui.print(f"\n[red]Version conflicts ({len(resolver.conflicts)}):[/red]")
         for c in resolver.conflicts:
             ui.print(f"  {c}")
 
-    # Report missing optional dependencies as suggestions
-    missing_optional = resolver.get_missing_optional_dependencies()
-    if missing_optional:
-        # Deduplicate by dep name
-        seen = set()
-        unique = []
-        for requirer, dep_spec in missing_optional:
-            if dep_spec.name not in seen:
-                seen.add(dep_spec.name)
-                unique.append((requirer, dep_spec))
+    unique = unique_by_dependency(resolver.get_missing_optional_dependencies())
+    if unique:
         ui.print(f"\n[dim]Optional dependencies not installed ({len(unique)}):[/dim]")
         for requirer, dep_spec in unique:
             ui.print(f"  [dim]{requirer} suggests {dep_spec}[/dim]")
 
-    if as_json:
-        output = {
-            "engines": len(resolver.engines),
-            "projects": len(resolver.projects),
-            "gems": len(resolver.gems),
-            "templates": len(resolver.templates),
-            "repos": len(resolver.repos),
-            "overlays": len(resolver.overlays),
-            "total": len(resolver.objects),
-        }
-        warnings = [
-            f"Missing dependency: {requirer} → {dep_spec}" for requirer, dep_spec in missing
-        ]
-        warnings += [f"Version conflict: {c}" for c in resolver.conflicts]
-        emit_response(data=output, warnings=warnings)
-    else:
-        table = Table(title="Resolved Objects")
-        table.add_column("Type", style="cyan")
-        table.add_column("Count", style="green", justify="right")
 
-        table.add_row("Engines", str(len(resolver.engines)))
-        table.add_row("Projects", str(len(resolver.projects)))
-        table.add_row("Gems", str(len(resolver.gems)))
-        table.add_row("Templates", str(len(resolver.templates)))
-        table.add_row("Repos", str(len(resolver.repos)))
-        table.add_row("Overlays", str(len(resolver.overlays)))
-        table.add_row("Total", str(len(resolver.objects)), style="bold")
+def _print_resolved_table(counts: dict[str, int], no_save: bool) -> None:
+    table = Table(title="Resolved Objects")
+    table.add_column("Type", style="cyan")
+    table.add_column("Count", style="green", justify="right")
+    for key, count in counts.items():
+        if key == "total":
+            table.add_row("Total", str(count), style="bold")
+        else:
+            table.add_row(key.capitalize(), str(count))
 
-        console.print(table)
+    console.print(table)
 
-        if not no_save:
-            console.print(f"\n[dim]Saved:[/dim] {get_resolved_manifest_path()}")
+    if not no_save:
+        console.print(f"\n[dim]Saved:[/dim] {get_resolved_manifest_path()}")
 
 
 @manifest.command("show")

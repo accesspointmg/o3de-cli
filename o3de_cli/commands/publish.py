@@ -27,38 +27,19 @@ from o3de_cli.core.models import (
     get_object_type,
     get_object_version,
 )
+from o3de_cli.core.publish_checks import (
+    REQUIRED_FIELDS,
+    REQUIRED_HEADER_FIELDS,
+    REQUIRED_HEADER_FIELDS_BY_TYPE,
+    SCHEMA_TYPE_MAP,
+    validate_object_at,
+)
+from o3de_cli.core.publish_checks import is_valid_name as _is_valid_name
+from o3de_cli.core.publish_checks import is_valid_version as _is_valid_version
 from o3de_cli.core.schema import validate_against_schema
 from o3de_cli.core.store import compute_sha256
 
 console = Console()
-
-# Schema files bundled or referenced by URL (SCHEMA_BASE_URL)
-SCHEMA_TYPE_MAP = {
-    ObjectType.ENGINE: "o3de-engine-2.0.0.json",
-    ObjectType.PROJECT: "o3de-project-2.0.0.json",
-    ObjectType.GEM: "o3de-gem-2.0.0.json",
-    ObjectType.TEMPLATE: "o3de-template-2.0.0.json",
-    ObjectType.REPO: "o3de-repo-2.0.0.json",
-    ObjectType.OVERLAY: "o3de-overlay-2.0.0.json",
-}
-
-# Required fields per object type in Schema 2.0.0
-REQUIRED_FIELDS = {
-    ObjectType.ENGINE: ["engine"],
-    ObjectType.PROJECT: ["project"],
-    ObjectType.GEM: ["gem"],
-    ObjectType.TEMPLATE: ["template"],
-    ObjectType.REPO: ["repo"],
-    ObjectType.OVERLAY: ["overlay", "extends"],
-}
-
-# Required header fields inside the type dict
-REQUIRED_HEADER_FIELDS = ["name", "version"]
-# Repos are living indexes, not consumable artifacts: nothing depends on a repo
-# by version, so their header only requires a name. Snapshots use 'releases'.
-REQUIRED_HEADER_FIELDS_BY_TYPE = {
-    "repo": ["name"],
-}
 
 
 def _validation_summary(errors: list[str]) -> str:
@@ -349,209 +330,9 @@ def validate_object(target: Path) -> tuple[list[str], list[str]]:
     Returns:
         Tuple of (errors, warnings) — empty lists mean valid
     """
-    errors: list[str] = []
-    warnings: list[str] = []
-
-    # Find the JSON file
-    json_path: Path | None
-    if target.is_file() and target.suffix == ".json":
-        json_path = target
-    elif target.is_dir():
-        # Search for versioned 2.0.0 JSON first, then legacy
-        json_path = None
-        for type_name in ["engine", "project", "gem", "template", "repo", "overlay"]:
-            versioned = target / f"{type_name}.2-0-0.json"
-            if versioned.exists():
-                json_path = versioned
-                break
-            legacy = target / f"{type_name}.json"
-            if legacy.exists():
-                json_path = legacy
-                break
-        if json_path is None:
-            errors.append(f"No O3DE object JSON found in {target}")
-            return errors, warnings
-    else:
-        errors.append(f"Path does not exist or is not a file/directory: {target}")
-        return errors, warnings
-
-    # Load and parse JSON
-    try:
-        with open(json_path) as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        errors.append(f"Invalid JSON in {json_path}: {e}")
-        return errors, warnings
-
-    # Determine object type
-    try:
-        obj_type = get_object_type(data)
-    except Exception:
-        errors.append(
-            "Cannot determine object type from JSON — missing type key (engine/project/gem/...)"
-        )
-        return errors, warnings
-
-    # Check $schema field
-    schema_ref = data.get("$schema", "")
-    if not schema_ref:
-        warnings.append(
-            "Missing $schema reference — add '$schema' pointing to the 2.0.0 schema URL"
-        )
-    else:
-        expected_schema = SCHEMA_TYPE_MAP.get(obj_type, "")
-        if expected_schema and expected_schema not in schema_ref:
-            warnings.append(
-                f"$schema references '{schema_ref}' — expected to contain '{expected_schema}'"
-            )
-
-    # Check $schemaVersion
-    schema_version = data.get("$schemaVersion", "")
-    if schema_version != "2.0.0":
-        if schema_version:
-            warnings.append(f"$schemaVersion is '{schema_version}' — 2.0.0 recommended")
-        else:
-            warnings.append("Missing $schemaVersion — should be '2.0.0'")
-
-    # JSON Schema validation against canonical schemas (only if $schema is present)
-    if schema_ref:
-        schema_errors = validate_against_schema(data, obj_type)
-        for se in schema_errors:
-            errors.append(f"Schema: {se}")
-
-    # Check required fields
-    required = REQUIRED_FIELDS.get(obj_type, [])
-    for field in required:
-        if field not in data:
-            errors.append(f"Missing required field: '{field}'")
-
-    # Check header fields inside the type dict
-    type_key = obj_type.value
-    type_data = data.get(type_key, {})
-    if isinstance(type_data, dict):
-        for field in REQUIRED_HEADER_FIELDS_BY_TYPE.get(type_key, REQUIRED_HEADER_FIELDS):
-            val = type_data.get(field)
-            if not val:
-                errors.append(f"Missing required header field: '{type_key}.{field}'")
-
-        # Validate name format
-        name = type_data.get("name", "")
-        if name and not _is_valid_name(name):
-            warnings.append(
-                f"Name '{name}' doesn't match canonical format "
-                "'<creator>.<type>.<identifier>' (e.g., org.o3de.gem.physx)"
-            )
-
-        # Validate version format
-        version = type_data.get("version", "")
-        if version and not _is_valid_version(version):
-            warnings.append(f"Version '{version}' doesn't match semver format 'X.Y.Z'")
-
-    # Check origin
-    if "origin" not in data:
-        warnings.append("Missing 'origin' field — recommended for published objects")
-
-    # Check licenses. Objects are distributed standalone, so they cannot rely
-    # on parent licensing: every referenced license file must exist at the
-    # object root, and at least one license should ship with the object.
-    obj_root = json_path.parent if json_path is not None else None
-    licenses = data.get("licenses", [])
-    if not licenses:
-        warnings.append("No 'licenses' field — recommended for published objects")
-    elif obj_root is not None:
-        shipped = False
-        for i, lic in enumerate(licenses):
-            if not isinstance(lic, dict):
-                continue
-            rp = lic.get("relative_path")
-            if rp:
-                if (obj_root / rp).exists():
-                    shipped = True
-                else:
-                    errors.append(
-                        f"licenses[{i}].relative_path '{rp}' does not exist at the object root"
-                    )
-        if not shipped:
-            warnings.append(
-                "No license file ships with the object (url-only licenses) — "
-                "standalone redistribution requires the license text in the object"
-            )
-
-    # Check icon/documentation relative paths exist
-    if obj_root is not None:
-        for field in ("icon", "documentation"):
-            entry = data.get(field)
-            if isinstance(entry, dict):
-                rp = entry.get("relative_path")
-                if rp and not (obj_root / rp).exists():
-                    errors.append(f"{field}.relative_path '{rp}' does not exist at the object root")
-
-    # Overlays must carry their payload in the Overlay/ subfolder
-    # (mirrors the Template/ convention): object metadata at the root
-    # never composes; only Overlay/ contents are composed onto the
-    # extended object.
-    if obj_type == ObjectType.OVERLAY and obj_root is not None:
-        payload_dir = obj_root / "Overlay"
-        if not payload_dir.is_dir():
-            errors.append(
-                "Overlay has no 'Overlay/' payload folder — the payload "
-                "composed onto the extended object must live in "
-                "'Overlay/'; the object root holds only metadata "
-                "(overlay.json, licenses, icon, docs)"
-            )
-        elif not any(payload_dir.rglob("*")):
-            warnings.append("'Overlay/' payload folder is empty")
-
-    # Check integrity fields on releases
-    releases = data.get("releases", [])
-    if releases:
-        for i, release in enumerate(releases):
-            if not isinstance(release, dict):
-                continue
-            downloads = release.get("downloads", [])
-            for j, dl in enumerate(downloads):
-                if not isinstance(dl, dict):
-                    continue
-                if dl.get("source") and not dl.get("source_sha256"):
-                    warnings.append(
-                        f"Release[{i}].downloads[{j}]: has 'source' but no 'source_sha256' — "
-                        "integrity verification won't work"
-                    )
-                if dl.get("lfs") and not dl.get("lfs_sha256"):
-                    warnings.append(f"Release[{i}].downloads[{j}]: has 'lfs' but no 'lfs_sha256'")
-            binaries = release.get("binaries", [])
-            for j, binary in enumerate(binaries):
-                if not isinstance(binary, dict):
-                    continue
-                if binary.get("binary") and not binary.get("sha256"):
-                    warnings.append(f"Release[{i}].binaries[{j}]: has 'binary' but no 'sha256'")
-
-    # Check deprecated field
-    deprecated = type_data.get("deprecated") if isinstance(type_data, dict) else None
-    if not deprecated:
-        deprecated = data.get("deprecated")
-    if deprecated:
-        warnings.append(f"Object is marked deprecated: {deprecated}")
-
-    return errors, warnings
-
-
-def _is_valid_name(name: str) -> bool:
-    """Check if name follows canonical naming convention."""
-    import re
-
-    # Reverse-domain name: dot-separated segments, the first starting with a
-    # letter, at least two segments, none empty. Segments cannot contain dots,
-    # so there is one way to match any input (the previous pattern let both
-    # quantifiers consume dots, which is exponential on near-misses).
-    return bool(re.fullmatch(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+", name))
-
-
-def _is_valid_version(version: str) -> bool:
-    """Check if version follows semver format."""
-    import re
-
-    return bool(re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", version))
+    # validate_against_schema is looked up here, where the tests patch it.
+    findings = validate_object_at(target, validate_against_schema)
+    return findings.errors, findings.warnings
 
 
 def _find_object_json(obj_dir: Path) -> tuple[Path | None, dict | None]:

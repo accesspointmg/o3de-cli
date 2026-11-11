@@ -5,6 +5,7 @@
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 from rich.console import Console
@@ -18,8 +19,20 @@ from o3de_cli.core import (
     get_manifest_path,
     get_resolved_manifest_path,
 )
+from o3de_cli.core.install import (
+    dry_run_report,
+    failed_hooks,
+    find_package,
+    hook_warnings,
+    install_report,
+    install_target,
+    select_package,
+)
 from o3de_cli.core.json_output import emit_response
 from o3de_cli.core.models import get_object_name, get_object_version
+
+if TYPE_CHECKING:
+    from o3de_cli.core.store import RemoteObject
 
 console = Console()
 
@@ -190,90 +203,86 @@ def install_package(
     yes_hooks: bool = False,
 ) -> None:
     """Install a package from the registry."""
-    from o3de_cli.core.models import ObjectType
-    from o3de_cli.core.paths import get_default_path_for_type
+    from o3de_cli.core.hooks import hook_policy, run_object_hooks
 
     version_str = f"@{version}" if version else ""
     if not as_json:
         console.print(f"[bold]Installing:[/bold] {package}{version_str}")
 
     store = Store()
-
-    # Populate the store from configured remotes (cache-backed, so cheap
-    # when metadata is fresh)
-    from o3de_cli.core.store import get_manifest_remote_urls
-
-    remote_urls = get_manifest_remote_urls()
-    if remote_urls:
-        store.refresh_sync(remote_urls)
-
-    # Search for the package - first try cached/refreshed store
-    results = store.search(package)
-
+    results = find_package(store, package)
     if not results:
-        if as_json:
-            from o3de_cli.core.json_output import emit_error
+        _install_fail(
+            as_json,
+            f"Package not found: {package}",
+            "E_NOT_FOUND",
+            f"[red]Package not found:[/red] {package}",
+            "[dim]Try 'registry refresh' to update the package index.[/dim]",
+        )
 
-            emit_error(f"Package not found: {package}", code="E_NOT_FOUND")
-            raise SystemExit(1)
-        console.print(f"[red]Package not found:[/red] {package}")
-        console.print("[dim]Try 'registry refresh' to update the package index.[/dim]")
-        raise SystemExit(1)
-
-    # Find exact match or best match
-    obj = None
-    for r in results:
-        if r.name == package:
-            if version is None or r.version == version:
-                obj = r
-                break
-
-    if not obj:
-        obj = results[0]  # Take first result
-
-    # Determine install path based on object type
-    if install_path:
-        target_path = Path(install_path)
-    else:
-        target_path = get_default_path_for_type(obj.object_type)
-
+    obj = select_package(results, package, version)
+    target_path = install_target(obj, install_path)
     if dry_run:
-        data = {
-            "dry_run": True,
-            "package": obj.name,
-            "version": obj.version,
-            "type": obj.object_type.value,
-            "target": str(target_path),
-        }
-        if obj.source_control_url:
-            data["source"] = obj.source_control_url
-        elif obj.download_url:
-            data["download"] = obj.download_url
-        if as_json:
-            from o3de_cli.core.json_output import emit_response
-
-            emit_response(data=data)
-            return
-        console.print(f"[yellow]Dry-run:[/yellow] Would install {obj.name}@{obj.version}")
-        console.print(f"  Type: {obj.object_type.value}")
-        console.print(f"  Target: {target_path}")
-        if obj.source_control_url:
-            console.print(f"  Source: {obj.source_control_url}")
-        elif obj.download_url:
-            console.print(f"  Download: {obj.download_url}")
+        _render_install_dry_run(obj, target_path, as_json)
         return
-
-    from o3de_cli.commands.manifest import register_in_manifest
-    from o3de_cli.core.hooks import hook_policy, run_object_hooks
-    from o3de_cli.core.json_output import emit_error, emit_response
-    from o3de_cli.core.safety import UnsafeSourceError
-    from o3de_cli.core.store import IntegrityError
 
     if not as_json:
         console.print(f"[dim]Installing to: {target_path}[/dim]")
+    download_path = _download_package(store, obj, target_path, allow_unverified, as_json)
+    if not as_json:
+        console.print(f"[green]Installed:[/green] {download_path}")
 
-    # Download. Nothing but the JSON document may reach stdout in --json
-    # mode, so the spinner is off there.
+    added = _register_installed(download_path, as_json)
+    outcomes = run_object_hooks(
+        download_path,
+        "post_install",
+        hook_policy(no_hooks, yes_hooks, as_json),
+        console=None if as_json else console,
+    )
+    _finish_install(obj, download_path, added, outcomes, as_json)
+
+
+def _install_fail(as_json: bool, message: str, code: str, *console_lines: str) -> NoReturn:
+    """Report an install failure as a JSON error or console lines, then exit 1."""
+    from o3de_cli.core.json_output import emit_error
+
+    if as_json:
+        emit_error(message, code=code)
+        raise SystemExit(1)
+    for line in console_lines:
+        console.print(line)
+    raise SystemExit(1)
+
+
+def _render_install_dry_run(obj: "RemoteObject", target_path: Path, as_json: bool) -> None:
+    data = dry_run_report(obj, target_path)
+    if as_json:
+        emit_response(data=data)
+        return
+    console.print(f"[yellow]Dry-run:[/yellow] Would install {obj.name}@{obj.version}")
+    console.print(f"  Type: {obj.object_type.value}")
+    console.print(f"  Target: {target_path}")
+    if obj.source_control_url:
+        console.print(f"  Source: {obj.source_control_url}")
+    elif obj.download_url:
+        console.print(f"  Download: {obj.download_url}")
+
+
+def _download_package(
+    store: Store,
+    obj: "RemoteObject",
+    target_path: Path,
+    allow_unverified: bool,
+    as_json: bool,
+) -> Path:
+    """Download *obj* into *target_path*; exits on a refused or failed download.
+
+    Nothing but the JSON document may reach stdout in --json mode, so the
+    spinner is off there.
+    """
+    from o3de_cli.core.safety import UnsafeSourceError
+    from o3de_cli.core.store import IntegrityError
+
     try:
         with Progress(
             SpinnerColumn(),
@@ -285,23 +294,22 @@ def install_package(
             download_path = store.download_sync(obj, target_path, allow_unverified=allow_unverified)
             progress.update(task, description="Done")
     except (UnsafeSourceError, IntegrityError) as e:
-        if as_json:
-            emit_error(str(e), code="E_UNSAFE_SOURCE")
-        else:
-            console.print(f"[red]Refused:[/red] {e}")
-        raise SystemExit(1)
+        _install_fail(as_json, str(e), "E_UNSAFE_SOURCE", f"[red]Refused:[/red] {e}")
     except Exception as e:
-        if as_json:
-            emit_error(str(e), code="E_INSTALL_FAILED")
-        else:
-            console.print(f"[red]Installation failed:[/red] {e}")
-        raise SystemExit(1)
+        _install_fail(as_json, str(e), "E_INSTALL_FAILED", f"[red]Installation failed:[/red] {e}")
+    return download_path
 
-    if not as_json:
-        console.print(f"[green]Installed:[/green] {download_path}")
 
-    # Register in the manifest -- in --json mode too, or an install through
-    # the MCP server would leave the package unregistered.
+def _register_installed(download_path: Path, as_json: bool) -> bool | None:
+    """Add the installed object to the manifest.
+
+    In --json mode too, or an install through the MCP server would leave
+    the package unregistered.  Returns whether it was newly added, or
+    None when its object type could not be detected.
+    """
+    from o3de_cli.commands.manifest import register_in_manifest
+
+    added: bool | None
     try:
         _path, _type, added = register_in_manifest(download_path)
     except ValueError:
@@ -313,36 +321,33 @@ def install_package(
             console.print(
                 "[dim]Added to manifest.[/dim]" if added else "[dim]Already in manifest.[/dim]"
             )
+    return added
 
-    outcomes = run_object_hooks(
-        download_path,
-        "post_install",
-        hook_policy(no_hooks, yes_hooks, as_json),
-        console=None if as_json else console,
-    )
 
-    # A hook that ran and failed leaves the package installed but possibly
-    # unusable; say so with a failing exit rather than a quiet success.
-    failed = [o for o in outcomes if o.status == "failed"]
+def _finish_install(
+    obj: "RemoteObject",
+    download_path: Path,
+    added: bool | None,
+    outcomes: list,
+    as_json: bool,
+) -> None:
+    """Report the install; a post_install hook that failed fails the command.
+
+    A hook that ran and failed leaves the package installed but possibly
+    unusable; say so with a failing exit rather than a quiet success.
+    """
+    failed = failed_hooks(outcomes)
     if as_json:
         if failed:
-            emit_error(
+            _install_fail(
+                True,
                 f"Installed {obj.name} to {download_path}, but its post_install hook "
                 f"failed: {failed[0].script}",
-                code="E_HOOK_FAILED",
+                "E_HOOK_FAILED",
             )
-            raise SystemExit(1)
         emit_response(
-            data={
-                "package": obj.name,
-                "version": obj.version,
-                "path": str(download_path),
-                "registered": added is not None,
-                "hooks": [o.to_dict() for o in outcomes],
-            },
-            warnings=[
-                f"post_install hook {o.status}: {o.script}" for o in outcomes if o.status != "ran"
-            ],
+            data=install_report(obj, download_path, added is not None, outcomes),
+            warnings=hook_warnings(outcomes),
         )
     elif failed:
         raise SystemExit(1)

@@ -1047,3 +1047,97 @@ def update_release_manifest(
         json.dump(data, f, indent=4)
         f.write("\n")
     return manifest
+
+
+# ---------------------------------------------------------------------------
+# Release packaging (``o3de object package``)
+# ---------------------------------------------------------------------------
+
+
+def package_source_release(
+    gem_dir: Path,
+    canonical_name: str,
+    version: str,
+    output_dir: Path,
+    fmt: str = "zip",
+    update_manifest: bool = False,
+) -> tuple[Path, str, Path | None]:
+    """Archive the gem's source tree as a code release.
+
+    With *update_manifest*, also record the archive (as a ``file://`` URL)
+    in the gem manifest's ``releases[].downloads``.  Returns
+    ``(archive path, sha256, updated manifest path or None)``.
+    """
+    archive_path, sha256 = package_gem_source_archive(
+        gem_dir,
+        canonical_name,
+        version,
+        output_dir,
+        fmt=fmt,
+    )
+    manifest_path = None
+    if update_manifest:
+        manifest_path = update_release_manifest_source(
+            gem_dir,
+            version,
+            archive_path.resolve().as_uri(),
+            sha256,
+        )
+    return archive_path, sha256, manifest_path
+
+
+def package_binary_release(
+    package_dir: Path,
+    gem_dir: Path,
+    canonical_name: str,
+    version: str,
+    output_dir: Path,
+    update_manifest: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+) -> tuple[Path, str, Path | None]:
+    """Zip a staged install layout as a binary release for this platform.
+
+    With *update_manifest*, also record the archive (as a ``file://`` URL)
+    in the gem manifest's ``releases[].binaries``.  Returns
+    ``(zip path, sha256, updated manifest path or None)``.
+    """
+
+    def progress(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+
+    zip_path, sha256 = package_gem_archive(
+        package_dir,
+        canonical_name,
+        version,
+        output_dir,
+    )
+    progress(f"Archived {zip_path.name}")
+
+    manifest_path = None
+    if update_manifest:
+        manifest_path = update_release_manifest(
+            gem_dir,
+            version,
+            zip_path.resolve().as_uri(),
+            sha256,
+        )
+        progress(f"Updated releases[] in {manifest_path}")
+    return zip_path, sha256, manifest_path
+
+
+def release_entry_hint(version: str, sha256: str, source: bool) -> str:
+    """The ``releases[]`` entry that advertises a release archive.
+
+    The archive's URL is left as ``<url>``: it is known only once the
+    archive is uploaded.
+    """
+    if source:
+        return (
+            f'{{"name": "{version}", "downloads": [{{"source": '
+            f'"<url>", "source_sha256": "{sha256}"}}]}}'
+        )
+    return (
+        f'{{"name": "{version}", "binaries": [{{"platform": '
+        f'"<Platform>", "binary": "<url>", "sha256": "{sha256}"}}]}}'
+    )

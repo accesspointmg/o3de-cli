@@ -17,10 +17,10 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import click
 from rich.console import Console
@@ -160,6 +160,31 @@ def _buildable(targets: list[TargetInfo]) -> list[TargetInfo]:
     return [t for t in targets if t.type in BUILDABLE_TYPES and ".Tests" not in t.name]
 
 
+def _buildable_or_fail(
+    gem_targets: list[TargetInfo], canonical: str, as_json: bool
+) -> list[TargetInfo]:
+    """The gem's buildable targets; exits ``E_NO_TARGETS`` when there are none."""
+    targets = _buildable(gem_targets)
+    if not targets:
+        _fail(
+            f"Gem '{canonical}' has no buildable targets "
+            "(it may be consumed as a prebuilt package — clear the override first).",
+            "E_NO_TARGETS",
+            as_json,
+        )
+    return targets
+
+
+def _dim_progress(as_json: bool) -> Callable[[str], None]:
+    """A progress callback that prints dimmed lines, and nothing under --json."""
+
+    def on_progress(msg: str) -> None:
+        if not as_json:
+            console.print(f"[dim]{msg}[/dim]")
+
+    return on_progress
+
+
 def _run_gem_build(
     build_dir: Path,
     targets: list[TargetInfo],
@@ -236,14 +261,7 @@ def build_command(
         as_json,
         reconfigure,
     )
-    targets = _buildable(gem_targets)
-    if not targets:
-        _fail(
-            f"Gem '{canonical}' has no buildable targets "
-            "(it may be consumed as a prebuilt package — clear the override first).",
-            "E_NO_TARGETS",
-            as_json,
-        )
+    targets = _buildable_or_fail(gem_targets, canonical, as_json)
 
     if not as_json:
         console.print(f"[bold]Building gem:[/bold] {canonical}=={version} ({config})")
@@ -325,14 +343,7 @@ def install_command(
         as_json,
         reconfigure,
     )
-    targets = _buildable(gem_targets)
-    if not targets:
-        _fail(
-            f"Gem '{canonical}' has no buildable targets "
-            "(it may be consumed as a prebuilt package — clear the override first).",
-            "E_NO_TARGETS",
-            as_json,
-        )
+    targets = _buildable_or_fail(gem_targets, canonical, as_json)
 
     if not as_json:
         console.print(f"[bold]Installing gem:[/bold] {canonical}=={version} ({config})")
@@ -340,10 +351,6 @@ def install_command(
 
     if not skip_build:
         _run_gem_build(build_dir, targets, config, as_json)
-
-    def on_progress(msg: str) -> None:
-        if not as_json:
-            console.print(f"[dim]{msg}[/dim]")
 
     # Package all gem targets (interface targets contribute headers/aliases)
     try:
@@ -354,7 +361,7 @@ def install_command(
             targets=gem_targets,
             config=config,
             force=force,
-            on_progress=on_progress,
+            on_progress=_dim_progress(as_json),
         )
     except FileExistsError as e:
         _fail(
@@ -465,71 +472,120 @@ def package_command(
         o3de object package org.o3de.gem.stars -w F:/myWorkspace --code
     """
     from o3de_cli.commands.workspace import _resolve_workspace_path
-    from o3de_cli.core.gem_package import (
-        install_gem_package,
-        package_gem_archive,
-        package_gem_source_archive,
-        update_release_manifest,
-        update_release_manifest_source,
-    )
-    from o3de_cli.core.json_output import emit_response
 
     ws_path = _resolve_workspace_path(workspace_arg)
     if ws_path is None:
         _fail(f"Workspace not found: {workspace_arg}", "E_WS_NOT_FOUND", as_json)
 
     gem_dir, canonical, version = _locate_gem(ws_path, object_name, as_json)
+    out = output_dir if output_dir is not None else Path.cwd()
 
-    # ------------------------------------------------------------------
-    # Code (source) release: archive the source tree — no build needed
-    # ------------------------------------------------------------------
     if code_release:
-        if not as_json:
-            console.print(f"[bold]Packaging gem source:[/bold] {canonical}=={version}")
-        out = output_dir if output_dir is not None else Path.cwd()
-        archive_path, sha256 = package_gem_source_archive(
-            gem_dir,
-            canonical,
-            version,
-            out,
-            fmt=archive_format,
+        _package_code_release(
+            gem_dir, canonical, version, out, archive_format, update_manifest, as_json
         )
-
-        manifest_path = None
-        if update_manifest:
-            manifest_path = update_release_manifest_source(
-                gem_dir,
-                version,
-                archive_path.resolve().as_uri(),
-                sha256,
-            )
-
-        if as_json:
-            emit_response(
-                data={
-                    "object": canonical,
-                    "version": version,
-                    "release": "code",
-                    "archive": str(archive_path),
-                    "sha256": sha256,
-                    "manifest": str(manifest_path) if manifest_path else None,
-                }
-            )
-        else:
-            console.print(f"[green]Source release archive:[/green] {archive_path}")
-            console.print(f"  sha256: {sha256}")
-            if manifest_path:
-                console.print(f"  Manifest updated: {manifest_path}")
-                console.print(
-                    "[dim]Replace the file:// URL with the hosted archive URL after uploading[/dim]"
-                )
-            else:
-                console.print(
-                    "[dim]Advertise in the gem manifest under releases[] as:\n"
-                    f'  {{"name": "{version}", "downloads": [{{"source": '
-                    f'"<url>", "source_sha256": "{sha256}"}}]}}[/dim]'
-                )
         return
+
+    staged = _stage_binary_package(
+        ws_path, gem_dir, canonical, version, config, skip_build, reconfigure, as_json
+    )
+    _package_binary_release(
+        staged, gem_dir, canonical, version, config, out, update_manifest, as_json
+    )
+
+
+def _package_code_release(
+    gem_dir: Path,
+    canonical: str,
+    version: str,
+    out: Path,
+    archive_format: str,
+    update_manifest: bool,
+    as_json: bool,
+) -> None:
+    """Archive the gem's source tree as a code release — no build needed."""
+    from o3de_cli.core.gem_package import package_source_release, release_entry_hint
+
+    if not as_json:
+        console.print(f"[bold]Packaging gem source:[/bold] {canonical}=={version}")
+    archive_path, sha256, manifest_path = package_source_release(
+        gem_dir,
+        canonical,
+        version,
+        out,
+        fmt=archive_format,
+        update_manifest=update_manifest,
+    )
+    data = {
+        "object": canonical,
+        "version": version,
+        "release": "code",
+        "archive": str(archive_path),
+        "sha256": sha256,
+    }
+    _render_release(
+        as_json,
+        data,
+        "Source release archive",
+        manifest_path,
+        release_entry_hint(version, sha256, source=True),
+    )
+
+
+def _package_binary_release(
+    staged: Path,
+    gem_dir: Path,
+    canonical: str,
+    version: str,
+    config: str,
+    out: Path,
+    update_manifest: bool,
+    as_json: bool,
+) -> None:
+    """Zip the staged install layout as this platform's binary release."""
+    from o3de_cli.core.gem_package import package_binary_release, release_entry_hint
+
+    zip_path, sha256, manifest_path = package_binary_release(
+        staged,
+        gem_dir,
+        canonical,
+        version,
+        out,
+        update_manifest=update_manifest,
+        on_progress=_dim_progress(as_json),
+    )
+    data = {
+        "object": canonical,
+        "version": version,
+        "config": config,
+        "archive": str(zip_path),
+        "sha256": sha256,
+        "package_dir": str(staged),
+    }
+    _render_release(
+        as_json,
+        data,
+        "Release archive",
+        manifest_path,
+        release_entry_hint(version, sha256, source=False),
+    )
+
+
+def _stage_binary_package(
+    ws_path: Path,
+    gem_dir: Path,
+    canonical: str,
+    version: str,
+    config: str,
+    skip_build: bool,
+    reconfigure: bool,
+    as_json: bool,
+) -> Path:
+    """Build the gem (unless *skip_build*) and stage its install layout.
+
+    The staged layout is also usable directly as a local-binary package.
+    """
+    from o3de_cli.core.gem_package import install_gem_package
 
     build_dir, gem_targets = _discover_targets(
         ws_path,
@@ -538,14 +594,7 @@ def package_command(
         as_json,
         reconfigure,
     )
-    targets = _buildable(gem_targets)
-    if not targets:
-        _fail(
-            f"Gem '{canonical}' has no buildable targets "
-            "(it may be consumed as a prebuilt package — clear the override first).",
-            "E_NO_TARGETS",
-            as_json,
-        )
+    targets = _buildable_or_fail(gem_targets, canonical, as_json)
 
     if not as_json:
         console.print(f"[bold]Packaging gem:[/bold] {canonical}=={version} ({config})")
@@ -554,69 +603,44 @@ def package_command(
     if not skip_build:
         _run_gem_build(build_dir, targets, config, as_json)
 
-    def on_progress(msg: str) -> None:
-        if not as_json:
-            console.print(f"[dim]{msg}[/dim]")
-
-    # Stage the install layout (also usable directly as local-binary)
     try:
-        staged = install_gem_package(
+        return install_gem_package(
             gem_dir=gem_dir,
             canonical_name=canonical,
             version=version,
             targets=gem_targets,
             config=config,
             force=True,
-            on_progress=on_progress,
+            on_progress=_dim_progress(as_json),
         )
     except FileNotFoundError as e:
         _fail(str(e), "E_ARTIFACT_MISSING", as_json)
 
-    out = output_dir if output_dir is not None else Path.cwd()
-    zip_path, sha256 = package_gem_archive(
-        staged,
-        canonical,
-        version,
-        out,
-    )
-    on_progress(f"Archived {zip_path.name}")
 
-    manifest_path = None
-    if update_manifest:
-        manifest_path = update_release_manifest(
-            gem_dir,
-            version,
-            zip_path.resolve().as_uri(),
-            sha256,
-        )
-        on_progress(f"Updated releases[] in {manifest_path}")
+def _render_release(
+    as_json: bool,
+    data: dict[str, Any],
+    label: str,
+    manifest_path: Path | None,
+    entry_hint: str,
+) -> None:
+    """Report a release archive: *data* (plus the manifest updated) under --json."""
+    from o3de_cli.core.json_output import emit_response
 
     if as_json:
-        emit_response(
-            data={
-                "object": canonical,
-                "version": version,
-                "config": config,
-                "archive": str(zip_path),
-                "sha256": sha256,
-                "package_dir": str(staged),
-                "manifest": str(manifest_path) if manifest_path else None,
-            }
+        emit_response(data={**data, "manifest": str(manifest_path) if manifest_path else None})
+        return
+    console.print(f"[green]{label}:[/green] {data['archive']}")
+    console.print(f"  sha256: {data['sha256']}")
+    if manifest_path:
+        console.print(f"  Manifest updated: {manifest_path}")
+        console.print(
+            "[dim]Replace the file:// URL with the hosted archive URL after uploading[/dim]"
         )
     else:
-        console.print(f"[green]Release archive:[/green] {zip_path}")
-        console.print(f"  sha256: {sha256}")
-        if manifest_path:
-            console.print(f"  Manifest updated: {manifest_path}")
-            console.print(
-                "[dim]Replace the file:// URL with the hosted archive URL after uploading[/dim]"
-            )
-        else:
-            console.print(
-                "[dim]Advertise in the gem manifest under releases[] as:\n"
-                f'  {{"name": "{version}", "binaries": [{{"platform": '
-                f'"<Platform>", "binary": "<url>", "sha256": "{sha256}"}}]}}[/dim]'
-            )
+        console.print(
+            f"[dim]Advertise in the gem manifest under releases[] as:\n  {entry_hint}[/dim]"
+        )
 
 
 # ── split-platforms ─────────────────────────────────────────────────
