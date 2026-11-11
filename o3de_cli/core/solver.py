@@ -413,6 +413,11 @@ def solve_for_workspace(
     """
     Solve the dependency graph for a workspace rooted at *root_name*.
 
+    Resolves the root's dependencies plus the user's override pins with
+    resolvelib, adds the root and its containment children, re-solves until
+    the children's own dependencies are met, then attaches the overlays that
+    extend anything in the result. Each step is a helper below.
+
     Args:
         root_name: Name of the root object (engine or project)
         resolver: Already-resolved manifest (resolver.resolve() called)
@@ -435,165 +440,28 @@ def solve_for_workspace(
 
     provider = O3DEProvider(resolver, store)
     reporter = O3DEReporter(progress_callback)
+    root_requirements, pinned_names = _root_requirements(root, root_name, overrides)
 
-    # Build initial requirements from the root's dependencies
-    root_requirements: list[Requirement] = []
-    for dep_spec in root.dependencies:
-        root_requirements.append(Requirement(name=dep_spec.name, specifier=dep_spec.specifier))
-
-    # Inject user override pins as == root requirements
-    pinned_names: set[str] = set()
-    if overrides:
-        for pin_name, pin_version in overrides.items():
-            if pin_name == root_name:
-                continue  # cannot pin the root itself
-            try:
-                pin_spec = SpecifierSet(f"=={pin_version}")
-            except Exception:
-                logger.warning(f"Invalid override version for {pin_name}: {pin_version}")
-                continue
-            pinned_names.add(pin_name)
-            # Replace any existing root requirement for the same name
-            root_requirements = [r for r in root_requirements if r.name != pin_name]
-            root_requirements.append(Requirement(name=pin_name, specifier=pin_spec))
-
-    # Run resolvelib
     rl_resolver = RLResolver(provider, reporter)
     try:
         result = rl_resolver.resolve(root_requirements)
     except RequirementsConflicted as e:
-        return SolveResult(
-            root_name=root_name,
-            root_version=root.version,
-            conflict_message=str(e),
-        )
+        return _conflict(root_name, root, str(e))
     except ResolutionImpossible as e:
-        lines = []
-        for info in e.causes:
-            req = info.requirement
-            parent = info.parent.name if info.parent else root_name
-            origin = "override pin" if req.name in pinned_names and info.parent is None else parent
-            lines.append(f"{origin} requires {req.name}{req.specifier} — no candidate found")
-        return SolveResult(
-            root_name=root_name,
-            root_version=root.version,
-            conflict_message="; ".join(lines) or str(e),
+        return _conflict(root_name, root, _describe_impossible(e, root_name, pinned_names))
+
+    root_candidate = _local_candidate(root)
+    candidates = _with_root_candidate(result.mapping, root_candidate)
+    children = _containment_children(root, candidates)
+
+    try:
+        candidates, children = _solve_child_dependencies(
+            rl_resolver, root, root_candidate, root_requirements, candidates, children
         )
+    except (RequirementsConflicted, ResolutionImpossible) as e:
+        return _conflict(root_name, root, f"Child object dependencies unresolvable: {e}")
 
-    # Build SolveResult from resolvelib's output
-    candidates: dict[str, Candidate] = {}
-    for name, candidate in result.mapping.items():
-        candidates[name] = candidate
-
-    # Always include the root itself
-    root_candidate = Candidate(
-        name=root.name,
-        version=root.version,
-        object_type=root.object_type,
-        status=CandidateStatus.LOCAL,
-        path=root.path,
-        resolved_object=root,
-        dependencies=[str(d) for d in root.dependencies],
-    )
-    candidates[root.name] = root_candidate
-
-    # Collect containment children separately (not dependencies)
-    children: dict[str, Candidate] = {}
-    _add_children_recursive(root, children)
-    # Remove any children that are already in the dependency graph
-    for name in list(children):
-        if name in candidates:
-            del children[name]
-
-    # Children compose into the workspace, so THEIR dependencies must be
-    # satisfied too — configure walks every composed object (e.g. an
-    # engine child project declaring dependent.gems that live outside
-    # the engine tree).  Solve unmet child dependencies and merge,
-    # iterating to a fixpoint since new candidates may carry children.
-    extra_requirements: list[Requirement] = []
-    requested_child_deps: set[str] = set()
-    while True:
-        new_requirements: list[Requirement] = []
-        for child in children.values():
-            child_obj = child.resolved_object
-            if child_obj is None:
-                continue
-            for dep_spec in child_obj.dependencies:
-                if (
-                    dep_spec.name in candidates
-                    or dep_spec.name in children
-                    or dep_spec.name in requested_child_deps
-                ):
-                    continue
-                requested_child_deps.add(dep_spec.name)
-                new_requirements.append(
-                    Requirement(name=dep_spec.name, specifier=dep_spec.specifier)
-                )
-        if not new_requirements:
-            break
-        extra_requirements.extend(new_requirements)
-        try:
-            result = rl_resolver.resolve(root_requirements + extra_requirements)
-        except (RequirementsConflicted, ResolutionImpossible) as e:
-            return SolveResult(
-                root_name=root_name,
-                root_version=root.version,
-                conflict_message=(f"Child object dependencies unresolvable: {e}"),
-            )
-        candidates = dict(result.mapping)
-        candidates[root.name] = root_candidate
-        children = {}
-        _add_children_recursive(root, children)
-        for name in list(children):
-            if name in candidates:
-                del children[name]
-
-    # Match overlays
-    overlays: dict[str, list[OverlayEntry]] = {}
-    for overlay_obj in resolver.overlays.values():
-        extends = overlay_obj.data.get("extends", "")
-        extends_version = overlay_obj.data.get("extends_version")
-        if not extends:
-            continue
-
-        extends_spec = ObjectNameVersion(extends)
-        target = candidates.get(extends_spec.name) or children.get(extends_spec.name)
-        if target is None:
-            continue
-
-        # Check version compatibility
-        if extends_spec.specifier:
-            try:
-                if Version(target.version) not in extends_spec.specifier:
-                    continue
-            except Exception:
-                pass
-
-        entry = OverlayEntry(
-            name=overlay_obj.name,
-            version=overlay_obj.version,
-            extends=extends_spec.name,
-            extends_version=extends_version,
-            precedence=overlay_obj.data.get("precedence", 0),
-            path=overlay_obj.path,
-            status=CandidateStatus.LOCAL,
-            platforms=[
-                p for p in overlay_obj.data.get("platforms", []) or [] if isinstance(p, str)
-            ],
-            overlay_deps=[
-                ObjectNameVersion(d).name
-                for d in (overlay_obj.data.get("dependent", {}) or {}).get("overlays", []) or []
-                if isinstance(d, str)
-            ],
-            user_tags=[
-                t for t in overlay_obj.data.get("user_tags", []) or [] if isinstance(t, str)
-            ],
-        )
-        overlays.setdefault(extends_spec.name, []).append(entry)
-
-    # Sort each overlay group by precedence
-    for entries in overlays.values():
-        entries.sort(key=lambda e: e.precedence)
+    overlays = _match_overlays(resolver, candidates, children)
 
     solve_result = SolveResult(
         root_name=root.name,
@@ -611,6 +479,237 @@ def solve_for_workspace(
     )
 
     return solve_result
+
+
+def _conflict(root_name: str, root: ResolvedObject, message: str) -> SolveResult:
+    """An unresolved SolveResult for *root* carrying *message*."""
+    return SolveResult(
+        root_name=root_name,
+        root_version=root.version,
+        conflict_message=message,
+    )
+
+
+def _root_requirements(
+    root: ResolvedObject,
+    root_name: str,
+    overrides: dict[str, str] | None,
+) -> tuple[list[Requirement], set[str]]:
+    """Build the requirements resolvelib starts from.
+
+    These are the root's own dependencies, with each user override pin
+    replacing any requirement of the same name by an ``==`` requirement,
+    appended in pin order. A pin on the root itself is ignored, and a pin
+    whose version is not a valid specifier is logged and skipped.
+
+    Returns the requirements and the names that were pinned.
+    """
+    requirements = [
+        Requirement(name=dep_spec.name, specifier=dep_spec.specifier)
+        for dep_spec in root.dependencies
+    ]
+
+    pinned_names: set[str] = set()
+    if overrides:
+        for pin_name, pin_version in overrides.items():
+            if pin_name == root_name:
+                continue  # cannot pin the root itself
+            try:
+                pin_spec = SpecifierSet(f"=={pin_version}")
+            except Exception:
+                logger.warning(f"Invalid override version for {pin_name}: {pin_version}")
+                continue
+            pinned_names.add(pin_name)
+            # Replace any existing root requirement for the same name
+            requirements = [r for r in requirements if r.name != pin_name]
+            requirements.append(Requirement(name=pin_name, specifier=pin_spec))
+
+    return requirements, pinned_names
+
+
+def _describe_impossible(
+    error: ResolutionImpossible,
+    root_name: str,
+    pinned_names: set[str],
+) -> str:
+    """Explain a failed resolution, one ``<who> requires <what>`` per cause.
+
+    A cause with no parent is blamed on the root, or on the user's override
+    pin when the unsatisfiable requirement is one they pinned. Falls back to
+    the exception text when there are no causes.
+    """
+    lines = []
+    for info in error.causes:
+        req = info.requirement
+        parent = info.parent.name if info.parent else root_name
+        origin = "override pin" if req.name in pinned_names and info.parent is None else parent
+        lines.append(f"{origin} requires {req.name}{req.specifier} — no candidate found")
+    return "; ".join(lines) or str(error)
+
+
+def _local_candidate(obj: ResolvedObject) -> Candidate:
+    """A LOCAL candidate for an object already on disk."""
+    return Candidate(
+        name=obj.name,
+        version=obj.version,
+        object_type=obj.object_type,
+        status=CandidateStatus.LOCAL,
+        path=obj.path,
+        resolved_object=obj,
+        dependencies=[str(d) for d in obj.dependencies],
+    )
+
+
+def _with_root_candidate(
+    mapping: Mapping[str, Candidate],
+    root_candidate: Candidate,
+) -> dict[str, Candidate]:
+    """resolvelib's name -> candidate mapping, plus the root itself."""
+    candidates = dict(mapping)
+    candidates[root_candidate.name] = root_candidate
+    return candidates
+
+
+def _containment_children(
+    root: ResolvedObject,
+    candidates: Mapping[str, Candidate],
+) -> dict[str, Candidate]:
+    """The root's containment children (recursively), minus any that are
+    already in the dependency graph."""
+    children: dict[str, Candidate] = {}
+    _add_children_recursive(root, children)
+    for name in list(children):
+        if name in candidates:
+            del children[name]
+    return children
+
+
+def _unmet_child_requirements(
+    children: Mapping[str, Candidate],
+    candidates: Mapping[str, Candidate],
+    requested: set[str],
+) -> list[Requirement]:
+    """Requirements for child dependencies that nothing provides yet.
+
+    A dependency is skipped when it is already a candidate, a child, or was
+    requested in an earlier round. Each new name is added to *requested*.
+    """
+    new_requirements: list[Requirement] = []
+    for child in children.values():
+        child_obj = child.resolved_object
+        if child_obj is None:
+            continue
+        for dep_spec in child_obj.dependencies:
+            if (
+                dep_spec.name in candidates
+                or dep_spec.name in children
+                or dep_spec.name in requested
+            ):
+                continue
+            requested.add(dep_spec.name)
+            new_requirements.append(Requirement(name=dep_spec.name, specifier=dep_spec.specifier))
+    return new_requirements
+
+
+def _solve_child_dependencies(
+    rl_resolver: RLResolver,
+    root: ResolvedObject,
+    root_candidate: Candidate,
+    root_requirements: list[Requirement],
+    candidates: dict[str, Candidate],
+    children: dict[str, Candidate],
+) -> tuple[dict[str, Candidate], dict[str, Candidate]]:
+    """Re-solve until every containment child's dependencies are satisfied.
+
+    Children compose into the workspace, so THEIR dependencies must be
+    satisfied too — configure walks every composed object (e.g. an engine
+    child project declaring dependent.gems that live outside the engine
+    tree). Each round adds the unmet child dependencies as extra root
+    requirements and re-runs the whole solve; it iterates to a fixpoint
+    because new candidates may carry children.
+
+    Returns the final (candidates, children). Raises resolvelib's
+    ``RequirementsConflicted`` / ``ResolutionImpossible`` when a round
+    cannot be solved.
+    """
+    extra_requirements: list[Requirement] = []
+    requested_child_deps: set[str] = set()
+    while True:
+        new_requirements = _unmet_child_requirements(children, candidates, requested_child_deps)
+        if not new_requirements:
+            return candidates, children
+        extra_requirements.extend(new_requirements)
+        result = rl_resolver.resolve(root_requirements + extra_requirements)
+        candidates = _with_root_candidate(result.mapping, root_candidate)
+        children = _containment_children(root, candidates)
+
+
+def _match_overlays(
+    resolver: Resolver,
+    candidates: Mapping[str, Candidate],
+    children: Mapping[str, Candidate],
+) -> dict[str, list[OverlayEntry]]:
+    """Group the registered overlays by the solved object they extend.
+
+    An overlay applies when its ``extends`` names a candidate or child whose
+    version satisfies the ``extends`` constraint (an unparseable version is
+    accepted). Each group is sorted by precedence.
+    """
+    overlays: dict[str, list[OverlayEntry]] = {}
+    for overlay_obj in resolver.overlays.values():
+        extends = overlay_obj.data.get("extends", "")
+        if not extends:
+            continue
+
+        extends_spec = ObjectNameVersion(extends)
+        target = candidates.get(extends_spec.name) or children.get(extends_spec.name)
+        if target is None or not _overlay_version_matches(target, extends_spec):
+            continue
+
+        entry = _overlay_entry(overlay_obj, extends_spec.name)
+        overlays.setdefault(extends_spec.name, []).append(entry)
+
+    for entries in overlays.values():
+        entries.sort(key=lambda e: e.precedence)
+    return overlays
+
+
+def _overlay_version_matches(target: Candidate, extends_spec: ObjectNameVersion) -> bool:
+    """Whether *target* satisfies an overlay's ``extends`` version constraint.
+
+    No constraint, or a version that cannot be parsed, counts as a match.
+    """
+    if not extends_spec.specifier:
+        return True
+    try:
+        return Version(target.version) in extends_spec.specifier
+    except Exception:
+        return True
+
+
+def _overlay_entry(overlay_obj: ResolvedObject, base_name: str) -> OverlayEntry:
+    """The OverlayEntry for a local overlay object extending *base_name*.
+
+    Non-string items in ``platforms``, ``dependent.overlays`` and
+    ``user_tags`` are dropped, and a null list counts as empty.
+    """
+    data = overlay_obj.data
+    return OverlayEntry(
+        name=overlay_obj.name,
+        version=overlay_obj.version,
+        extends=base_name,
+        extends_version=data.get("extends_version"),
+        precedence=data.get("precedence", 0),
+        path=overlay_obj.path,
+        status=CandidateStatus.LOCAL,
+        platforms=[p for p in data.get("platforms", []) or [] if isinstance(p, str)],
+        overlay_deps=[
+            ObjectNameVersion(d).name
+            for d in (data.get("dependent", {}) or {}).get("overlays", []) or []
+            if isinstance(d, str)
+        ],
+        user_tags=[t for t in data.get("user_tags", []) or [] if isinstance(t, str)],
+    )
 
 
 def _add_children_recursive(

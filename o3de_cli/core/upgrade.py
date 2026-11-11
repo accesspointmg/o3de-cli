@@ -18,7 +18,7 @@ import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from o3de_cli.core.models import SCHEMA_BASE_URL
 
@@ -196,6 +196,151 @@ def needs_upgrade(data: dict, target_version: str = "2.0.0") -> bool:
 # ============================================================================
 
 
+#: Default of a :class:`_FieldRule` whose field is written only when one of
+#: its source keys is present in the legacy data.
+_OPTIONAL: Any = object()
+
+
+class _FieldRule(NamedTuple):
+    """How one version 1.0.0 field is filled from version 0 data.
+
+    The first of *sources* present in the data supplies the value, even when
+    that value is falsy or ``None``. When none is present the field is set to
+    *default*, or left out when the default is :data:`_OPTIONAL`.
+    """
+
+    target: str
+    sources: tuple[str, ...]
+    default: Any = _OPTIONAL
+
+
+def _copied(*keys: str) -> tuple[_FieldRule, ...]:
+    """Rules that copy each key unchanged, and only when it is present."""
+    return tuple(_FieldRule(key, (key,)) for key in keys)
+
+
+def _identity_rules(object_type: str) -> tuple[_FieldRule, ...]:
+    """The ``<type>_name``, ``<type>_uri`` and ``<type>_type`` rules.
+
+    The URI falls back through ``<type>_url``, ``url`` and ``uri``, and the
+    type through ``type``. All three default to an empty string.
+    """
+    return (
+        _FieldRule(f"{object_type}_name", (f"{object_type}_name",), ""),
+        _FieldRule(
+            f"{object_type}_uri",
+            (f"{object_type}_uri", f"{object_type}_url", "url", "uri"),
+            "",
+        ),
+        _FieldRule(f"{object_type}_type", (f"{object_type}_type", "type"), ""),
+    )
+
+
+#: Per-type rules, applied first. Types without an entry ("restricted",
+#: "overlay", ...) get none; "restricted" is handled in upgrade_to_latest.
+_TYPE_RULES: dict[str, tuple[_FieldRule, ...]] = {
+    "manifest": tuple(
+        _FieldRule(key, (key,), "")
+        for key in (
+            "o3de_manifest_name",
+            "default_engines_folder",
+            "default_projects_folder",
+            "default_gems_folder",
+            "default_templates_folder",
+            "default_restricted_folder",
+            "default_repos_folder",
+            "default_third_party_folder",
+        )
+    ),
+    "engine": _identity_rules("engine") + _copied("O3DEVersion", "O3DEBuildNumber"),
+    "project": _identity_rules("project")
+    + _copied("project_id", "product_name", "executable_name", "engine"),
+    "gem": _identity_rules("gem"),
+    "template": _identity_rules("template"),
+    "repo": _identity_rules("repo"),
+}
+
+#: Descriptive fields every non-manifest object gets, with defaults. The
+#: generated ``last_updated`` follows them (see :func:`_last_updated`).
+_DESCRIPTION_RULES: tuple[_FieldRule, ...] = (
+    _FieldRule("version", ("version",), "0.0.0"),
+    _FieldRule("display_name", ("display_name", "name"), ""),
+    _FieldRule("summary", ("summary", "description", "display_name", "name"), ""),
+)
+
+#: Optional metadata of non-manifest objects. ``*_uri`` spellings are
+#: normalised to ``*_url``.
+_METADATA_RULES: tuple[_FieldRule, ...] = (
+    # Origin
+    *_copied("origin", "origin_name"),
+    _FieldRule("origin_url", ("origin_url", "origin_uri")),
+    # Copyright and license
+    *_copied("copyright", "copyright_text", "copyright_year", "license"),
+    _FieldRule("license_url", ("license_url", "license_uri")),
+    *_copied("license_path"),
+    # Tags
+    *_copied("canonical_tags", "user_tags"),
+    # Icon and documentation
+    *_copied("icon_path"),
+    _FieldRule("icon_url", ("icon_url", "icon_uri")),
+    *_copied("documentation_path"),
+    _FieldRule("documentation_url", ("documentation_url", "documentation_uri")),
+    # Dependencies and requirements
+    *_copied("dependencies", "requirements", "compatible_engines", "engine_api_dependencies"),
+    # Build
+    *_copied("api_versions", "file_version", "build", "modules", "gem_names"),
+)
+
+#: Fields copied unchanged for every object type, manifests included.
+_PASSTHROUGH_RULES: tuple[_FieldRule, ...] = _copied(
+    # Collections
+    "engines",
+    "projects",
+    "gems",
+    "templates",
+    "repos",
+    "restricteds",
+    "engines_path",
+    "external_subdirectories",
+    "restricted",
+    # Template specific
+    "copyFiles",
+    "createDirectories",
+    # Source control and downloads
+    "source_control_uri",
+    "source_control_path",
+    "source_control_branch",
+    "source_control_tag",
+    "download_source_uri",
+    "versions_data",
+    "downloads",
+    "source_control",
+    "releases",
+    "platforms",
+    "sha256",
+    "additional_info",
+)
+
+
+def _apply_field_rules(output: dict, data: dict, rules: tuple[_FieldRule, ...]) -> None:
+    """Write each rule's field into *output*, in rule order."""
+    for rule in rules:
+        for key in rule.sources:
+            if key in data:
+                output[rule.target] = data[key]
+                break
+        else:
+            if rule.default is not _OPTIONAL:
+                output[rule.target] = rule.default
+
+
+def _last_updated(data: dict) -> Any:
+    """The legacy ``last_updated``, or the current UTC time in ISO 8601."""
+    if "last_updated" in data:
+        return data["last_updated"]
+    return datetime.now(timezone.utc).isoformat()
+
+
 def upgrade_0_to_1(data: dict, object_type: str) -> dict:
     """
     Upgrade from version 0 (legacy) to version 1.0.0.
@@ -205,193 +350,22 @@ def upgrade_0_to_1(data: dict, object_type: str) -> dict:
     - Keep {type}_name fields (engine_name, gem_name, etc.)
     - Normalize url/uri fields to {type}_uri
     - Add version, display_name, summary, last_updated defaults
+
+    The output is built from the rule tables above, in this order:
+    :data:`_TYPE_RULES` for *object_type*; for non-manifest objects
+    :data:`_DESCRIPTION_RULES`, ``last_updated`` and :data:`_METADATA_RULES`;
+    then :data:`_PASSTHROUGH_RULES`. Values are not copied, so the output
+    shares lists and dicts with *data*.
     """
-    output = {"$schemaVersion": "1.0.0"}
+    output: dict[str, Any] = {"$schemaVersion": "1.0.0"}
+    _apply_field_rules(output, data, _TYPE_RULES.get(object_type, ()))
 
-    if object_type == "manifest":
-        output["o3de_manifest_name"] = data.get("o3de_manifest_name", "")
-        output["default_engines_folder"] = data.get("default_engines_folder", "")
-        output["default_projects_folder"] = data.get("default_projects_folder", "")
-        output["default_gems_folder"] = data.get("default_gems_folder", "")
-        output["default_templates_folder"] = data.get("default_templates_folder", "")
-        output["default_restricted_folder"] = data.get("default_restricted_folder", "")
-        output["default_repos_folder"] = data.get("default_repos_folder", "")
-        output["default_third_party_folder"] = data.get("default_third_party_folder", "")
-
-    elif object_type == "engine":
-        output["engine_name"] = data.get("engine_name", "")
-        # Normalize URI fields
-        output["engine_uri"] = data.get(
-            "engine_uri", data.get("engine_url", data.get("url", data.get("uri", "")))
-        )
-        output["engine_type"] = data.get("engine_type", data.get("type", ""))
-        if "O3DEVersion" in data:
-            output["O3DEVersion"] = data["O3DEVersion"]
-        if "O3DEBuildNumber" in data:
-            output["O3DEBuildNumber"] = data["O3DEBuildNumber"]
-
-    elif object_type == "project":
-        output["project_name"] = data.get("project_name", "")
-        output["project_uri"] = data.get(
-            "project_uri", data.get("project_url", data.get("url", data.get("uri", "")))
-        )
-        output["project_type"] = data.get("project_type", data.get("type", ""))
-        if "project_id" in data:
-            output["project_id"] = data["project_id"]
-        if "product_name" in data:
-            output["product_name"] = data["product_name"]
-        if "executable_name" in data:
-            output["executable_name"] = data["executable_name"]
-        if "engine" in data:
-            output["engine"] = data["engine"]
-
-    elif object_type == "gem":
-        output["gem_name"] = data.get("gem_name", "")
-        output["gem_uri"] = data.get(
-            "gem_uri", data.get("gem_url", data.get("url", data.get("uri", "")))
-        )
-        output["gem_type"] = data.get("gem_type", data.get("type", ""))
-
-    elif object_type == "template":
-        output["template_name"] = data.get("template_name", "")
-        output["template_uri"] = data.get(
-            "template_uri", data.get("template_url", data.get("url", data.get("uri", "")))
-        )
-        output["template_type"] = data.get("template_type", data.get("type", ""))
-
-    elif object_type == "repo":
-        output["repo_name"] = data.get("repo_name", "")
-        output["repo_uri"] = data.get(
-            "repo_uri", data.get("repo_url", data.get("url", data.get("uri", "")))
-        )
-        output["repo_type"] = data.get("repo_type", data.get("type", ""))
-
-    # Note: "restricted" type has no upgrade path - handled in upgrade_to_latest
-
-    # Common fields for non-manifest objects
     if object_type != "manifest":
-        output["version"] = data.get("version", "0.0.0")
-        output["display_name"] = data.get("display_name", data.get("name", ""))
-        output["summary"] = data.get(
-            "summary", data.get("description", data.get("display_name", data.get("name", "")))
-        )
+        _apply_field_rules(output, data, _DESCRIPTION_RULES)
+        output["last_updated"] = _last_updated(data)
+        _apply_field_rules(output, data, _METADATA_RULES)
 
-        if "last_updated" in data:
-            output["last_updated"] = data["last_updated"]
-        else:
-            output["last_updated"] = datetime.now(timezone.utc).isoformat()
-
-        # Origin fields
-        if "origin" in data:
-            output["origin"] = data["origin"]
-        if "origin_name" in data:
-            output["origin_name"] = data["origin_name"]
-        if "origin_url" in data or "origin_uri" in data:
-            output["origin_url"] = data.get("origin_url", data.get("origin_uri", ""))
-
-        # Copyright fields
-        if "copyright" in data:
-            output["copyright"] = data["copyright"]
-        if "copyright_text" in data:
-            output["copyright_text"] = data["copyright_text"]
-        if "copyright_year" in data:
-            output["copyright_year"] = data["copyright_year"]
-
-        # License fields
-        if "license" in data:
-            output["license"] = data["license"]
-        if "license_url" in data or "license_uri" in data:
-            output["license_url"] = data.get("license_url", data.get("license_uri", ""))
-        if "license_path" in data:
-            output["license_path"] = data["license_path"]
-
-        # Tags
-        if "canonical_tags" in data:
-            output["canonical_tags"] = data["canonical_tags"]
-        if "user_tags" in data:
-            output["user_tags"] = data["user_tags"]
-
-        # Icon and documentation
-        if "icon_path" in data:
-            output["icon_path"] = data["icon_path"]
-        if "icon_url" in data or "icon_uri" in data:
-            output["icon_url"] = data.get("icon_url", data.get("icon_uri", ""))
-        if "documentation_path" in data:
-            output["documentation_path"] = data["documentation_path"]
-        if "documentation_url" in data or "documentation_uri" in data:
-            output["documentation_url"] = data.get(
-                "documentation_url", data.get("documentation_uri", "")
-            )
-
-        # Dependencies and requirements
-        if "dependencies" in data:
-            output["dependencies"] = data["dependencies"]
-        if "requirements" in data:
-            output["requirements"] = data["requirements"]
-        if "compatible_engines" in data:
-            output["compatible_engines"] = data["compatible_engines"]
-        if "engine_api_dependencies" in data:
-            output["engine_api_dependencies"] = data["engine_api_dependencies"]
-
-        # Build
-        if "api_versions" in data:
-            output["api_versions"] = data["api_versions"]
-        if "file_version" in data:
-            output["file_version"] = data["file_version"]
-        if "build" in data:
-            output["build"] = data["build"]
-        if "modules" in data:
-            output["modules"] = data["modules"]
-        if "gem_names" in data:
-            output["gem_names"] = data["gem_names"]
-
-    # Collection fields (for all types)
-    for key in [
-        "engines",
-        "projects",
-        "gems",
-        "templates",
-        "repos",
-        "restricteds",
-        "engines_path",
-        "external_subdirectories",
-        "restricted",
-    ]:
-        if key in data:
-            output[key] = data[key]
-
-    # Template specific
-    if "copyFiles" in data:
-        output["copyFiles"] = data["copyFiles"]
-    if "createDirectories" in data:
-        output["createDirectories"] = data["createDirectories"]
-
-    # Source control and downloads
-    if "source_control_uri" in data:
-        output["source_control_uri"] = data["source_control_uri"]
-    if "source_control_path" in data:
-        output["source_control_path"] = data["source_control_path"]
-    if "source_control_branch" in data:
-        output["source_control_branch"] = data["source_control_branch"]
-    if "source_control_tag" in data:
-        output["source_control_tag"] = data["source_control_tag"]
-    if "download_source_uri" in data:
-        output["download_source_uri"] = data["download_source_uri"]
-    if "versions_data" in data:
-        output["versions_data"] = data["versions_data"]
-    if "downloads" in data:
-        output["downloads"] = data["downloads"]
-    if "source_control" in data:
-        output["source_control"] = data["source_control"]
-    if "releases" in data:
-        output["releases"] = data["releases"]
-    if "platforms" in data:
-        output["platforms"] = data["platforms"]
-    if "sha256" in data:
-        output["sha256"] = data["sha256"]
-    if "additional_info" in data:
-        output["additional_info"] = data["additional_info"]
-
+    _apply_field_rules(output, data, _PASSTHROUGH_RULES)
     return output
 
 
