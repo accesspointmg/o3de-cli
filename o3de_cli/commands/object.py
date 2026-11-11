@@ -915,7 +915,7 @@ def _render_hoist_plan(plan: HoistPlan, as_json: bool) -> None:
     from o3de_cli.core.json_output import emit_response
 
     if as_json:
-        emit_response(data=plan.dry_run_payload())
+        emit_response(data=plan.dry_run_payload(), warnings=plan.warnings)
         return
     console.print(f"[bold]Would hoist {plan.base_name}:[/bold]")
     console.print(f"  Family repo: {plan.repo_name} → {plan.out_dir}")
@@ -927,6 +927,8 @@ def _render_hoist_plan(plan: HoistPlan, as_json: bool) -> None:
         console.print(
             f"  [yellow]Skipped:[/yellow] Overlays/{ov.dir_name} ({ov.platform}): {ov.skip_reason}"
         )
+    for warning in plan.warnings:
+        console.print(f"  [yellow]Warning:[/yellow] {warning}")
 
 
 def _render_hoist_result(

@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=70.0", "wheel"]
+# 77+: SPDX `license` expressions and `license-files` (PEP 639)
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +9,8 @@ name = "o3de-cli"
 dynamic = ["version"]
 description = "Package manager and CLI for the O3DE ecosystem"
 readme = "README.md"
-license = {text = "Apache-2.0 OR MIT"}
+license = "Apache-2.0 OR MIT"
+license-files = ["LICENSE.txt", "LICENSE_APACHE2.TXT", "LICENSE_MIT.TXT"]
 requires-python = ">=3.10"
 authors = [
     {name = "O3DE Foundation", email = "info@o3de.org"}
@@ -18,8 +20,6 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -127,4 +127,4 @@ omit = []
 [tool.coverage.report]
 # The measured floor, not an aspiration: raise it as coverage improves so it
 # can only go up.
-fail_under = 70
+fail_under = 78

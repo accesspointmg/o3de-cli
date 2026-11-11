@@ -253,6 +253,22 @@ class TestHoistRegressions:
         assert (out / "Overlays" / "widget.windows" / "LICENSE_MIT.TXT").is_file()
         assert (out / "LICENSE_MIT.TXT").is_file()
 
+    def test_dry_run_reports_license_warnings(self, engine_repo, tmp_path):
+        """The dry-run warns about the same unsafe license the real run skips."""
+        _commit_gem_json(
+            engine_repo,
+            licenses=[{"license_identifier": "X", "relative_path": "../../../secret.txt"}],
+        )
+        out = tmp_path / "family"
+        result = self._run(engine_repo / "Gems" / "Widget", out, ["--dry-run", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert any("../../../secret.txt" in w for w in payload["warnings"])
+        assert not out.exists()
+
+        text = self._run(engine_repo / "Gems" / "Widget", out, ["--dry-run"])
+        assert "Warning:" in text.output and "secret.txt" in text.output
+
     def test_register_creates_missing_manifest(self, engine_repo, tmp_path):
         """Regression: ``--register`` silently did nothing without a manifest."""
         from unittest.mock import patch
