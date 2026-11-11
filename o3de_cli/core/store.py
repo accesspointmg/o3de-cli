@@ -339,6 +339,138 @@ def get_manifest_remote_urls(manifest_path: Path | None = None) -> list[str]:
     return result
 
 
+# ----------------------------------------------------------------------
+# Remote-object parsing helpers
+#
+# Pure functions that pull one group of fields out of a fetched object
+# document. ``nested`` is the document's type header (``data["gem"]``
+# etc. in Schema 2.0.0); legacy documents keep the same keys at the root.
+# ----------------------------------------------------------------------
+
+# A refresh_sync queue item: (url, parent_repo_url, inherited_sc_url, inherited_sc_branch)
+_WaveItem = tuple[str, str | None, str | None, str | None]
+
+
+def _header_field(nested: dict, data: dict, key: str, default: str = "") -> str:
+    """*key* from the type header, else from the document root, else *default* (first truthy)."""
+    return nested.get(key) or data.get(key) or default
+
+
+def _icon_fields(nested: dict, data: dict) -> tuple[str, str]:
+    """``(icon_url, icon_relative_path)`` of a document.
+
+    The icon is an object (``uri``/``url`` + ``relative_path``) or, in
+    legacy documents, a plain URL string; flat ``icon_uri``/``icon_url``
+    fields are the fallback for the URL.
+    """
+    icon_data = nested.get("icon") or data.get("icon") or {}
+    if isinstance(icon_data, dict):
+        icon_url = icon_data.get("uri") or icon_data.get("url") or ""
+        icon_relative_path = icon_data.get("relative_path") or ""
+    else:
+        # Legacy: might be a direct URL string
+        icon_url = str(icon_data) if icon_data else ""
+        icon_relative_path = ""
+
+    # Fallback to flat fields if icon was not found
+    if not icon_url:
+        icon_url = _header_field(nested, data, "icon_uri", _header_field(nested, data, "icon_url"))
+    return icon_url, icon_relative_path
+
+
+def _tag_list(data: dict) -> Any:
+    """``user_tags``, else ``canonical_tags``; a single string becomes a one-item list."""
+    tags = data.get("user_tags") or data.get("canonical_tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    return tags
+
+
+def _release_source_control(latest: Any, url: Any, branch: Any, tag: Any) -> tuple[Any, Any, Any]:
+    """Source control from a release's first ``source_controls`` entry with a git URL.
+
+    Its branch and tag override *branch*/*tag* only when set. Returns
+    ``(url, branch, tag)`` unchanged if the release has no such entry.
+    """
+    if isinstance(latest, dict):
+        for sc in latest.get("source_controls", []) or []:
+            if isinstance(sc, dict) and sc.get("git"):
+                return sc["git"], sc.get("branch") or branch, sc.get("tag") or tag
+    return url, branch, tag
+
+
+def _source_control_fields(nested: dict, data: dict) -> tuple[Any, Any, Any]:
+    """``(source_control_url, branch, tag)`` of a document.
+
+    The URL comes from ``download_source_uri``, ``repo_uri`` or the
+    ``source_control`` block. With no URL there, Schema 2.0.0 releases
+    carry immutable acquisition pointers (git url + tag stamped at
+    release-cut time), so the latest release's entry is used.
+    """
+    source_control_data = data.get("source_control", {}) or {}
+    source_control_url = (
+        _header_field(nested, data, "download_source_uri")
+        or _header_field(nested, data, "repo_uri")
+        or source_control_data.get("uri")
+        or source_control_data.get("git")
+    )
+    source_control_branch = source_control_data.get("branch") or ""
+    source_control_tag = source_control_data.get("tag") or ""
+
+    releases = data.get("releases", [])
+    if not source_control_url and isinstance(releases, list) and releases:
+        return _release_source_control(
+            releases[-1], source_control_url, source_control_branch, source_control_tag
+        )
+    return source_control_url, source_control_branch, source_control_tag
+
+
+def _repo_relative_path(url: str, parent_repo_url: str | None) -> str | None:
+    """Directory of the document at *url* relative to its containing repo's directory.
+
+    Used to extract a contained object from a repo clone. None when there
+    is no parent repo or *url* isn't under the repo's directory.
+    """
+    if not parent_repo_url:
+        return None
+    repo_base = parent_repo_url.rsplit("/", 1)[0] + "/"
+    if not url.startswith(repo_base):
+        return None
+    rel = url[len(repo_base) :]
+    # Strip the trailing json filename, keep the directory
+    return rel.rsplit("/", 1)[0] if "/" in rel else ""
+
+
+def _download_fields(nested: dict, data: dict) -> tuple[Any, Any]:
+    """``(download_url, source_sha256)`` of a document's release archive.
+
+    The URL is ``download_uri`` or the ``download`` block's ``source``;
+    the hash comes from the ``download`` block.
+    """
+    download_data = data.get("download", {}) or {}
+    download_url = _header_field(nested, data, "download_uri") or download_data.get("source")
+    return download_url, download_data.get("source_sha256")
+
+
+def _dependency_specs(nested: dict, data: dict) -> list[str]:
+    """Dependency specifier strings from ``dependent`` (type header first, then root).
+
+    Schema 2.0: ``{"gems": [...], "engines": [...]}``; non-list values
+    and non-string entries are ignored.
+    """
+    dep_specs: list[str] = []
+    dependent = nested.get("dependent", {}) if isinstance(nested, dict) else {}
+    if not dependent:
+        dependent = data.get("dependent", {})
+    if isinstance(dependent, dict):
+        for dep_list in dependent.values():
+            if isinstance(dep_list, list):
+                for dep in dep_list:
+                    if isinstance(dep, str):
+                        dep_specs.append(dep)
+    return dep_specs
+
+
 class Store:
     """
     O3DE Store interface for browsing and downloading remote objects.
@@ -508,19 +640,7 @@ class Store:
             remote_obj = self._parse_remote_object(url, data, obj_type)
 
             if remote_obj:
-                key = f"{remote_obj.object_type.value}:{remote_obj.name}"
-                version = remote_obj.version or "0.0.0"
-
-                # Track all versions
-                if key not in self.versions:
-                    self.versions[key] = {}
-                self.versions[key][version] = remote_obj
-
-                # Keep latest version in objects dict for backwards compatibility
-                if key not in self.objects or self._is_newer_version(
-                    version, self.objects[key].version
-                ):
-                    self.objects[key] = remote_obj
+                self._record_remote_object(remote_obj)
 
             # Queue any remote links
             new_urls = self._extract_remote_urls(data, base_url=url)
@@ -535,6 +655,23 @@ class Store:
         logger.info(f"Store refresh complete: {len(self.objects)} objects")
         return len(self.objects)
 
+    def _record_remote_object(self, remote_obj: RemoteObject) -> None:
+        """Add *remote_obj* to ``versions``; make it the ``objects`` entry if it's the newest.
+
+        Both are keyed ``"<type>:<name>"``; a missing version counts as "0.0.0".
+        """
+        key = f"{remote_obj.object_type.value}:{remote_obj.name}"
+        version = remote_obj.version or "0.0.0"
+
+        # Track all versions
+        if key not in self.versions:
+            self.versions[key] = {}
+        self.versions[key][version] = remote_obj
+
+        # Keep latest version in objects dict for backwards compatibility
+        if key not in self.objects or self._is_newer_version(version, self.objects[key].version):
+            self.objects[key] = remote_obj
+
     def refresh_sync(
         self,
         repo_urls: list[str],
@@ -546,56 +683,31 @@ class Store:
         Uses wave-based BFS: fetches all URLs at the current level
         concurrently, then discovers child URLs for the next wave.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         self._visited_urls.clear()
         self.objects.clear()
 
         # Queue items are tuples: (url, parent_repo_url, inherited_sc_url, inherited_sc_branch)
-        wave: list[tuple[str, str | None, str | None, str | None]] = [
-            (url, None, None, None) for url in repo_urls
-        ]
+        wave: list[_WaveItem] = [(url, None, None, None) for url in repo_urls]
         total = len(wave)
         processed = 0
 
         with httpx.Client(timeout=self.timeout) as client:
-
-            def _fetch_one(url: str) -> tuple[str, dict | None]:
-                """Fetch a single URL, returning (url, data_or_None)."""
-                try:
-                    return (url, self._fetch_json_with_client(client, url))
-                except FetchError as e:
-                    logger.warning(f"Skipping {url}: {e}")
-                    return (url, None)
-
             while wave:
                 # De-duplicate and skip already-visited within this wave
-                pending: list[tuple[str, str | None, str | None, str | None]] = []
-                pending_urls: list[str] = []
-                for item in wave:
-                    url = item[0]
-                    if url not in self._visited_urls:
-                        self._visited_urls.add(url)
-                        pending.append(item)
-                        pending_urls.append(url)
-
+                pending = self._claim_unvisited(wave)
                 if not pending:
                     break
 
                 # Parallel fetch all URLs in this wave
-                url_to_data: dict[str, dict | None] = {}
-                with ThreadPoolExecutor(
-                    max_workers=min(max_concurrency, len(pending_urls))
-                ) as executor:
-                    futures = {executor.submit(_fetch_one, url): url for url in pending_urls}
-                    for future in as_completed(futures):
-                        url, data = future.result()
-                        url_to_data[url] = data
+                url_to_data = self._fetch_wave(
+                    client, [item[0] for item in pending], max_concurrency
+                )
 
                 # Process results and build next wave
-                next_wave: list[tuple[str, str | None, str | None, str | None]] = []
+                next_wave: list[_WaveItem] = []
 
-                for url, parent_repo_url, inherited_sc_url, inherited_sc_branch in pending:
+                for item in pending:
+                    url = item[0]
                     processed += 1
                     if progress_callback:
                         progress_callback(f"Fetching {urlparse(url).path}", processed, total)
@@ -604,56 +716,87 @@ class Store:
                     if data is None:
                         continue
 
-                    obj_type = get_object_type(data)
-                    remote_obj = self._parse_remote_object(
-                        url,
-                        data,
-                        obj_type,
-                        parent_repo_url=parent_repo_url,
-                        inherited_source_control_url=inherited_sc_url,
-                        inherited_source_control_branch=inherited_sc_branch,
-                    )
-
-                    if remote_obj:
-                        key = f"{remote_obj.object_type.value}:{remote_obj.name}"
-                        version = remote_obj.version or "0.0.0"
-
-                        # Track all versions
-                        if key not in self.versions:
-                            self.versions[key] = {}
-                        self.versions[key][version] = remote_obj
-
-                        # Keep latest version in objects dict for backwards compatibility
-                        if key not in self.objects or self._is_newer_version(
-                            version, self.objects[key].version
-                        ):
-                            self.objects[key] = remote_obj
-
-                    # Determine source control info to pass to children
-                    child_repo_url: str | None = None
-                    child_sc_url: str | None = None
-                    child_sc_branch: str | None = None
-
-                    if remote_obj and obj_type == ObjectType.REPO:
-                        child_repo_url = url
-                        child_sc_url = remote_obj.source_control_url or inherited_sc_url
-                        child_sc_branch = remote_obj.source_control_branch or inherited_sc_branch
-                    else:
-                        child_repo_url = parent_repo_url
-                        child_sc_url = inherited_sc_url
-                        child_sc_branch = inherited_sc_branch
-
-                    new_urls = self._extract_remote_urls(data, base_url=url)
-                    for new_url in new_urls:
-                        if new_url not in self._visited_urls:
-                            next_wave.append(
-                                (new_url, child_repo_url, child_sc_url, child_sc_branch)
-                            )
+                    for child in self._ingest_document(item, data):
+                        if child[0] not in self._visited_urls:
+                            next_wave.append(child)
                             total += 1
 
                 wave = next_wave
 
         return len(self.objects)
+
+    def _claim_unvisited(self, wave: list[_WaveItem]) -> list[_WaveItem]:
+        """The items of *wave* whose URL is new, marking each URL visited (first one wins)."""
+        pending: list[_WaveItem] = []
+        for item in wave:
+            url = item[0]
+            if url not in self._visited_urls:
+                self._visited_urls.add(url)
+                pending.append(item)
+        return pending
+
+    def _fetch_or_none(self, client: httpx.Client, url: str) -> tuple[str, dict | None]:
+        """Fetch a single URL, returning (url, data_or_None); a FetchError is logged."""
+        try:
+            return (url, self._fetch_json_with_client(client, url))
+        except FetchError as e:
+            logger.warning(f"Skipping {url}: {e}")
+            return (url, None)
+
+    def _fetch_wave(
+        self, client: httpx.Client, urls: list[str], max_concurrency: int
+    ) -> dict[str, dict | None]:
+        """Fetch *urls* in parallel through one *client*: ``{url: data_or_None}``."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        url_to_data: dict[str, dict | None] = {}
+        with ThreadPoolExecutor(max_workers=min(max_concurrency, len(urls))) as executor:
+            futures = {executor.submit(self._fetch_or_none, client, url): url for url in urls}
+            for future in as_completed(futures):
+                url, data = future.result()
+                url_to_data[url] = data
+        return url_to_data
+
+    def _ingest_document(self, item: _WaveItem, data: dict) -> list[_WaveItem]:
+        """Record the object a fetched document describes; return the queue items it links to.
+
+        Children inherit the source control of the nearest enclosing repo:
+        a repo passes on its own URL and source control (falling back to
+        what it inherited), any other object passes on what it inherited.
+        """
+        url, parent_repo_url, inherited_sc_url, inherited_sc_branch = item
+
+        obj_type = get_object_type(data)
+        remote_obj = self._parse_remote_object(
+            url,
+            data,
+            obj_type,
+            parent_repo_url=parent_repo_url,
+            inherited_source_control_url=inherited_sc_url,
+            inherited_source_control_branch=inherited_sc_branch,
+        )
+
+        if remote_obj:
+            self._record_remote_object(remote_obj)
+
+        # Determine source control info to pass to children
+        child_repo_url: str | None = None
+        child_sc_url: str | None = None
+        child_sc_branch: str | None = None
+
+        if remote_obj and obj_type == ObjectType.REPO:
+            child_repo_url = url
+            child_sc_url = remote_obj.source_control_url or inherited_sc_url
+            child_sc_branch = remote_obj.source_control_branch or inherited_sc_branch
+        else:
+            child_repo_url = parent_repo_url
+            child_sc_url = inherited_sc_url
+            child_sc_branch = inherited_sc_branch
+
+        return [
+            (new_url, child_repo_url, child_sc_url, child_sc_branch)
+            for new_url in self._extract_remote_urls(data, base_url=url)
+        ]
 
     def _parse_remote_object(
         self,
@@ -664,7 +807,12 @@ class Store:
         inherited_source_control_url: str | None = None,
         inherited_source_control_branch: str | None = None,
     ) -> RemoteObject | None:
-        """Parse JSON into RemoteObject."""
+        """Parse JSON into RemoteObject.
+
+        Each field is read from the Schema 2.0.0 type header first, then
+        from the document root (legacy). Returns None, with a warning, if
+        anything in the document can't be parsed.
+        """
         try:
             name = get_object_name(data)
             version = get_object_version(data)
@@ -673,93 +821,26 @@ class Store:
             header_key = obj_type.value if obj_type != ObjectType.MANIFEST else "o3de_manifest"
             nested = data.get(header_key, {})
 
-            # Helper to get value from nested or top-level
-            def get_val(key: str, default: str = "") -> str:
-                return nested.get(key) or data.get(key) or default
-
-            display_name = get_val("display_name", name)
-            summary = get_val("summary")
-            description = get_val("description", summary)
-            origin = get_val("origin")
-            origin_url = get_val("origin_url")
-            license_text = get_val("license")
-            license_url = get_val("license_url", get_val("license_link"))
-
-            # Extract icon - can be nested object or flat string
-            icon_data = nested.get("icon") or data.get("icon") or {}
-            if isinstance(icon_data, dict):
-                icon_url = icon_data.get("uri") or icon_data.get("url") or ""
-                icon_relative_path = icon_data.get("relative_path") or ""
-            else:
-                # Legacy: might be a direct URL string
-                icon_url = str(icon_data) if icon_data else ""
-                icon_relative_path = ""
-
-            # Fallback to flat fields if icon was not found
-            if not icon_url:
-                icon_url = get_val("icon_uri", get_val("icon_url"))
-
-            documentation_url = get_val("documentation_url")
-            gem_type = get_val("type")
-
-            # Extract tags
-            tags = data.get("user_tags") or data.get("canonical_tags") or []
-            if isinstance(tags, str):
-                tags = [tags]
-
-            # Extract source control info
-            source_control_data = data.get("source_control", {}) or {}
-            source_control_url = (
-                get_val("download_source_uri")
-                or get_val("repo_uri")
-                or source_control_data.get("uri")
-                or source_control_data.get("git")
+            display_name = _header_field(nested, data, "display_name", name)
+            summary = _header_field(nested, data, "summary")
+            description = _header_field(nested, data, "description", summary)
+            origin = _header_field(nested, data, "origin")
+            origin_url = _header_field(nested, data, "origin_url")
+            license_text = _header_field(nested, data, "license")
+            license_url = _header_field(
+                nested, data, "license_url", _header_field(nested, data, "license_link")
             )
-            source_control_branch = source_control_data.get("branch") or ""
-            source_control_tag = source_control_data.get("tag") or ""
+            icon_url, icon_relative_path = _icon_fields(nested, data)
+            documentation_url = _header_field(nested, data, "documentation_url")
+            gem_type = _header_field(nested, data, "type")
+            tags = _tag_list(data)
+            source_control_url, source_control_branch, source_control_tag = _source_control_fields(
+                nested, data
+            )
+            repo_relative_path = _repo_relative_path(url, parent_repo_url)
 
-            # Schema 2.0.0: releases[] carry immutable acquisition pointers
-            # (git url + tag stamped at release-cut time). Prefer the latest
-            # release's source_controls entry when the object has no live
-            # source_control of its own.
-            releases = data.get("releases", [])
-            if not source_control_url and isinstance(releases, list) and releases:
-                latest = releases[-1]
-                if isinstance(latest, dict):
-                    for sc in latest.get("source_controls", []) or []:
-                        if isinstance(sc, dict) and sc.get("git"):
-                            source_control_url = sc["git"]
-                            source_control_tag = sc.get("tag") or source_control_tag
-                            source_control_branch = sc.get("branch") or source_control_branch
-                            break
-
-            # Compute this object's directory relative to its containing
-            # repo (used to extract a contained object from a repo clone)
-            repo_relative_path: str | None = None
-            if parent_repo_url:
-                repo_base = parent_repo_url.rsplit("/", 1)[0] + "/"
-                if url.startswith(repo_base):
-                    rel = url[len(repo_base) :]
-                    # Strip the trailing json filename, keep the directory
-                    repo_relative_path = rel.rsplit("/", 1)[0] if "/" in rel else ""
-
-            download_data = data.get("download", {}) or {}
-            download_url = get_val("download_uri") or download_data.get("source")
-            source_sha256 = download_data.get("source_sha256")
-
-            # Parse dependencies from dependent field
-            # Schema 2.0: nested["dependent"] = {"gems": [...], "engines": [...]}
-            # Also check root level
-            dep_specs: list[str] = []
-            dependent = nested.get("dependent", {}) if isinstance(nested, dict) else {}
-            if not dependent:
-                dependent = data.get("dependent", {})
-            if isinstance(dependent, dict):
-                for dep_list in dependent.values():
-                    if isinstance(dep_list, list):
-                        for dep in dep_list:
-                            if isinstance(dep, str):
-                                dep_specs.append(dep)
+            download_url, source_sha256 = _download_fields(nested, data)
+            dep_specs = _dependency_specs(nested, data)
 
             return RemoteObject(
                 url=url,
@@ -1059,12 +1140,6 @@ class Store:
             IntegrityError: If the archive does not match its published SHA-256
             UnsafeSourceError: If the URL, ref or archive is refused
         """
-        import shutil
-        import tempfile
-
-        from .paths import rmtree_force
-        from .safety import download_client
-
         target_path = Path(target_path)
         target_path.mkdir(parents=True, exist_ok=True)
 
@@ -1074,80 +1149,131 @@ class Store:
 
         effective_sc_url = remote_obj.effective_source_control_url
         if prefer_source_control and effective_sc_url:
-            # Prefer an immutable release tag, then a branch.
-            ref = remote_obj.source_control_tag or remote_obj.effective_source_control_branch
-            # Contained objects (repo children) live in a subdirectory of
-            # the repo clone: clone to a temp dir, then copy the subdir.
-            subdir = remote_obj.repo_relative_path
-
-            if progress_callback:
-                # -1: indeterminate progress (git clone doesn't report size)
-                progress_callback(f"Cloning {remote_obj.display_name or remote_obj.name}", -1, 100)
-
-            if subdir:
-                from .safety import UnsafeSourceError
-
-                if ".." in Path(subdir).parts or Path(subdir).is_absolute():
-                    raise UnsafeSourceError(f"Refusing repo-relative path {subdir!r}")
-                tmp_dir = Path(tempfile.mkdtemp(prefix="o3de_store_"))
-                try:
-                    clone_path = tmp_dir / "repo"
-                    self._git_clone(effective_sc_url, clone_path, ref=ref)
-                    src_dir = clone_path / subdir
-                    if not src_dir.is_dir():
-                        raise StoreError(
-                            f"Object path '{subdir}' not found in repo clone {effective_sc_url}"
-                        )
-                    obj_folder.parent.mkdir(parents=True, exist_ok=True)
-                    if obj_folder.exists():
-                        raise StoreError(f"Target already exists: {obj_folder}")
-                    shutil.copytree(src_dir, obj_folder)
-                finally:
-                    # Read-only .git files on Windows need the forced delete
-                    rmtree_force(tmp_dir)
-            else:
-                obj_folder.parent.mkdir(parents=True, exist_ok=True)
-                self._git_clone(effective_sc_url, obj_folder, ref=ref)
-
-            if progress_callback:
-                progress_callback("Clone complete", 100, 100)
-            return obj_folder
+            return self._clone_object_sync(
+                remote_obj, effective_sc_url, obj_folder, progress_callback
+            )
 
         if remote_obj.download_url:
-            url, expected_sha256 = self._archive_checks(remote_obj, allow_unverified)
-
-            if progress_callback:
-                progress_callback(
-                    f"Downloading {remote_obj.display_name or remote_obj.name}", 0, 100
-                )
-
-            download_dir = get_download_path()
-            download_dir.mkdir(parents=True, exist_ok=True)
-            archive_path = download_dir / f"{remote_obj.name}.archive"
-
-            with download_client() as client:
-                with client.stream("GET", url) as response:
-                    response.raise_for_status()
-                    total_size = int(response.headers.get("content-length", 0))
-                    downloaded = 0
-                    with open(archive_path, "wb") as f:
-                        for chunk in response.iter_bytes():
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if progress_callback:
-                                if total_size > 0:
-                                    pct = int(downloaded * 80 / total_size)  # 0-80% for download
-                                    progress_callback("Downloading...", pct, 100)
-                                else:
-                                    progress_callback("Downloading...", -1, 100)
-
-            if progress_callback:
-                progress_callback("Extracting...", 85, 100)
-            obj_folder.parent.mkdir(parents=True, exist_ok=True)
-            self._unpack_verified(archive_path, expected_sha256, obj_folder)
-
-            if progress_callback:
-                progress_callback("Download complete", 100, 100)
-            return obj_folder
+            return self._download_archive_sync(
+                remote_obj, obj_folder, progress_callback, allow_unverified
+            )
 
         raise StoreError(f"No download method available for {remote_obj.name}")
+
+    def _clone_object_sync(
+        self,
+        remote_obj: RemoteObject,
+        sc_url: str,
+        obj_folder: Path,
+        progress_callback: Callable[[str, int, int], None] | None,
+    ) -> Path:
+        """Get *remote_obj* into *obj_folder* by git clone.
+
+        Prefers an immutable release tag, then a branch. A contained
+        object (one with ``repo_relative_path``) is copied out of a clone
+        of its whole repo.
+        """
+        # Prefer an immutable release tag, then a branch.
+        ref = remote_obj.source_control_tag or remote_obj.effective_source_control_branch
+        # Contained objects (repo children) live in a subdirectory of
+        # the repo clone: clone to a temp dir, then copy the subdir.
+        subdir = remote_obj.repo_relative_path
+
+        if progress_callback:
+            # -1: indeterminate progress (git clone doesn't report size)
+            progress_callback(f"Cloning {remote_obj.display_name or remote_obj.name}", -1, 100)
+
+        if subdir:
+            self._clone_repo_subdir(sc_url, ref, subdir, obj_folder)
+        else:
+            obj_folder.parent.mkdir(parents=True, exist_ok=True)
+            self._git_clone(sc_url, obj_folder, ref=ref)
+
+        if progress_callback:
+            progress_callback("Clone complete", 100, 100)
+        return obj_folder
+
+    def _clone_repo_subdir(
+        self, sc_url: str, ref: str | None, subdir: str, obj_folder: Path
+    ) -> None:
+        """Clone the repo at *sc_url* to a temp dir and copy *subdir* of it to *obj_folder*.
+
+        Raises:
+            UnsafeSourceError: If *subdir* is absolute or climbs out with ``..``
+            StoreError: If *subdir* isn't in the clone or *obj_folder* exists
+        """
+        import shutil
+        import tempfile
+
+        from .paths import rmtree_force
+        from .safety import UnsafeSourceError
+
+        if ".." in Path(subdir).parts or Path(subdir).is_absolute():
+            raise UnsafeSourceError(f"Refusing repo-relative path {subdir!r}")
+        tmp_dir = Path(tempfile.mkdtemp(prefix="o3de_store_"))
+        try:
+            clone_path = tmp_dir / "repo"
+            self._git_clone(sc_url, clone_path, ref=ref)
+            src_dir = clone_path / subdir
+            if not src_dir.is_dir():
+                raise StoreError(f"Object path '{subdir}' not found in repo clone {sc_url}")
+            obj_folder.parent.mkdir(parents=True, exist_ok=True)
+            if obj_folder.exists():
+                raise StoreError(f"Target already exists: {obj_folder}")
+            shutil.copytree(src_dir, obj_folder)
+        finally:
+            # Read-only .git files on Windows need the forced delete
+            rmtree_force(tmp_dir)
+
+    def _download_archive_sync(
+        self,
+        remote_obj: RemoteObject,
+        obj_folder: Path,
+        progress_callback: Callable[[str, int, int], None] | None,
+        allow_unverified: bool,
+    ) -> Path:
+        """Download *remote_obj*'s release archive, verify it, and unpack it into *obj_folder*."""
+        url, expected_sha256 = self._archive_checks(remote_obj, allow_unverified)
+
+        if progress_callback:
+            progress_callback(f"Downloading {remote_obj.display_name or remote_obj.name}", 0, 100)
+
+        download_dir = get_download_path()
+        download_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = download_dir / f"{remote_obj.name}.archive"
+
+        self._stream_to_file(url, archive_path, progress_callback)
+
+        if progress_callback:
+            progress_callback("Extracting...", 85, 100)
+        obj_folder.parent.mkdir(parents=True, exist_ok=True)
+        self._unpack_verified(archive_path, expected_sha256, obj_folder)
+
+        if progress_callback:
+            progress_callback("Download complete", 100, 100)
+        return obj_folder
+
+    @staticmethod
+    def _stream_to_file(
+        url: str,
+        archive_path: Path,
+        progress_callback: Callable[[str, int, int], None] | None,
+    ) -> None:
+        """Stream *url* into *archive_path*, reporting 0-80% progress (or -1 if size unknown)."""
+        from .safety import download_client
+
+        with download_client() as client:
+            with client.stream("GET", url) as response:
+                response.raise_for_status()
+                total_size = int(response.headers.get("content-length", 0))
+                downloaded = 0
+                with open(archive_path, "wb") as f:
+                    for chunk in response.iter_bytes():
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if progress_callback:
+                            if total_size > 0:
+                                pct = int(downloaded * 80 / total_size)  # 0-80% for download
+                                progress_callback("Downloading...", pct, 100)
+                            else:
+                                progress_callback("Downloading...", -1, 100)
