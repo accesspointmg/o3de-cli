@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("o3de_cli.cmake_manifest")
 
@@ -129,7 +131,6 @@ def _object_entry(
     """Build the per-path flattened blob Manifest.cmake expects."""
     hdr = _header(data, type_key)
     dep = _dependent_lists(data, type_key)
-    api = data.get("api_versions", {})
     tags = data.get("tags", {})
     if isinstance(tags, dict):
         canonical_tags = tags.get("canonical", data.get("canonical_tags", []))
@@ -168,39 +169,39 @@ def _object_entry(
         "artifact": "source",
         "binary_config_path": "",
     }
-
-    if type_key == "engine":
-        entry.update(
-            {
-                "O3DEVersion": data.get("O3DEVersion", ""),
-                "O3DEBuildNumber": data.get("O3DEBuildNumber", ""),
-                "display_version": data.get("display_version", ""),
-                "file_version": data.get("file_version", ""),
-                "build": data.get("build", ""),
-                "api_version_editor": api.get("editor", ""),
-                "api_version_framework": api.get("framework", ""),
-                "api_version_launcher": api.get("launcher", ""),
-                "api_version_tools": api.get("tools", ""),
-            }
-        )
-    if type_key == "project":
-        entry.update(
-            {
-                "product_name": data.get("product_name", ""),
-                "executable_name": data.get("executable_name", ""),
-                "engine": data.get("engine", ""),
-            }
-        )
-    if type_key == "overlay":
-        entry.update(
-            {
-                "extends": data.get("extends", ""),
-                "precedence": data.get("precedence", 0),
-                "platform_maps": data.get("platform_maps", []),
-                "platform_wart_maps": data.get("platform_wart_maps", []),
-            }
-        )
+    entry.update(_type_specific_fields(data, type_key))
     return entry
+
+
+def _type_specific_fields(data: dict, type_key: str) -> dict:
+    """The extra manifest-entry fields of engines, projects and overlays."""
+    api = data.get("api_versions", {})
+    if type_key == "engine":
+        return {
+            "O3DEVersion": data.get("O3DEVersion", ""),
+            "O3DEBuildNumber": data.get("O3DEBuildNumber", ""),
+            "display_version": data.get("display_version", ""),
+            "file_version": data.get("file_version", ""),
+            "build": data.get("build", ""),
+            "api_version_editor": api.get("editor", ""),
+            "api_version_framework": api.get("framework", ""),
+            "api_version_launcher": api.get("launcher", ""),
+            "api_version_tools": api.get("tools", ""),
+        }
+    if type_key == "project":
+        return {
+            "product_name": data.get("product_name", ""),
+            "executable_name": data.get("executable_name", ""),
+            "engine": data.get("engine", ""),
+        }
+    if type_key == "overlay":
+        return {
+            "extends": data.get("extends", ""),
+            "precedence": data.get("precedence", 0),
+            "platform_maps": data.get("platform_maps", []),
+            "platform_wart_maps": data.get("platform_wart_maps", []),
+        }
+    return {}
 
 
 def generate_cmake_manifest(
@@ -211,8 +212,9 @@ def generate_cmake_manifest(
     """Write ``<ws>/resolved_o3de_manifest.json`` from the composed tree.
 
     Scans the workspace type folders (Engines/, Projects/, Gems/,
-    Templates/) for object JSONs and produces the CMake-consumable
-    resolved manifest with all paths pointing into the workspace.
+    Templates/, Overlays/) for object JSONs and produces the
+    CMake-consumable resolved manifest with all paths pointing into the
+    workspace.
 
     Args:
         overrides: Optional {object name -> ObjectOverride-like} mapping;
@@ -223,29 +225,46 @@ def generate_cmake_manifest(
     """
     ws_path = Path(ws_path)
 
-    paths: dict[str, list[str]] = {
-        "engine": [],
-        "project": [],
-        "gem": [],
-        "template": [],
-        "overlay": [],
-    }
-    names: dict[str, list[str]] = {
-        "engine": [],
-        "project": [],
-        "gem": [],
-        "template": [],
-        "overlay": [],
-    }
+    paths: dict[str, list[str]] = {type_key: [] for type_key in _FOLDER_TO_TYPE.values()}
+    names: dict[str, list[str]] = {type_key: [] for type_key in _FOLDER_TO_TYPE.values()}
     entries: dict[str, dict] = {}
 
-    for folder, type_key in (
-        ("Engines", "engine"),
-        ("Projects", "project"),
-        ("Gems", "gem"),
-        ("Templates", "template"),
-        ("Overlays", "overlay"),
-    ):
+    for type_key, obj_dir, data, hdr in _workspace_objects(ws_path):
+        name = hdr.get("name", "")
+        version = hdr.get("version", "0.0.0")
+
+        # CMake keys off the legacy (unversioned) json path
+        path_key = _legacy_json_path(obj_dir, type_key).as_posix()
+
+        # children within the workspace: none — composition already
+        # flattened everything to workspace level
+        entry = _object_entry(path_key, data, type_key, {})
+        if overrides and name in overrides:
+            _apply_artifact_override(entry, overrides[name])
+
+        entries[path_key] = entry
+        paths[type_key].append(path_key)
+        names[type_key].append(f"{name}=={version}")
+
+    resolved = _manifest_header(ws_path, third_party_path, paths, names)
+    resolved.update(entries)
+
+    out_path = ws_path / CMAKE_MANIFEST_FILENAME
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(resolved, f, indent=2)
+    logger.info(f"Wrote workspace cmake manifest: {out_path} ({len(entries)} objects)")
+    return out_path
+
+
+def _workspace_objects(ws_path: Path) -> Iterator[tuple[str, Path, dict, dict]]:
+    """Yield ``(type_key, obj_dir, data, header)`` for each named workspace object.
+
+    Walks the type folders in :data:`_FOLDER_TO_TYPE` order and each
+    folder's object directories in sorted order. Directories without an
+    object JSON, and JSONs that are unreadable or empty, are skipped
+    silently; an object without a name is skipped with a warning.
+    """
+    for folder, type_key in _FOLDER_TO_TYPE.items():
         type_dir = ws_path / folder
         if not type_dir.is_dir():
             continue
@@ -259,41 +278,42 @@ def generate_cmake_manifest(
             if not data:
                 continue
             hdr = _header(data, type_key)
-            name = hdr.get("name", "")
-            version = hdr.get("version", "0.0.0")
-            if not name:
+            if not hdr.get("name", ""):
                 logger.warning(f"No name in {json_path} — skipping")
                 continue
+            yield type_key, obj_dir, data, hdr
 
-            # CMake keys off the legacy (unversioned) json path
-            path_key = _legacy_json_path(obj_dir, type_key).as_posix()
 
-            # children within the workspace: none — composition already
-            # flattened everything to workspace level
-            entry = _object_entry(path_key, data, type_key, {})
+def _apply_artifact_override(entry: dict, override: Any) -> None:
+    """Record an object's workspace override on its manifest entry.
 
-            # Apply artifact-form override annotation
-            if overrides and name in overrides:
-                override = overrides[name]
-                artifact = (
-                    override.get("artifact")
-                    if isinstance(override, dict)
-                    else getattr(override, "artifact", "source")
-                ) or "source"
-                override_path = (
-                    override.get("path")
-                    if isinstance(override, dict)
-                    else getattr(override, "path", None)
-                )
-                entry["artifact"] = artifact
-                if artifact != "source" and override_path:
-                    entry["binary_config_path"] = Path(override_path).as_posix()
+    *override* is a dict or an ObjectOverride-like object with ``artifact``
+    and ``path``. A missing or empty artifact means ``"source"``; a
+    non-source artifact with a path also sets ``binary_config_path``.
+    """
+    artifact = (
+        override.get("artifact")
+        if isinstance(override, dict)
+        else getattr(override, "artifact", "source")
+    ) or "source"
+    override_path = (
+        override.get("path") if isinstance(override, dict) else getattr(override, "path", None)
+    )
+    entry["artifact"] = artifact
+    if artifact != "source" and override_path:
+        entry["binary_config_path"] = Path(override_path).as_posix()
 
-            entries[path_key] = entry
-            paths[type_key].append(path_key)
-            names[type_key].append(f"{name}=={version}")
 
-    resolved: dict = {
+def _manifest_header(
+    ws_path: Path,
+    third_party_path: str,
+    paths: dict[str, list[str]],
+    names: dict[str, list[str]],
+) -> dict:
+    """The manifest's top-level keys: default folders and the per-type
+    ``all_<type>_paths`` / ``all_<type>_names`` lists. Repos are never
+    composed into a workspace, so their lists are always empty."""
+    return {
         "$comment": (
             # NOTE: no semicolons anywhere in generated content — CMake's
             # unquoted variable expansion splits arguments on ';'
@@ -324,10 +344,3 @@ def generate_cmake_manifest(
         "all_repo_names": [],
         "all_overlay_names": names["overlay"],
     }
-    resolved.update(entries)
-
-    out_path = ws_path / CMAKE_MANIFEST_FILENAME
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(resolved, f, indent=2)
-    logger.info(f"Wrote workspace cmake manifest: {out_path} ({len(entries)} objects)")
-    return out_path

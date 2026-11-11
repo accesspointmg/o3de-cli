@@ -277,33 +277,75 @@ def generate_config_cmake(
     config: str,
     has_include: bool,
 ) -> str:
-    """Generate the binary-flavor package config defining IMPORTED targets."""
+    """Generate the binary-flavor package config defining IMPORTED targets.
+
+    Only *config* binaries are packaged; every other O3DE config is mapped
+    onto it with ``MAP_IMPORTED_CONFIG_<OTHER> <CONFIG>``, both names
+    UPPERCASE (see the module docstring). The file is assembled from a
+    preamble, one block per interface, static and module/shared target (in
+    that order), the variant aliases, and a footer.
+    """
     uconf = config.upper()
     other_configs = [c.upper() for c in O3DE_CONFIGS if c.lower() != config.lower()]
+    map_lines = [f"    MAP_IMPORTED_CONFIG_{oc} {uconf}" for oc in other_configs]
 
     interface_targets = [t for t in targets if t.type == "INTERFACE_LIBRARY"]
     static_targets = [t for t in targets if t.type == "STATIC_LIBRARY"]
     module_targets = [t for t in targets if t.type in ("MODULE_LIBRARY", "SHARED_LIBRARY")]
+    guard = _config_guard_target(canonical_name, static_targets, module_targets)
 
-    guard = (
-        module_targets[0].name
-        if module_targets
-        else (static_targets[0].name if static_targets else canonical_name)
-    )
+    lines = _config_preamble_lines(canonical_name, guard, config)
+    for t in interface_targets:
+        lines += _interface_target_lines(t, has_include)
+    for t in static_targets:
+        lines += _static_target_lines(t, uconf, map_lines, has_include)
+    for t in module_targets:
+        lines += _module_target_lines(t, uconf, map_lines)
+    lines += _alias_lines(aliases, targets)
+    lines += [
+        f"set({canonical_name}_FOUND TRUE)",
+        f'message(STATUS "Using PREBUILT gem {canonical_name} from ${{_pkg_root}}")',
+        "",
+    ]
+    return "\n".join(lines)
 
-    def _runtime_artifact(t: TargetInfo) -> str | None:
-        for a in t.artifacts:
-            if a.suffix.lower() in _RUNTIME_EXTS:
-                return a.name
-        return None
 
-    def _link_artifact(t: TargetInfo) -> str | None:
-        for a in t.artifacts:
-            if a.suffix.lower() in _LINK_EXTS:
-                return a.name
-        return None
+def _config_guard_target(
+    canonical_name: str,
+    static_targets: list[TargetInfo],
+    module_targets: list[TargetInfo],
+) -> str:
+    """The target whose existence means the package was already loaded.
 
-    lines: list[str] = [
+    The first module/shared target, else the first static one, else the
+    package name itself.
+    """
+    if module_targets:
+        return module_targets[0].name
+    if static_targets:
+        return static_targets[0].name
+    return canonical_name
+
+
+def _runtime_artifact(t: TargetInfo) -> str | None:
+    """File name of the target's first runtime artifact (.dll/.so/.dylib)."""
+    for a in t.artifacts:
+        if a.suffix.lower() in _RUNTIME_EXTS:
+            return a.name
+    return None
+
+
+def _link_artifact(t: TargetInfo) -> str | None:
+    """File name of the target's first link artifact (.lib/.a)."""
+    for a in t.artifacts:
+        if a.suffix.lower() in _LINK_EXTS:
+            return a.name
+    return None
+
+
+def _config_preamble_lines(canonical_name: str, guard: str, config: str) -> list[str]:
+    """Header comment, the define-once guard, and the package path variables."""
+    return [
         "#",
         "# Copyright (c) Contributors to the Open 3D Engine Project.",
         "# SPDX-License-Identifier: Apache-2.0 OR MIT",
@@ -333,88 +375,106 @@ def generate_config_cmake(
         "",
     ]
 
-    map_lines = [f"    MAP_IMPORTED_CONFIG_{oc} {uconf}" for oc in other_configs]
 
-    for t in interface_targets:
-        lines += [
-            "o3de_add_target(",
-            f"    NAME {t.name} HEADERONLY IMPORTED",
-            "    NAMESPACE Gem",
-        ]
-        if has_include:
-            lines += [
-                "    INCLUDE_DIRECTORIES",
-                "        INTERFACE",
-                "            ${_pkg_root}/Include",
-            ]
-        lines += [")", ""]
+def _include_directory_lines(has_include: bool) -> list[str]:
+    """The packaged ``Include`` directory as an INTERFACE include, if any."""
+    if not has_include:
+        return []
+    return [
+        "    INCLUDE_DIRECTORIES",
+        "        INTERFACE",
+        "            ${_pkg_root}/Include",
+    ]
 
-    for t in static_targets:
-        lib = _link_artifact(t)
-        if not lib:
-            continue
-        lines += [
-            "o3de_add_target(",
-            f"    NAME {t.name} STATIC IMPORTED",
-            "    NAMESPACE Gem",
-        ]
-        if has_include:
-            lines += [
-                "    INCLUDE_DIRECTORIES",
-                "        INTERFACE",
-                "            ${_pkg_root}/Include",
-            ]
-        lines += [
-            ")",
-            f"set_target_properties({t.name} PROPERTIES",
-            f"    IMPORTED_CONFIGURATIONS {uconf}",
-            f'    IMPORTED_LOCATION "${{_pkg_lib}}/{lib}"',
-            f'    IMPORTED_LOCATION_{uconf} "${{_pkg_lib}}/{lib}"',
-            *map_lines,
-            ")",
-            "",
-        ]
 
-    for t in module_targets:
-        dll = _runtime_artifact(t)
-        if not dll:
-            continue
-        implib = _link_artifact(t) if t.type == "SHARED_LIBRARY" else None
-        kind = "SHARED" if t.type == "SHARED_LIBRARY" else "MODULE"
-        lines += [
-            "o3de_add_target(",
-            f"    NAME {t.name} {kind} IMPORTED",
-            "    NAMESPACE Gem",
-            "    TARGET_PROPERTIES",
-            "        GEM_MODULE TRUE",
-            ")",
-            f"set_target_properties({t.name} PROPERTIES",
-            f"    IMPORTED_CONFIGURATIONS {uconf}",
-            f'    IMPORTED_LOCATION "${{_pkg_bin}}/{dll}"',
-            f'    IMPORTED_LOCATION_{uconf} "${{_pkg_bin}}/{dll}"',
-        ]
-        if implib:
-            lines += [
-                f'    IMPORTED_IMPLIB "${{_pkg_lib}}/{implib}"',
-                f'    IMPORTED_IMPLIB_{uconf} "${{_pkg_lib}}/{implib}"',
-            ]
-        lines += [*map_lines, ")", ""]
-
-    if aliases:
-        lines.append("# Variant aliases (what o3de_enable_gems looks up per project)")
-        defined = {t.name for t in targets}
-        for alias, target in sorted(aliases.items()):
-            if target not in defined:
-                continue
-            lines.append(f"o3de_create_alias(NAME {alias} NAMESPACE Gem TARGETS Gem::{target})")
-        lines.append("")
-
-    lines += [
-        f"set({canonical_name}_FOUND TRUE)",
-        f'message(STATUS "Using PREBUILT gem {canonical_name} from ${{_pkg_root}}")',
+def _interface_target_lines(t: TargetInfo, has_include: bool) -> list[str]:
+    """A header-only IMPORTED target."""
+    return [
+        "o3de_add_target(",
+        f"    NAME {t.name} HEADERONLY IMPORTED",
+        "    NAMESPACE Gem",
+        *_include_directory_lines(has_include),
+        ")",
         "",
     ]
-    return "\n".join(lines)
+
+
+def _static_target_lines(
+    t: TargetInfo,
+    uconf: str,
+    map_lines: list[str],
+    has_include: bool,
+) -> list[str]:
+    """A STATIC IMPORTED target located in ``_pkg_lib``.
+
+    Empty when the target has no link artifact.
+    """
+    lib = _link_artifact(t)
+    if not lib:
+        return []
+    return [
+        "o3de_add_target(",
+        f"    NAME {t.name} STATIC IMPORTED",
+        "    NAMESPACE Gem",
+        *_include_directory_lines(has_include),
+        ")",
+        f"set_target_properties({t.name} PROPERTIES",
+        f"    IMPORTED_CONFIGURATIONS {uconf}",
+        f'    IMPORTED_LOCATION "${{_pkg_lib}}/{lib}"',
+        f'    IMPORTED_LOCATION_{uconf} "${{_pkg_lib}}/{lib}"',
+        *map_lines,
+        ")",
+        "",
+    ]
+
+
+def _module_target_lines(t: TargetInfo, uconf: str, map_lines: list[str]) -> list[str]:
+    """A MODULE or SHARED IMPORTED gem-module target located in ``_pkg_bin``.
+
+    A SHARED target also gets its import library from ``_pkg_lib`` when it
+    has one. Empty when the target has no runtime artifact.
+    """
+    dll = _runtime_artifact(t)
+    if not dll:
+        return []
+    implib = _link_artifact(t) if t.type == "SHARED_LIBRARY" else None
+    kind = "SHARED" if t.type == "SHARED_LIBRARY" else "MODULE"
+    lines = [
+        "o3de_add_target(",
+        f"    NAME {t.name} {kind} IMPORTED",
+        "    NAMESPACE Gem",
+        "    TARGET_PROPERTIES",
+        "        GEM_MODULE TRUE",
+        ")",
+        f"set_target_properties({t.name} PROPERTIES",
+        f"    IMPORTED_CONFIGURATIONS {uconf}",
+        f'    IMPORTED_LOCATION "${{_pkg_bin}}/{dll}"',
+        f'    IMPORTED_LOCATION_{uconf} "${{_pkg_bin}}/{dll}"',
+    ]
+    if implib:
+        lines += [
+            f'    IMPORTED_IMPLIB "${{_pkg_lib}}/{implib}"',
+            f'    IMPORTED_IMPLIB_{uconf} "${{_pkg_lib}}/{implib}"',
+        ]
+    return [*lines, *map_lines, ")", ""]
+
+
+def _alias_lines(aliases: dict[str, str], targets: list[TargetInfo]) -> list[str]:
+    """``o3de_create_alias`` calls for the variant aliases, sorted by alias.
+
+    Aliases to targets that are not defined here are dropped; the section
+    header is written whenever there are any aliases at all.
+    """
+    if not aliases:
+        return []
+    lines = ["# Variant aliases (what o3de_enable_gems looks up per project)"]
+    defined = {t.name for t in targets}
+    for alias, target in sorted(aliases.items()):
+        if target not in defined:
+            continue
+        lines.append(f"o3de_create_alias(NAME {alias} NAMESPACE Gem TARGETS Gem::{target})")
+    lines.append("")
+    return lines
 
 
 def generate_config_version_cmake(canonical_name: str, version: str) -> str:
